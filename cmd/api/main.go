@@ -1,6 +1,6 @@
 package main
 
-import "Go-Invoicing/internal/app"
+import "go-invoicing/internal/app"
 
 func main() {
 	app.Run()
