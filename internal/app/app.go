@@ -1,13 +1,13 @@
 package app
 
-import (
-	"fmt"
+import "github.com/jackc/pgx/v5/pgxpool"
 
-	"go-invoicing/internal/administration"
-)
+type App struct {
+	DB *pgxpool.Pool
+}
 
-func Run() {
-	fmt.Println("Welcome to Go Invoicing.")
-	// Initialize app with admin config
-	_ = administration.Organisation{}
+func New(db *pgxpool.Pool) *App {
+	return &App{
+		DB: db,
+	}
 }
