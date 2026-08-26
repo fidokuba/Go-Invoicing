@@ -5,14 +5,14 @@ import "os"
 type Config struct {
 	Environment string
 	DatabaseURL string
-	Port string
+	Port        string
 }
 
 func Load() Config {
 	return Config{
 		Environment: getEnv("APP_ENV", "development"),
-		DatabaseURL: getEnv("DATABASE_URL", "localhost:5432"),
-		Port: getEnv("APP_PORT", "8080"),
+		DatabaseURL: getEnv("DATABASE_URL", "postgres://go_invoicing:go_invoicing_dev@localhost:5432/go_invoicing?sslmode=disable"),
+		Port:        getEnv("APP_PORT", "8080"),
 	}
 }
 

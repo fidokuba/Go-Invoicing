@@ -1,17 +1,18 @@
 package app
 
 import (
-	"database/sql"
 	"encoding/json"
 	"net/http"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type App struct {
-	db *sql.DB
+	db *pgxpool.Pool
 }
 
 // initialises a database connection
-func New(db *sql.DB) *App {
+func New(db *pgxpool.Pool) *App {
 	return &App{db: db}
 }
 
@@ -41,7 +42,7 @@ func (a *App) Handler() http.Handler {
 			return
 		}
 
-		if err := a.db.Ping(); err != nil {
+		if err := a.db.Ping(r.Context()); err != nil {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
 				"status": "unavailable",
 			})
