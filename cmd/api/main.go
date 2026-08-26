@@ -34,7 +34,8 @@ func main() {
 
 	// Create an HTTP server
 	server := &http.Server{
-		Addr: ":" + config.Port,
+		Addr:    ":" + config.Port,
+		Handler: app.Handler(),
 	}
 
 	// Start the server
