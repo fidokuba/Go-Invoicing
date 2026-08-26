@@ -32,5 +32,34 @@ func (a *App) Handler() http.Handler {
 		})
 	})
 
+	// creates a /health/db endpoint to check if the database conection is ok
+	mux.HandleFunc("/health/db", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
+				"error": "method not allowed",
+			})
+			return
+		}
+
+		if err := a.db.Ping(); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+				"status": "unavailable",
+			})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]string{
+			"status": "ok",
+		})
+	})
+
 	return mux
+
+}
+
+// creates JSON string to be sent back as a response to the calling client
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
 }
