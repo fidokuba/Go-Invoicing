@@ -7,6 +7,7 @@ import (
 	"go-invoicing/internal/config"
 	"go-invoicing/internal/database"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -15,11 +16,17 @@ import (
 )
 
 func main() {
+
+	logger := slog.New(
+		slog.NewTextHandler(os.Stdout, nil),
+	)
+
 	// 	Create a context
 	ctx := context.Background()
 
 	// Load configuration
 	config := config.Load()
+	logger.Info("configuration loaded", "APP_ENV", config.Environment, "DATABASE_URL", config.DatabaseURL, "APP_PORT", config.Port)
 
 	// Create the database pool
 	database, err := database.NewPostgresPool(ctx, config.DatabaseURL)
