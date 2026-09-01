@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"go-invoicing/internal/app"
 	"go-invoicing/internal/config"
 	"go-invoicing/internal/database"
@@ -47,11 +46,11 @@ func main() {
 
 	// Start the server
 	go func() {
-		fmt.Printf("API server listening on %s", server.Addr)
+		logger.Info("API server listening", "addr", server.Addr)
 
 		if err := server.ListenAndServe(); err != nil &&
 			err != http.ErrServerClosed {
-			log.Printf("server failed: %v", err)
+			logger.Error("server failed", "error", err)
 		}
 	}()
 
@@ -60,11 +59,15 @@ func main() {
 	defer stop()
 
 	<-ctx.Done()
+	logger.Info("shutdown signal received")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	logger.Info("shutting down HTTP server")
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Fatalf("server shutdown failed: %v", err)
+		logger.Error("server shutdown failed", "error", err)
 	}
+
+	logger.Info("database pool closed")
 }
