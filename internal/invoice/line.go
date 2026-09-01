@@ -3,9 +3,9 @@ package invoice
 import "time"
 
 type Line struct {
-	ID          uint    `gorm:"primaryKey"`
-	InvoiceID   uint    `gorm:"index"`
-	ProductID   uint    `gorm:"index"`
+	ID          uint `gorm:"primaryKey"`
+	InvoiceID   uint `gorm:"index"`
+	ProductID   uint `gorm:"index"`
 	Description string
 	Quantity    float64
 	UnitPrice   float64

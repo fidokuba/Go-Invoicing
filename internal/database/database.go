@@ -1,4 +1,4 @@
-//Create the PostgreSQL connection pool.
+// Create the PostgreSQL connection pool.
 package database
 
 import (
@@ -16,7 +16,7 @@ func NewPostgresPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, er
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
 		return nil, err
-		}
+	}
 
 	return pool, nil
 }

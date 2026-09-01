@@ -7,11 +7,11 @@ import (
 )
 
 type Product struct {
-	ID             uint           `gorm:"primaryKey"`
-	OrganisationID uint           `gorm:"index"`
-	Name           string         `gorm:"index"`
-	Description    string         `gorm:"type:text"`
-	SKU            string         `gorm:"uniqueIndex:idx_product_org"`
+	ID             uint   `gorm:"primaryKey"`
+	OrganisationID uint   `gorm:"index"`
+	Name           string `gorm:"index"`
+	Description    string `gorm:"type:text"`
+	SKU            string `gorm:"uniqueIndex:idx_product_org"`
 	Price          float64
 	Category       string
 	IsActive       bool

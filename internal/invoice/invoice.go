@@ -7,10 +7,10 @@ import (
 )
 
 type Invoice struct {
-	ID             uint           `gorm:"primaryKey"`
-	OrganisationID uint           `gorm:"index"`
-	CustomerID     uint           `gorm:"index"`
-	InvoiceNumber  string         `gorm:"uniqueIndex:idx_invoice_org"`
+	ID             uint   `gorm:"primaryKey"`
+	OrganisationID uint   `gorm:"index"`
+	CustomerID     uint   `gorm:"index"`
+	InvoiceNumber  string `gorm:"uniqueIndex:idx_invoice_org"`
 	IssueDate      time.Time
 	DueDate        time.Time
 	Total          float64
