@@ -5,7 +5,6 @@ import (
 	"go-invoicing/internal/app"
 	"go-invoicing/internal/config"
 	"go-invoicing/internal/database"
-	"log"
 	"log/slog"
 	"net/http"
 	"os"
@@ -24,24 +23,37 @@ func main() {
 	ctx := context.Background()
 
 	// Load configuration
-	config := config.Load()
-	logger.Info("configuration loaded", "APP_ENV", config.Environment, "DATABASE_URL", config.DatabaseURL, "APP_PORT", config.Port)
+	cfg := config.Load()
+	logger.Info(
+		"configuration loaded",
+		"APP_ENV", cfg.Environment,
+		"APP_PORT", cfg.Port,
+	)
+
+	// Run database migrations before creating the pool.
+	if err := database.Migrate(cfg.DatabaseURL); err != nil {
+		logger.Error("database migration failed", "error", err)
+		os.Exit(1)
+	}
 
 	// Create the database pool
-	database, err := database.NewPostgresPool(ctx, config.DatabaseURL)
+	db, err := database.NewPostgresPool(ctx, cfg.DatabaseURL)
 	if err != nil {
-		log.Fatalf("failed to connect to database: %v", err)
+		logger.Error(
+			"failed to connect to database",
+			"error", err,
+		)
+		os.Exit(1)
 	}
-	defer database.Close()
+	defer db.Close()
 
 	// Create the app
-	app := app.New(database)
-	_ = app
+	application := app.New(db)
 
 	// Create an HTTP server
 	server := &http.Server{
-		Addr:    ":" + config.Port,
-		Handler: app.Handler(),
+		Addr:    ":" + cfg.Port,
+		Handler: application.Handler(),
 	}
 
 	// Start the server
