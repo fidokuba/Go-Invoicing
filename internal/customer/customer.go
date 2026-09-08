@@ -7,8 +7,8 @@ import (
 )
 
 type Customer struct {
-	ID             uint   `gorm:"primaryKey"`
-	OrganisationID uint   `gorm:"index"`
+	ID             string `gorm:"primaryKey"`
+	OrganisationID string `gorm:"index"`
 	Name           string `gorm:"index"`
 	Email          string
 	Phone          string

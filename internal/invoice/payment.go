@@ -3,9 +3,9 @@ package invoice
 import "time"
 
 type Payment struct {
-	ID            uint `gorm:"primaryKey"`
-	InvoiceID     uint `gorm:"index"`
-	Amount        float64
+	ID            string `gorm:"primaryKey"`
+	InvoiceID     string `gorm:"index"`
+	Amount        int64
 	PaymentMethod string // cash, credit_card, bank_transfer, check
 	PaymentDate   time.Time
 	Reference     string

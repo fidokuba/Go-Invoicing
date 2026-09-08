@@ -7,13 +7,15 @@ import (
 )
 
 type Invoice struct {
-	ID             uint   `gorm:"primaryKey"`
-	OrganisationID uint   `gorm:"index"`
-	CustomerID     uint   `gorm:"index"`
+	ID             string `gorm:"primaryKey"`
+	OrganisationID string `gorm:"index"`
+	CustomerID     string `gorm:"index"`
 	InvoiceNumber  string `gorm:"uniqueIndex:idx_invoice_org"`
 	IssueDate      time.Time
 	DueDate        time.Time
-	Total          float64
+	Subtotal       int64
+	VatTotal       int64
+	Total          int64
 	Status         string // draft, sent, paid, overdue, cancelled
 	Notes          string `gorm:"type:text"`
 	CreatedAt      time.Time
@@ -32,8 +34,8 @@ func (i *Invoice) IsOverdue() bool {
 	return i.Status != "paid" && time.Now().After(i.DueDate)
 }
 
-func (i *Invoice) RemainingBalance() float64 {
-	paid := 0.0
+func (i *Invoice) RemainingBalance() int64 {
+	paid := int64(0)
 	for _, p := range i.Payments {
 		paid += p.Amount
 	}

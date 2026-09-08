@@ -14,6 +14,10 @@ CREATE TABLE invoice_lines (
 
     unit_price BIGINT NOT NULL,
 
+    vat_rate NUMERIC(5, 2) NOT NULL,
+
+    vat_amount BIGINT NOT NULL,
+
     total BIGINT NOT NULL,
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

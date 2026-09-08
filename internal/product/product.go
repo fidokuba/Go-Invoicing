@@ -7,8 +7,8 @@ import (
 )
 
 type Product struct {
-	ID             uint   `gorm:"primaryKey"`
-	OrganisationID uint   `gorm:"index"`
+	ID             string `gorm:"primaryKey"`
+	OrganisationID string `gorm:"index"`
 	Name           string `gorm:"index"`
 	Description    string `gorm:"type:text"`
 	SKU            string `gorm:"uniqueIndex:idx_product_org"`

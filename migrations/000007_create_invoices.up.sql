@@ -14,6 +14,10 @@ CREATE TABLE invoices (
 
     due_date DATE NOT NULL,
 
+    subtotal BIGINT NOT NULL DEFAULT 0,
+
+    vat_total BIGINT NOT NULL DEFAULT 0,
+
     total BIGINT NOT NULL DEFAULT 0,
 
     status TEXT NOT NULL DEFAULT 'draft',

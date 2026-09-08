@@ -7,8 +7,8 @@ import (
 )
 
 type Address struct {
-	ID         uint   `gorm:"primaryKey"`
-	CustomerID uint   `gorm:"index"`
+	ID         string `gorm:"primaryKey"`
+	CustomerID string `gorm:"index"`
 	Type       string // billing, shipping, other
 	Street     string
 	City       string

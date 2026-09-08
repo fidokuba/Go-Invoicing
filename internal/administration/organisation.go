@@ -7,7 +7,7 @@ import (
 )
 
 type Organisation struct {
-	ID         uint   `gorm:"primaryKey"`
+	ID         string `gorm:"primaryKey"`
 	Name       string `gorm:"index"`
 	Email      string
 	Phone      string

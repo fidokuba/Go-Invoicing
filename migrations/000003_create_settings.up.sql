@@ -11,8 +11,6 @@ CREATE TABLE settings (
 
     currency TEXT NOT NULL DEFAULT 'GBP',
 
-    tax_rate NUMERIC(5, 2) NOT NULL DEFAULT 20.00,
-
     payment_terms INTEGER NOT NULL DEFAULT 30,
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
