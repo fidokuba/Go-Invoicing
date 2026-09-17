@@ -2,7 +2,9 @@ package admin
 
 import (
 	"context"
+	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -65,8 +67,65 @@ func (r *PostgresOrganisationRepository) Create(
 		organisation.TaxID,
 	)
 	if err != nil {
-		return err
+		return fmt.Errorf("create organisation: %w", err)
 	}
 
 	return nil
+}
+
+// GetByID fetches a single organisation by its primary key. It returns an
+// error if no such organisation exists.
+func (r *PostgresOrganisationRepository) GetByID(
+	ctx context.Context,
+	id uuid.UUID,
+) (*Organisation, error) {
+	const query = `
+		SELECT
+			id,
+			name,
+			email,
+			phone,
+			website,
+			logo,
+			address,
+			city,
+			state,
+			postal_code,
+			country,
+			tax_id,
+			created_at,
+			updated_at,
+			deleted_at
+		FROM organisations
+		WHERE id = $1
+	`
+
+	var organisation Organisation
+
+	err := r.db.QueryRow(
+		ctx,
+		query,
+		id,
+	).Scan(
+		&organisation.ID,
+		&organisation.Name,
+		&organisation.Email,
+		&organisation.Phone,
+		&organisation.Website,
+		&organisation.Logo,
+		&organisation.Address,
+		&organisation.City,
+		&organisation.State,
+		&organisation.PostalCode,
+		&organisation.Country,
+		&organisation.TaxID,
+		&organisation.CreatedAt,
+		&organisation.UpdatedAt,
+		&organisation.DeletedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get organisation by id: %w", err)
+	}
+
+	return &organisation, nil
 }
