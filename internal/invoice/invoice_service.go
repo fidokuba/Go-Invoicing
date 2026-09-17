@@ -42,6 +42,10 @@ var (
 
 	// Invoice number allocation.
 	ErrInvoiceSettingsNotFound = errors.New("organisation settings not found")
+
+	// Payments. ErrPaymentAmountInvalid (amount must be > 0) is owned by
+	// Payment.Validate in payment.go, not redefined here.
+	ErrPaymentExceedsOutstanding = errors.New("payment amount exceeds the invoice's outstanding balance")
 )
 
 // TxBeginner starts a new transaction. *pgxpool.Pool satisfies this
@@ -60,12 +64,16 @@ type TxBeginner interface {
 // requesting organisation — that a referenced customer or product exists;
 // it does not otherwise read or mutate customer/product data, and it
 // never reads a product's price. It depends on SettingsRepository to
-// allocate each invoice's sequential number.
+// allocate each invoice's sequential number, and on PaymentRepository for
+// CreatePayment — payments are treated as part of the invoice aggregate
+// rather than a separate service, since recording one is inseparable from
+// checking and possibly updating the owning invoice's own state.
 type InvoiceService struct {
 	repository         InvoiceRepository
 	customerRepository customer.CustomerRepository
 	productRepository  product.ProductRepository
 	settingsRepository admin.SettingsRepository
+	paymentRepository  PaymentRepository
 	txBeginner         TxBeginner
 }
 
@@ -74,6 +82,7 @@ func NewInvoiceService(
 	customerRepository customer.CustomerRepository,
 	productRepository product.ProductRepository,
 	settingsRepository admin.SettingsRepository,
+	paymentRepository PaymentRepository,
 	txBeginner TxBeginner,
 ) *InvoiceService {
 	return &InvoiceService{
@@ -81,6 +90,7 @@ func NewInvoiceService(
 		customerRepository: customerRepository,
 		productRepository:  productRepository,
 		settingsRepository: settingsRepository,
+		paymentRepository:  paymentRepository,
 		txBeginner:         txBeginner,
 	}
 }
@@ -237,7 +247,7 @@ func (s *InvoiceService) Create(
 		Subtotal:       subtotal,
 		VATTotal:       vatTotal,
 		Total:          total,
-		Status:         "draft",
+		Status:         InvoiceStatusDraft,
 		Notes:          nilIfEmpty(request.Notes),
 	}
 
@@ -261,23 +271,196 @@ func (s *InvoiceService) Create(
 }
 
 // GetByID delegates the invoice lookup to the repository (organisation
-// scoping happens there) and also fetches its lines.
+// scoping happens there), fetches its lines, and returns the total
+// already paid against it — reusing the same PaymentRepository.
+// GetTotalPaidByInvoiceID query CreatePayment already relies on, no new
+// SQL. amountOutstanding is not computed here; it's derived by
+// toInvoiceResponse from Invoice.Total and this returned amountPaid, the
+// same way CreatePayment derives its own outstanding balance.
 func (s *InvoiceService) GetByID(
 	ctx context.Context,
 	organisationID uuid.UUID,
 	invoiceID uuid.UUID,
-) (*Invoice, []*Line, error) {
+) (*Invoice, []*Line, int64, error) {
 	inv, err := s.repository.GetByID(ctx, organisationID, invoiceID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 
 	lines, err := s.repository.GetLinesByInvoiceID(ctx, invoiceID)
 	if err != nil {
+		return nil, nil, 0, err
+	}
+
+	amountPaid, err := s.paymentRepository.GetTotalPaidByInvoiceID(ctx, invoiceID)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+
+	return inv, lines, amountPaid, nil
+}
+
+// CreatePaymentRequest is the caller-supplied shape for recording a
+// payment against an invoice. There is no HTTP handler for this yet (that
+// belongs to a later step), but the shape matches this project's existing
+// request-struct convention (see CreateInvoiceRequest), so a handler can
+// reuse it once added.
+//
+// PaymentDate is a real time.Time rather than a wire-format string, since
+// there is no JSON-decoding boundary in front of this yet — a future
+// handler would parse the request body's date string before constructing
+// this. A zero PaymentDate defaults to time.Now(); a non-zero one is used
+// exactly as supplied.
+type CreatePaymentRequest struct {
+	Amount        int64
+	PaymentMethod string
+	PaymentDate   time.Time
+	Reference     string
+	Notes         string
+}
+
+// CreatePayment records a payment against an invoice and, if the payment
+// exhausts the invoice's outstanding balance, updates its status to
+// "paid" — all within a single database transaction:
+//
+//	BEGIN
+//	    lock invoice row (FOR UPDATE) and verify it belongs to organisationID
+//	    calculate total already paid
+//	    validate the new payment does not exceed the outstanding balance
+//	    insert the payment
+//	    update invoice status to "paid" if this payment exhausts the balance
+//	COMMIT
+//
+// The invoice lock is acquired before the outstanding balance is
+// calculated, and held until commit/rollback. That ordering is what makes
+// concurrent payments against the same invoice safe: a second, concurrent
+// call blocks at the lock-acquisition step until the first transaction
+// finishes, so two payments can never both be validated against the same
+// stale outstanding balance and together overpay the invoice.
+//
+// A fully paid invoice's outstanding balance is 0, so any further
+// strictly-positive payment amount already fails the "amount <=
+// outstanding" check below — there is no separate "invoice already paid"
+// branch, and none is needed. Likewise, no separate "partially paid"
+// status exists: a payment that doesn't exhaust the balance is simply
+// inserted, and the invoice's existing status (draft, sent, ...) is left
+// untouched.
+//
+// The amount-must-be-positive rule is owned by Payment.Validate and is
+// checked before the transaction even begins, since it needs no database
+// state. Organisation scoping, the outstanding-balance check, and the
+// status update all happen inside the transaction, so a failure anywhere
+// rolls back the payment, the status change, or both together — a
+// rejected payment is never partially recorded.
+func (s *InvoiceService) CreatePayment(
+	ctx context.Context,
+	organisationID uuid.UUID,
+	invoiceID uuid.UUID,
+	request CreatePaymentRequest,
+) (*Payment, *Invoice, error) {
+	paymentDate := request.PaymentDate
+	if paymentDate.IsZero() {
+		paymentDate = time.Now().UTC()
+	}
+
+	payment := &Payment{
+		ID:            uuid.New(),
+		InvoiceID:     invoiceID,
+		Amount:        request.Amount,
+		PaymentMethod: request.PaymentMethod,
+		PaymentDate:   paymentDate,
+		Reference:     nilIfEmpty(request.Reference),
+		Notes:         nilIfEmpty(request.Notes),
+	}
+
+	if err := payment.Validate(); err != nil {
 		return nil, nil, err
 	}
 
-	return inv, lines, nil
+	// BEGIN — everything from here to the matching Commit/Rollback below
+	// is one atomic unit: locking the invoice, the outstanding-balance
+	// check, the payment INSERT, and the status update either all succeed
+	// together or are all undone together.
+	tx, err := s.txBeginner.Begin(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("begin payment transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	txInvoiceRepository := s.repository.WithTx(tx)
+
+	// FOR UPDATE: locks the invoice row until this transaction commits or
+	// rolls back, and — via the same organisation_id predicate GetByID
+	// uses — establishes that the invoice belongs to organisationID. A
+	// caller cannot pay against another organisation's invoice by knowing
+	// its UUID: this returns ErrInvoiceNotFound exactly as GetByID would
+	// for an invoice that doesn't exist at all.
+	inv, err := txInvoiceRepository.GetForUpdate(ctx, organisationID, invoiceID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	txPaymentRepository := s.paymentRepository.WithTx(tx)
+
+	// Computed only after the lock is held, so a concurrent payment
+	// against the same invoice cannot read this same total.
+	totalPaid, err := txPaymentRepository.GetTotalPaidByInvoiceID(ctx, invoiceID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("get total paid: %w", err)
+	}
+
+	outstanding := inv.Total - totalPaid
+
+	if payment.Amount > outstanding {
+		return nil, nil, ErrPaymentExceedsOutstanding
+	}
+
+	if err := txPaymentRepository.Create(ctx, payment); err != nil {
+		return nil, nil, err
+	}
+
+	if payment.Amount == outstanding {
+		if err := txInvoiceRepository.UpdateStatus(ctx, invoiceID, InvoiceStatusPaid); err != nil {
+			return nil, nil, fmt.Errorf("update invoice status: %w", err)
+		}
+
+		inv.Status = InvoiceStatusPaid
+	}
+
+	// COMMIT — only reached once the outstanding-balance check passed,
+	// the payment inserted, and (if applicable) the status update
+	// succeeded.
+	if err := tx.Commit(ctx); err != nil {
+		return nil, nil, fmt.Errorf("commit payment transaction: %w", err)
+	}
+
+	return payment, inv, nil
+}
+
+// GetPayments returns every payment recorded against an invoice, in
+// whatever order PaymentRepository.GetByInvoiceID returns them (currently
+// payment_date, then created_at — this method doesn't re-sort or alter
+// that ordering).
+//
+// Organisation scoping is enforced the same way GetByID enforces it for
+// the invoice itself: this first confirms, via the organisation-scoped
+// GetByID, that the invoice belongs to organisationID, before ever
+// touching the payment repository. A caller cannot list another
+// organisation's invoice's payments by knowing its UUID — that lookup
+// fails with ErrInvoiceNotFound exactly as GetByID's own callers see.
+//
+// This is a plain read, so unlike CreatePayment it does not lock the
+// invoice row — there is no concurrent mutation to protect against here.
+func (s *InvoiceService) GetPayments(
+	ctx context.Context,
+	organisationID uuid.UUID,
+	invoiceID uuid.UUID,
+) ([]*Payment, error) {
+	if _, err := s.repository.GetByID(ctx, organisationID, invoiceID); err != nil {
+		return nil, err
+	}
+
+	return s.paymentRepository.GetByInvoiceID(ctx, invoiceID)
 }
 
 // validateLines applies every per-line structural rule (description,

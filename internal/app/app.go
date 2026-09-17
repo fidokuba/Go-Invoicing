@@ -58,15 +58,19 @@ func (a *App) Handler() http.Handler {
 	// repositories (already constructed above) to check, within the
 	// requesting organisation, that a referenced customer/product exists,
 	// on the settings repository (also constructed above) to allocate
-	// each invoice's sequential number, and on the pool itself to begin
-	// the transaction that makes invoice creation atomic (a.db satisfies
+	// each invoice's sequential number, on the payment repository for
+	// CreatePayment, and on the pool itself to begin the transaction that
+	// makes invoice/payment creation atomic (a.db satisfies
 	// invoice.TxBeginner directly).
 	invoiceRepository := invoice.NewPostgresInvoiceRepository(a.db)
-	invoiceService := invoice.NewInvoiceService(invoiceRepository, customerRepository, productRepository, settingsRepository, a.db)
+	paymentRepository := invoice.NewPostgresPaymentRepository(a.db)
+	invoiceService := invoice.NewInvoiceService(invoiceRepository, customerRepository, productRepository, settingsRepository, paymentRepository, a.db)
 	invoiceHandler := invoice.NewInvoiceHandler(invoiceService)
 
 	mux.HandleFunc("POST /invoices", invoiceHandler.Create)
 	mux.HandleFunc("GET /invoices/{id}", invoiceHandler.GetByID)
+	mux.HandleFunc("POST /invoices/{id}/payments", invoiceHandler.CreatePayment)
+	mux.HandleFunc("GET /invoices/{id}/payments", invoiceHandler.GetPayments)
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {

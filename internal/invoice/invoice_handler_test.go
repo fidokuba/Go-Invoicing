@@ -55,6 +55,16 @@ func TestInvoiceHandler_Create(t *testing.T) {
 			response.Subtotal, response.VATTotal, response.Total)
 	}
 
+	// A brand-new invoice has no payments: amountPaid is 0 and the full
+	// total is outstanding.
+	if response.AmountPaid != 0 {
+		t.Errorf("expected amountPaid 0, got %d", response.AmountPaid)
+	}
+
+	if response.AmountOutstanding != response.Total {
+		t.Errorf("expected amountOutstanding to equal total (%d), got %d", response.Total, response.AmountOutstanding)
+	}
+
 	if _, err := uuid.Parse(response.ID); err != nil {
 		t.Errorf("expected response ID to be a valid UUID, got %q", response.ID)
 	}
@@ -171,6 +181,145 @@ func TestInvoiceHandler_GetByID(t *testing.T) {
 
 	if len(response.Lines) != 1 {
 		t.Errorf("expected 1 line, got %d", len(response.Lines))
+	}
+
+	// No payments have been made against this invoice.
+	if response.AmountPaid != 0 {
+		t.Errorf("expected amountPaid 0, got %d", response.AmountPaid)
+	}
+
+	if response.AmountOutstanding != response.Total {
+		t.Errorf("expected amountOutstanding to equal total (%d), got %d", response.Total, response.AmountOutstanding)
+	}
+}
+
+func TestInvoiceHandler_GetByID_WithPayments(t *testing.T) {
+	f := newTestFixture()
+	handler := newTestHandler(f)
+
+	request := validRequest(f.customerID)
+	created, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	if err != nil {
+		t.Fatalf("create invoice: %v", err)
+	}
+
+	// validRequest's default line is quantity 1, unitPrice 1000, vatRate
+	// 20 -> total 1200. Pay less than that: a partial payment.
+	if _, _, err := f.service.CreatePayment(context.Background(), f.organisationID, created.ID, CreatePaymentRequest{
+		Amount:        500,
+		PaymentMethod: "cash",
+	}); err != nil {
+		t.Fatalf("create payment: %v", err)
+	}
+
+	httpRequest := httptest.NewRequest(http.MethodGet, "/invoices/"+created.ID.String()+"?organisationId="+f.organisationID.String(), nil)
+	httpRequest.SetPathValue("id", created.ID.String())
+	recorder := httptest.NewRecorder()
+
+	handler.GetByID(recorder, httpRequest)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusOK, recorder.Code, recorder.Body.String())
+	}
+
+	var response InvoiceResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if response.AmountPaid != 500 {
+		t.Errorf("expected amountPaid 500, got %d", response.AmountPaid)
+	}
+
+	wantOutstanding := response.Total - 500
+	if response.AmountOutstanding != wantOutstanding {
+		t.Errorf("expected amountOutstanding %d, got %d", wantOutstanding, response.AmountOutstanding)
+	}
+}
+
+func TestInvoiceHandler_GetByID_MultiplePayments(t *testing.T) {
+	f := newTestFixture()
+	handler := newTestHandler(f)
+
+	request := validRequest(f.customerID)
+	created, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	if err != nil {
+		t.Fatalf("create invoice: %v", err)
+	}
+
+	for _, amount := range []int64{300, 400} {
+		if _, _, err := f.service.CreatePayment(context.Background(), f.organisationID, created.ID, CreatePaymentRequest{
+			Amount:        amount,
+			PaymentMethod: "cash",
+		}); err != nil {
+			t.Fatalf("create payment of %d: %v", amount, err)
+		}
+	}
+
+	httpRequest := httptest.NewRequest(http.MethodGet, "/invoices/"+created.ID.String()+"?organisationId="+f.organisationID.String(), nil)
+	httpRequest.SetPathValue("id", created.ID.String())
+	recorder := httptest.NewRecorder()
+
+	handler.GetByID(recorder, httpRequest)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusOK, recorder.Code, recorder.Body.String())
+	}
+
+	var response InvoiceResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	wantPaid := int64(300 + 400)
+	if response.AmountPaid != wantPaid {
+		t.Errorf("expected amountPaid %d, got %d", wantPaid, response.AmountPaid)
+	}
+
+	if response.AmountOutstanding != response.Total-wantPaid {
+		t.Errorf("expected amountOutstanding %d, got %d", response.Total-wantPaid, response.AmountOutstanding)
+	}
+}
+
+func TestInvoiceHandler_GetByID_FullyPaid_OutstandingIsZero(t *testing.T) {
+	f := newTestFixture()
+	handler := newTestHandler(f)
+
+	request := validRequest(f.customerID)
+	created, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	if err != nil {
+		t.Fatalf("create invoice: %v", err)
+	}
+
+	// validRequest's default line totals 1200 — pay exactly that.
+	if _, _, err := f.service.CreatePayment(context.Background(), f.organisationID, created.ID, CreatePaymentRequest{
+		Amount:        1200,
+		PaymentMethod: "cash",
+	}); err != nil {
+		t.Fatalf("create payment: %v", err)
+	}
+
+	httpRequest := httptest.NewRequest(http.MethodGet, "/invoices/"+created.ID.String()+"?organisationId="+f.organisationID.String(), nil)
+	httpRequest.SetPathValue("id", created.ID.String())
+	recorder := httptest.NewRecorder()
+
+	handler.GetByID(recorder, httpRequest)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusOK, recorder.Code, recorder.Body.String())
+	}
+
+	var response InvoiceResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if response.AmountOutstanding != 0 {
+		t.Errorf("expected amountOutstanding 0 for a fully paid invoice, got %d", response.AmountOutstanding)
+	}
+
+	if response.Status != InvoiceStatusPaid {
+		t.Errorf("expected status %q, got %q", InvoiceStatusPaid, response.Status)
 	}
 }
 

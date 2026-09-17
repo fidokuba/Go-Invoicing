@@ -24,4 +24,18 @@ type InvoiceRepository interface {
 	CreateLines(ctx context.Context, lines []*Line) error
 	GetByID(ctx context.Context, organisationID uuid.UUID, invoiceID uuid.UUID) (*Invoice, error)
 	GetLinesByInvoiceID(ctx context.Context, invoiceID uuid.UUID) ([]*Line, error)
+
+	// GetForUpdate is GetByID's locking counterpart, used by payment
+	// creation: it locks the invoice row (FOR UPDATE) until the enclosing
+	// transaction commits or rolls back, so a concurrent payment against
+	// the same invoice cannot read the same outstanding balance this call
+	// is about to act on. It is also how payment creation establishes
+	// organisation scoping — the same WHERE organisation_id = $1 clause
+	// GetByID uses.
+	GetForUpdate(ctx context.Context, organisationID uuid.UUID, invoiceID uuid.UUID) (*Invoice, error)
+
+	// UpdateStatus persists a new status for the invoice. Called through
+	// the same transaction that acquired the GetForUpdate lock, so it
+	// rolls back along with everything else if a later step fails.
+	UpdateStatus(ctx context.Context, invoiceID uuid.UUID, status string) error
 }

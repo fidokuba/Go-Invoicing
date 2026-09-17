@@ -165,7 +165,7 @@ func TestPostgresInvoiceRepository_CreateAndGetByID(t *testing.T) {
 		Subtotal:       2500,
 		VATTotal:       500,
 		Total:          3000,
-		Status:         "draft",
+		Status:         InvoiceStatusDraft,
 		Notes:          &notes,
 	}
 
@@ -236,8 +236,8 @@ func TestPostgresInvoiceRepository_CreateAndGetByID(t *testing.T) {
 			created.Subtotal, created.VATTotal, created.Total)
 	}
 
-	if created.Status != "draft" {
-		t.Errorf("expected status %q, got %q", "draft", created.Status)
+	if created.Status != InvoiceStatusDraft {
+		t.Errorf("expected status %q, got %q", InvoiceStatusDraft, created.Status)
 	}
 
 	if created.Notes == nil || *created.Notes != notes {
@@ -335,7 +335,7 @@ func TestPostgresInvoiceRepository_GetByID_OrganisationScoping(t *testing.T) {
 		InvoiceNumber:  "INV-SCOPE-1",
 		IssueDate:      issueDate,
 		DueDate:        dueDate,
-		Status:         "draft",
+		Status:         InvoiceStatusDraft,
 	}
 
 	if err := repository.Create(ctx, inv); err != nil {

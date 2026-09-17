@@ -6,6 +6,19 @@ import (
 	"github.com/google/uuid"
 )
 
+// Invoice status values. Named constants rather than scattered string
+// literals — now that payment processing has real status-dependent
+// business logic (CreatePayment sets InvoiceStatusPaid, IsOverdue checks
+// against it), a typo in a literal would silently produce wrong behaviour
+// instead of a compile error.
+const (
+	InvoiceStatusDraft     = "draft"
+	InvoiceStatusSent      = "sent"
+	InvoiceStatusPaid      = "paid"
+	InvoiceStatusOverdue   = "overdue"
+	InvoiceStatusCancelled = "cancelled"
+)
+
 // Notes is a pointer because that column is nullable in the invoices
 // table; every other field here is NOT NULL. DeletedAt is a pointer and
 // stays nil until the invoice is soft-deleted.
@@ -23,7 +36,7 @@ type Invoice struct {
 	Subtotal       int64
 	VATTotal       int64
 	Total          int64
-	Status         string // draft, sent, paid, overdue, cancelled
+	Status         string // one of the InvoiceStatus* constants above
 	Notes          *string
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
@@ -35,5 +48,5 @@ func (i *Invoice) TableName() string {
 }
 
 func (i *Invoice) IsOverdue() bool {
-	return i.Status != "paid" && time.Now().After(i.DueDate)
+	return i.Status != InvoiceStatusPaid && time.Now().After(i.DueDate)
 }

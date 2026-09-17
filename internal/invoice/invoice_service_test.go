@@ -25,8 +25,10 @@ type fakeInvoiceRepository struct {
 	invoices map[uuid.UUID]Invoice
 	lines    map[uuid.UUID][]*Line
 
-	createErr      error
-	createLinesErr error
+	createErr       error
+	createLinesErr  error
+	getForUpdateErr error
+	updateStatusErr error
 }
 
 func newFakeInvoiceRepository() *fakeInvoiceRepository {
@@ -68,6 +70,30 @@ func (f *fakeInvoiceRepository) GetByID(ctx context.Context, organisationID, inv
 
 func (f *fakeInvoiceRepository) GetLinesByInvoiceID(ctx context.Context, invoiceID uuid.UUID) ([]*Line, error) {
 	return f.lines[invoiceID], nil
+}
+
+func (f *fakeInvoiceRepository) GetForUpdate(ctx context.Context, organisationID, invoiceID uuid.UUID) (*Invoice, error) {
+	if f.getForUpdateErr != nil {
+		return nil, f.getForUpdateErr
+	}
+	inv, ok := f.invoices[invoiceID]
+	if !ok || inv.OrganisationID != organisationID {
+		return nil, ErrInvoiceNotFound
+	}
+	return &inv, nil
+}
+
+func (f *fakeInvoiceRepository) UpdateStatus(ctx context.Context, invoiceID uuid.UUID, status string) error {
+	if f.updateStatusErr != nil {
+		return f.updateStatusErr
+	}
+	inv, ok := f.invoices[invoiceID]
+	if !ok {
+		return ErrInvoiceNotFound
+	}
+	inv.Status = status
+	f.invoices[invoiceID] = inv
+	return nil
 }
 
 // fakeTx is a minimal stand-in for a pgx.Tx. Only Commit and Rollback are
@@ -265,14 +291,59 @@ func (f *fakeSettingsRepository) UpdateInvoiceNumber(ctx context.Context, organi
 	return nil
 }
 
+// fakePaymentRepository is a minimal in-memory PaymentRepository used to
+// test the service's payment orchestration without touching PostgreSQL.
+// Like fakeInvoiceRepository, WithTx ignores its tx argument and returns
+// the same fake; the real atomicity/locking guarantees are proven
+// separately against PostgreSQL in invoice_transaction_test.go.
+type fakePaymentRepository struct {
+	payments map[uuid.UUID][]*Payment
+
+	createErr       error
+	getTotalPaidErr error
+}
+
+func newFakePaymentRepository() *fakePaymentRepository {
+	return &fakePaymentRepository{payments: make(map[uuid.UUID][]*Payment)}
+}
+
+func (f *fakePaymentRepository) WithTx(tx pgx.Tx) PaymentRepository {
+	return f
+}
+
+func (f *fakePaymentRepository) Create(ctx context.Context, payment *Payment) error {
+	if f.createErr != nil {
+		return f.createErr
+	}
+	f.payments[payment.InvoiceID] = append(f.payments[payment.InvoiceID], payment)
+	return nil
+}
+
+func (f *fakePaymentRepository) GetByInvoiceID(ctx context.Context, invoiceID uuid.UUID) ([]*Payment, error) {
+	return f.payments[invoiceID], nil
+}
+
+func (f *fakePaymentRepository) GetTotalPaidByInvoiceID(ctx context.Context, invoiceID uuid.UUID) (int64, error) {
+	if f.getTotalPaidErr != nil {
+		return 0, f.getTotalPaidErr
+	}
+	var total int64
+	for _, p := range f.payments[invoiceID] {
+		total += p.Amount
+	}
+	return total, nil
+}
+
 // testFixture bundles a service with fakes pre-seeded with a valid
 // customer, product and settings row under one organisation, for tests
 // that need a happy-path reference to build requests around. repository,
-// settingsRepository and tx are exposed so individual tests can inject a
-// persistence failure or inspect whether Commit/Rollback was called.
+// paymentRepository, settingsRepository and tx are exposed so individual
+// tests can inject a persistence failure, seed an invoice directly, or
+// inspect whether Commit/Rollback was called.
 type testFixture struct {
 	service            *InvoiceService
 	repository         *fakeInvoiceRepository
+	paymentRepository  *fakePaymentRepository
 	settingsRepository *fakeSettingsRepository
 	tx                 *fakeTx
 	organisationID     uuid.UUID
@@ -289,23 +360,42 @@ func newTestFixture() *testFixture {
 	productID := products.add(organisationID)
 
 	repository := newFakeInvoiceRepository()
+	paymentRepository := newFakePaymentRepository()
 	settingsRepository := newFakeSettingsRepository()
 	settingsRepository.add(organisationID)
 
 	tx := &fakeTx{}
 	txBeginner := &fakeTxBeginner{tx: tx}
 
-	service := NewInvoiceService(repository, customers, products, settingsRepository, txBeginner)
+	service := NewInvoiceService(repository, customers, products, settingsRepository, paymentRepository, txBeginner)
 
 	return &testFixture{
 		service:            service,
 		repository:         repository,
+		paymentRepository:  paymentRepository,
 		settingsRepository: settingsRepository,
 		tx:                 tx,
 		organisationID:     organisationID,
 		customerID:         customerID,
 		productID:          productID,
 	}
+}
+
+// addInvoice seeds the fixture's fake invoice repository directly with a
+// fully-formed invoice, for payment tests that need an existing invoice
+// with a known Total/Status rather than one built through the whole
+// invoice-creation flow.
+func (f *testFixture) addInvoice(total int64, status string) uuid.UUID {
+	inv := Invoice{
+		ID:             uuid.New(),
+		OrganisationID: f.organisationID,
+		CustomerID:     f.customerID,
+		InvoiceNumber:  "INV-TEST-" + uuid.New().String(),
+		Total:          total,
+		Status:         status,
+	}
+	f.repository.invoices[inv.ID] = inv
+	return inv.ID
 }
 
 func validLineRequest() CreateInvoiceLineRequest {
@@ -663,8 +753,8 @@ func TestInvoiceService_Create_Success(t *testing.T) {
 		t.Error("expected a generated invoice number")
 	}
 
-	if inv.Status != "draft" {
-		t.Errorf("expected status %q, got %q", "draft", inv.Status)
+	if inv.Status != InvoiceStatusDraft {
+		t.Errorf("expected status %q, got %q", InvoiceStatusDraft, inv.Status)
 	}
 
 	if inv.Subtotal != 1000 || inv.VATTotal != 200 || inv.Total != 1200 {
@@ -729,7 +819,7 @@ func TestInvoiceService_GetByID(t *testing.T) {
 		t.Fatalf("create invoice: %v", err)
 	}
 
-	inv, lines, err := f.service.GetByID(context.Background(), f.organisationID, created.ID)
+	inv, lines, amountPaid, err := f.service.GetByID(context.Background(), f.organisationID, created.ID)
 	if err != nil {
 		t.Fatalf("get invoice: %v", err)
 	}
@@ -740,6 +830,10 @@ func TestInvoiceService_GetByID(t *testing.T) {
 
 	if len(lines) != 1 {
 		t.Fatalf("expected 1 line, got %d", len(lines))
+	}
+
+	if amountPaid != 0 {
+		t.Errorf("expected amountPaid 0 for an invoice with no payments, got %d", amountPaid)
 	}
 }
 
@@ -891,8 +985,119 @@ func TestInvoiceService_GetByID_WrongOrganisation(t *testing.T) {
 		t.Fatalf("create invoice: %v", err)
 	}
 
-	_, _, err = f.service.GetByID(context.Background(), uuid.New(), created.ID)
+	_, _, _, err = f.service.GetByID(context.Background(), uuid.New(), created.ID)
 	if !errors.Is(err, ErrInvoiceNotFound) {
 		t.Fatalf("expected ErrInvoiceNotFound for a cross-organisation lookup, got %v", err)
+	}
+}
+
+// --- GetByID amountPaid/amountOutstanding ---
+
+func TestInvoiceService_GetByID_NoPayments(t *testing.T) {
+	f := newTestFixture()
+	invoiceID := f.addInvoice(10000, InvoiceStatusSent)
+
+	inv, _, amountPaid, err := f.service.GetByID(context.Background(), f.organisationID, invoiceID)
+	if err != nil {
+		t.Fatalf("get invoice: %v", err)
+	}
+
+	if amountPaid != 0 {
+		t.Errorf("expected amountPaid 0, got %d", amountPaid)
+	}
+
+	if inv.Total-amountPaid != inv.Total {
+		t.Errorf("expected outstanding to equal total when nothing has been paid")
+	}
+}
+
+func TestInvoiceService_GetByID_OnePayment(t *testing.T) {
+	f := newTestFixture()
+	invoiceID := f.addInvoice(10000, InvoiceStatusSent)
+
+	if _, _, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, CreatePaymentRequest{
+		Amount:        4000,
+		PaymentMethod: "cash",
+	}); err != nil {
+		t.Fatalf("create payment: %v", err)
+	}
+
+	_, _, amountPaid, err := f.service.GetByID(context.Background(), f.organisationID, invoiceID)
+	if err != nil {
+		t.Fatalf("get invoice: %v", err)
+	}
+
+	if amountPaid != 4000 {
+		t.Errorf("expected amountPaid 4000, got %d", amountPaid)
+	}
+}
+
+func TestInvoiceService_GetByID_MultiplePayments_SumsCorrectly(t *testing.T) {
+	f := newTestFixture()
+	invoiceID := f.addInvoice(10000, InvoiceStatusSent)
+	ctx := context.Background()
+
+	for _, amount := range []int64{2000, 3000, 1000} {
+		if _, _, err := f.service.CreatePayment(ctx, f.organisationID, invoiceID, CreatePaymentRequest{
+			Amount:        amount,
+			PaymentMethod: "cash",
+		}); err != nil {
+			t.Fatalf("create payment of %d: %v", amount, err)
+		}
+	}
+
+	inv, _, amountPaid, err := f.service.GetByID(ctx, f.organisationID, invoiceID)
+	if err != nil {
+		t.Fatalf("get invoice: %v", err)
+	}
+
+	wantPaid := int64(2000 + 3000 + 1000)
+	if amountPaid != wantPaid {
+		t.Errorf("expected amountPaid %d, got %d", wantPaid, amountPaid)
+	}
+
+	wantOutstanding := inv.Total - wantPaid
+	if inv.Total-amountPaid != wantOutstanding {
+		t.Errorf("expected outstanding %d, got %d", wantOutstanding, inv.Total-amountPaid)
+	}
+}
+
+func TestInvoiceService_GetByID_FullyPaid_OutstandingIsZero(t *testing.T) {
+	f := newTestFixture()
+	invoiceID := f.addInvoice(10000, InvoiceStatusSent)
+
+	if _, _, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, CreatePaymentRequest{
+		Amount:        10000,
+		PaymentMethod: "cash",
+	}); err != nil {
+		t.Fatalf("create payment: %v", err)
+	}
+
+	inv, _, amountPaid, err := f.service.GetByID(context.Background(), f.organisationID, invoiceID)
+	if err != nil {
+		t.Fatalf("get invoice: %v", err)
+	}
+
+	if amountPaid != 10000 {
+		t.Errorf("expected amountPaid 10000, got %d", amountPaid)
+	}
+
+	if inv.Total-amountPaid != 0 {
+		t.Errorf("expected outstanding 0 for a fully paid invoice, got %d", inv.Total-amountPaid)
+	}
+}
+
+func TestInvoiceService_GetByID_PaymentRepositoryErrorPropagates(t *testing.T) {
+	f := newTestFixture()
+	invoiceID := f.addInvoice(10000, InvoiceStatusSent)
+	f.paymentRepository.getTotalPaidErr = errors.New("connection reset by peer")
+
+	_, _, _, err := f.service.GetByID(context.Background(), f.organisationID, invoiceID)
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+
+	if !errors.Is(err, f.paymentRepository.getTotalPaidErr) {
+		t.Errorf("expected the payment repository's error to propagate unchanged, got %v", err)
 	}
 }

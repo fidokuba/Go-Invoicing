@@ -217,6 +217,103 @@ func (r *PostgresInvoiceRepository) GetByID(
 	return &inv, nil
 }
 
+// GetForUpdate fetches a single invoice by its primary key, scoped to the
+// supplied organisation exactly like GetByID, but additionally locks the
+// row with FOR UPDATE. The lock is held by PostgreSQL until whichever
+// transaction this repository was obtained via WithTx for is committed or
+// rolled back — calling this outside of a transaction (i.e. against the
+// bare pool) still works, but the lock is released the instant this
+// statement finishes, so it provides no protection in that case. Callers
+// doing payment creation must always go through WithTx first. Soft-deleted
+// invoices are excluded.
+func (r *PostgresInvoiceRepository) GetForUpdate(
+	ctx context.Context,
+	organisationID uuid.UUID,
+	invoiceID uuid.UUID,
+) (*Invoice, error) {
+	const query = `
+		SELECT
+			id,
+			organisation_id,
+			customer_id,
+			invoice_number,
+			issue_date,
+			due_date,
+			subtotal,
+			vat_total,
+			total,
+			status,
+			notes,
+			created_at,
+			updated_at,
+			deleted_at
+		FROM invoices
+		WHERE organisation_id = $1
+			AND id = $2
+			AND deleted_at IS NULL
+		FOR UPDATE
+	`
+
+	var inv Invoice
+
+	err := r.db.QueryRow(
+		ctx,
+		query,
+		organisationID,
+		invoiceID,
+	).Scan(
+		&inv.ID,
+		&inv.OrganisationID,
+		&inv.CustomerID,
+		&inv.InvoiceNumber,
+		&inv.IssueDate,
+		&inv.DueDate,
+		&inv.Subtotal,
+		&inv.VATTotal,
+		&inv.Total,
+		&inv.Status,
+		&inv.Notes,
+		&inv.CreatedAt,
+		&inv.UpdatedAt,
+		&inv.DeletedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrInvoiceNotFound
+		}
+
+		return nil, fmt.Errorf("get invoice for update: %w", err)
+	}
+
+	return &inv, nil
+}
+
+// UpdateStatus persists a new status for the invoice.
+func (r *PostgresInvoiceRepository) UpdateStatus(
+	ctx context.Context,
+	invoiceID uuid.UUID,
+	status string,
+) error {
+	const query = `
+		UPDATE invoices
+		SET status = $1,
+			updated_at = NOW()
+		WHERE id = $2
+			AND deleted_at IS NULL
+	`
+
+	tag, err := r.db.Exec(ctx, query, status, invoiceID)
+	if err != nil {
+		return fmt.Errorf("update invoice status: %w", err)
+	}
+
+	if tag.RowsAffected() == 0 {
+		return ErrInvoiceNotFound
+	}
+
+	return nil
+}
+
 // GetLinesByInvoiceID fetches every line belonging to an invoice, ordered
 // by creation. It does not itself check organisation scope — callers are
 // expected to have already confirmed (via GetByID) that the invoice

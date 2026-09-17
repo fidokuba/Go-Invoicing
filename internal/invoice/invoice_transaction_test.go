@@ -30,6 +30,7 @@ func TestInvoiceService_Create_CommitsAllRowsTogether(t *testing.T) {
 		customer.NewPostgresCustomerRepository(db),
 		product.NewPostgresProductRepository(db),
 		admin.NewPostgresSettingsRepository(db),
+		NewPostgresPaymentRepository(db),
 		db,
 	)
 
@@ -106,6 +107,7 @@ func TestInvoiceService_Create_SequentialInvoiceNumbers(t *testing.T) {
 		customer.NewPostgresCustomerRepository(db),
 		product.NewPostgresProductRepository(db),
 		admin.NewPostgresSettingsRepository(db),
+		NewPostgresPaymentRepository(db),
 		db,
 	)
 
@@ -166,6 +168,7 @@ func TestInvoiceService_Create_IndependentSequencesPerOrganisation(t *testing.T)
 		customer.NewPostgresCustomerRepository(db),
 		product.NewPostgresProductRepository(db),
 		admin.NewPostgresSettingsRepository(db),
+		NewPostgresPaymentRepository(db),
 		db,
 	)
 
@@ -258,6 +261,7 @@ func TestInvoiceService_Create_RollsBackAtomicallyOnLineFailure(t *testing.T) {
 		customer.NewPostgresCustomerRepository(db),
 		product.NewPostgresProductRepository(db),
 		settingsRepository,
+		NewPostgresPaymentRepository(db),
 		db,
 	)
 
@@ -340,6 +344,7 @@ func TestInvoiceService_Create_ConcurrentInvoiceCreation(t *testing.T) {
 		customer.NewPostgresCustomerRepository(db),
 		product.NewPostgresProductRepository(db),
 		admin.NewPostgresSettingsRepository(db),
+		NewPostgresPaymentRepository(db),
 		db,
 	)
 

@@ -59,7 +59,9 @@ func (h *InvoiceHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := toInvoiceResponse(inv, lines)
+	// A brand-new invoice cannot have any payments yet — no query needed
+	// to know amountPaid is 0.
+	response := toInvoiceResponse(inv, lines, 0)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -83,7 +85,7 @@ func (h *InvoiceHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	inv, lines, err := h.service.GetByID(r.Context(), organisationID, id)
+	inv, lines, amountPaid, err := h.service.GetByID(r.Context(), organisationID, id)
 	if err != nil {
 		if errors.Is(err, ErrInvoiceNotFound) {
 			http.Error(w, "invoice not found", http.StatusNotFound)
@@ -94,7 +96,97 @@ func (h *InvoiceHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := toInvoiceResponse(inv, lines)
+	response := toInvoiceResponse(inv, lines, amountPaid)
+
+	w.Header().Set("Content-Type", "application/json")
+
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+	}
+}
+
+// CreatePayment handles POST /invoices/{id}/payments?organisationId={organisationId}.
+func (h *InvoiceHandler) CreatePayment(w http.ResponseWriter, r *http.Request) {
+	organisationID, err := uuid.Parse(r.URL.Query().Get("organisationId"))
+	if err != nil {
+		http.Error(w, "invalid or missing organisationId", http.StatusBadRequest)
+		return
+	}
+
+	invoiceID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "invalid invoice ID", http.StatusBadRequest)
+		return
+	}
+
+	var body CreatePaymentHTTPRequest
+
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	request, err := body.toCreatePaymentRequest()
+	if err != nil {
+		http.Error(w, "invalid payment date", http.StatusBadRequest)
+		return
+	}
+
+	payment, _, err := h.service.CreatePayment(r.Context(), organisationID, invoiceID, request)
+	if err != nil {
+		if errors.Is(err, ErrInvoiceNotFound) {
+			http.Error(w, "invoice not found", http.StatusNotFound)
+			return
+		}
+
+		if errors.Is(err, ErrPaymentAmountInvalid) || errors.Is(err, ErrPaymentExceedsOutstanding) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		http.Error(w, "failed to create payment", http.StatusInternalServerError)
+		return
+	}
+
+	response := toPaymentResponse(payment)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+	}
+}
+
+// GetPayments handles GET /invoices/{id}/payments?organisationId={organisationId}.
+func (h *InvoiceHandler) GetPayments(w http.ResponseWriter, r *http.Request) {
+	organisationID, err := uuid.Parse(r.URL.Query().Get("organisationId"))
+	if err != nil {
+		http.Error(w, "invalid or missing organisationId", http.StatusBadRequest)
+		return
+	}
+
+	invoiceID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "invalid invoice ID", http.StatusBadRequest)
+		return
+	}
+
+	payments, err := h.service.GetPayments(r.Context(), organisationID, invoiceID)
+	if err != nil {
+		if errors.Is(err, ErrInvoiceNotFound) {
+			http.Error(w, "invoice not found", http.StatusNotFound)
+			return
+		}
+
+		http.Error(w, "failed to get payments", http.StatusInternalServerError)
+		return
+	}
+
+	response := make([]PaymentResponse, 0, len(payments))
+	for _, p := range payments {
+		response = append(response, toPaymentResponse(p))
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 
