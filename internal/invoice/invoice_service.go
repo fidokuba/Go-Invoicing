@@ -1,0 +1,347 @@
+package invoice
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
+	"go-invoicing/internal/customer"
+	"go-invoicing/internal/product"
+)
+
+var (
+	// Customer reference.
+	ErrInvoiceCustomerIDRequired = errors.New("invoice customer ID is required")
+	ErrInvoiceCustomerIDInvalid  = errors.New("invoice customer ID is not a valid UUID")
+	ErrInvoiceCustomerNotFound   = errors.New("invoice customer not found")
+
+	// Lines.
+	ErrInvoiceNoLines = errors.New("invoice must have at least one line")
+
+	// Dates.
+	ErrInvoiceIssueDateRequired      = errors.New("invoice issue date is required")
+	ErrInvoiceIssueDateInvalid       = errors.New("invoice issue date is not a valid date")
+	ErrInvoiceDueDateRequired        = errors.New("invoice due date is required")
+	ErrInvoiceDueDateInvalid         = errors.New("invoice due date is not a valid date")
+	ErrInvoiceDueDateBeforeIssueDate = errors.New("invoice due date cannot be before the issue date")
+
+	// Per-line validation.
+	ErrInvoiceLineDescriptionRequired = errors.New("invoice line description is required")
+	ErrInvoiceLineQuantityInvalid     = errors.New("invoice line quantity must be greater than zero")
+	ErrInvoiceLineUnitPriceNegative   = errors.New("invoice line unit price cannot be negative")
+	ErrInvoiceLineVATRateNegative     = errors.New("invoice line VAT rate cannot be negative")
+	ErrInvoiceLineProductIDInvalid    = errors.New("invoice line product ID is not a valid UUID")
+	ErrInvoiceLineProductNotFound     = errors.New("invoice line product not found")
+)
+
+// TxBeginner starts a new transaction. *pgxpool.Pool satisfies this
+// directly — its Begin method already has this exact signature — so
+// InvoiceService can depend on this narrow interface (and be given a fake
+// in tests) instead of the whole pool API. Using it is what lets the
+// service itself own the transaction's Begin/Commit/Rollback calls, rather
+// than the repository.
+type TxBeginner interface {
+	Begin(ctx context.Context) (pgx.Tx, error)
+}
+
+// InvoiceService sits between the HTTP layer and the invoice repository.
+// It also depends on the CustomerRepository and ProductRepository
+// interfaces (not concrete implementations) solely to check — within the
+// requesting organisation — that a referenced customer or product exists;
+// it does not otherwise read or mutate customer/product data, and it
+// never reads a product's price.
+type InvoiceService struct {
+	repository         InvoiceRepository
+	customerRepository customer.CustomerRepository
+	productRepository  product.ProductRepository
+	txBeginner         TxBeginner
+}
+
+func NewInvoiceService(
+	repository InvoiceRepository,
+	customerRepository customer.CustomerRepository,
+	productRepository product.ProductRepository,
+	txBeginner TxBeginner,
+) *InvoiceService {
+	return &InvoiceService{
+		repository:         repository,
+		customerRepository: customerRepository,
+		productRepository:  productRepository,
+		txBeginner:         txBeginner,
+	}
+}
+
+// validatedLine is the result of structurally validating one
+// CreateInvoiceLineRequest, before any database lookup.
+type validatedLine struct {
+	productID   *uuid.UUID
+	description string
+	quantity    float64
+	unitPrice   int64
+	vatRate     float64
+}
+
+// Create validates the request, verifies the referenced customer (and any
+// referenced products) exist within the organisation, computes every
+// line's VAT amount and total plus the invoice's subtotal/VAT total/total,
+// and persists the invoice and its lines. The new invoice is returned
+// together with its lines.
+//
+// Structural validation (presence, format, per-field rules) runs before
+// any database lookup, so a malformed request never reaches the database.
+//
+// The invoice number generated here is a placeholder — a fixed,
+// unique-by-construction value derived from the invoice's own ID — not
+// the sequential, concurrency-safe number a later milestone will
+// introduce.
+//
+// The invoice row and every one of its lines are written inside a single
+// database transaction: if any insert fails, or if the commit itself
+// fails, everything from this call is rolled back — no partial invoice is
+// ever left behind.
+func (s *InvoiceService) Create(
+	ctx context.Context,
+	organisationID uuid.UUID,
+	request CreateInvoiceRequest,
+) (*Invoice, []*Line, error) {
+	customerID, err := parseRequiredUUID(request.CustomerID, ErrInvoiceCustomerIDRequired, ErrInvoiceCustomerIDInvalid)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if len(request.Lines) == 0 {
+		return nil, nil, ErrInvoiceNoLines
+	}
+
+	issueDate, err := parseRequiredDate(request.IssueDate, ErrInvoiceIssueDateRequired, ErrInvoiceIssueDateInvalid)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	dueDate, err := parseRequiredDate(request.DueDate, ErrInvoiceDueDateRequired, ErrInvoiceDueDateInvalid)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if dueDate.Before(issueDate) {
+		return nil, nil, ErrInvoiceDueDateBeforeIssueDate
+	}
+
+	validated, err := validateLines(request.Lines)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Existence checks happen only after every structural rule above has
+	// passed, so a malformed request never triggers a database lookup.
+	if _, err := s.customerRepository.GetByID(ctx, organisationID, customerID); err != nil {
+		if errors.Is(err, customer.ErrCustomerNotFound) {
+			return nil, nil, ErrInvoiceCustomerNotFound
+		}
+
+		return nil, nil, fmt.Errorf("look up invoice customer: %w", err)
+	}
+
+	for _, v := range validated {
+		if v.productID == nil {
+			continue
+		}
+
+		if _, err := s.productRepository.GetByID(ctx, organisationID, *v.productID); err != nil {
+			if errors.Is(err, product.ErrProductNotFound) {
+				return nil, nil, ErrInvoiceLineProductNotFound
+			}
+
+			return nil, nil, fmt.Errorf("look up invoice line product: %w", err)
+		}
+	}
+
+	invoiceID := uuid.New()
+
+	lines := make([]*Line, 0, len(validated))
+	for _, v := range validated {
+		vatAmount, total := calculateLineAmounts(v.quantity, v.unitPrice, v.vatRate)
+
+		lines = append(lines, &Line{
+			ID:          uuid.New(),
+			InvoiceID:   invoiceID,
+			ProductID:   v.productID,
+			Description: v.description,
+			Quantity:    v.quantity,
+			UnitPrice:   v.unitPrice,
+			VATRate:     v.vatRate,
+			VATAmount:   vatAmount,
+			Total:       total,
+		})
+	}
+
+	subtotal, vatTotal, total := sumInvoiceTotals(lines)
+
+	inv := &Invoice{
+		ID:             invoiceID,
+		OrganisationID: organisationID,
+		CustomerID:     customerID,
+		InvoiceNumber:  placeholderInvoiceNumber(invoiceID),
+		IssueDate:      issueDate,
+		DueDate:        dueDate,
+		Subtotal:       subtotal,
+		VATTotal:       vatTotal,
+		Total:          total,
+		Status:         "draft",
+		Notes:          nilIfEmpty(request.Notes),
+	}
+
+	// BEGIN — everything from here to the matching Commit/Rollback below
+	// is one atomic unit: the invoice INSERT and every line INSERT either
+	// all succeed together or are all undone together.
+	tx, err := s.txBeginner.Begin(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("begin invoice transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	txRepository := s.repository.WithTx(tx)
+
+	if err := txRepository.Create(ctx, inv); err != nil {
+		return nil, nil, err
+	}
+
+	if err := txRepository.CreateLines(ctx, lines); err != nil {
+		return nil, nil, err
+	}
+
+	// COMMIT — only reached once the invoice and every line inserted
+	// without error.
+	if err := tx.Commit(ctx); err != nil {
+		return nil, nil, fmt.Errorf("commit invoice transaction: %w", err)
+	}
+
+	return inv, lines, nil
+}
+
+// GetByID delegates the invoice lookup to the repository (organisation
+// scoping happens there) and also fetches its lines.
+func (s *InvoiceService) GetByID(
+	ctx context.Context,
+	organisationID uuid.UUID,
+	invoiceID uuid.UUID,
+) (*Invoice, []*Line, error) {
+	inv, err := s.repository.GetByID(ctx, organisationID, invoiceID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	lines, err := s.repository.GetLinesByInvoiceID(ctx, invoiceID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return inv, lines, nil
+}
+
+// validateLines applies every per-line structural rule (description,
+// quantity, unit price, VAT rate, product ID format) to every requested
+// line, stopping at the first failure. It does not touch the database —
+// product existence is checked separately, after every line has passed
+// this validation.
+func validateLines(requests []CreateInvoiceLineRequest) ([]validatedLine, error) {
+	validated := make([]validatedLine, 0, len(requests))
+
+	for _, lineRequest := range requests {
+		description := strings.TrimSpace(lineRequest.Description)
+		if description == "" {
+			return nil, ErrInvoiceLineDescriptionRequired
+		}
+
+		if lineRequest.Quantity <= 0 {
+			return nil, ErrInvoiceLineQuantityInvalid
+		}
+
+		if lineRequest.UnitPrice < 0 {
+			return nil, ErrInvoiceLineUnitPriceNegative
+		}
+
+		if lineRequest.VATRate < 0 {
+			return nil, ErrInvoiceLineVATRateNegative
+		}
+
+		var productID *uuid.UUID
+		if lineRequest.ProductID != nil {
+			if trimmed := strings.TrimSpace(*lineRequest.ProductID); trimmed != "" {
+				parsed, err := uuid.Parse(trimmed)
+				if err != nil {
+					return nil, ErrInvoiceLineProductIDInvalid
+				}
+
+				productID = &parsed
+			}
+		}
+
+		validated = append(validated, validatedLine{
+			productID:   productID,
+			description: description,
+			quantity:    lineRequest.Quantity,
+			unitPrice:   lineRequest.UnitPrice,
+			vatRate:     lineRequest.VATRate,
+		})
+	}
+
+	return validated, nil
+}
+
+// parseRequiredUUID trims and parses a required UUID string, returning
+// requiredErr when blank and invalidErr when malformed.
+func parseRequiredUUID(value string, requiredErr, invalidErr error) (uuid.UUID, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return uuid.Nil, requiredErr
+	}
+
+	parsed, err := uuid.Parse(trimmed)
+	if err != nil {
+		return uuid.Nil, invalidErr
+	}
+
+	return parsed, nil
+}
+
+// parseRequiredDate trims and parses a required "YYYY-MM-DD" date string,
+// returning requiredErr when blank and invalidErr when malformed.
+func parseRequiredDate(value string, requiredErr, invalidErr error) (time.Time, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return time.Time{}, requiredErr
+	}
+
+	parsed, err := time.Parse(dateLayout, trimmed)
+	if err != nil {
+		return time.Time{}, invalidErr
+	}
+
+	return parsed, nil
+}
+
+// placeholderInvoiceNumber derives a guaranteed-unique invoice number from
+// the invoice's own ID. It is intentionally not sequential or
+// human-friendly — a later milestone replaces this with concurrency-safe
+// sequential numbering (see administration.Settings.NextInvoiceNumber,
+// which exists today but has no repository/service wired up yet).
+func placeholderInvoiceNumber(invoiceID uuid.UUID) string {
+	return "INV-" + invoiceID.String()
+}
+
+// nilIfEmpty converts a blank/whitespace-only string into a nil pointer so
+// an optional field is stored as SQL NULL rather than an empty string.
+func nilIfEmpty(value string) *string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+
+	return &value
+}

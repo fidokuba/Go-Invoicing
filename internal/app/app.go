@@ -6,6 +6,7 @@ import (
 
 	admin "go-invoicing/internal/administration"
 	"go-invoicing/internal/customer"
+	"go-invoicing/internal/invoice"
 	"go-invoicing/internal/product"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -48,6 +49,19 @@ func (a *App) Handler() http.Handler {
 
 	mux.HandleFunc("POST /products", productHandler.Create)
 	mux.HandleFunc("GET /products/{id}", productHandler.GetByID)
+
+	// Wire the invoice dependency chain: pool -> repository -> service -> handler.
+	// The invoice service also depends on the customer and product
+	// repositories (already constructed above) to check, within the
+	// requesting organisation, that a referenced customer/product exists,
+	// and on the pool itself to begin the transaction that makes invoice
+	// creation atomic (a.db satisfies invoice.TxBeginner directly).
+	invoiceRepository := invoice.NewPostgresInvoiceRepository(a.db)
+	invoiceService := invoice.NewInvoiceService(invoiceRepository, customerRepository, productRepository, a.db)
+	invoiceHandler := invoice.NewInvoiceHandler(invoiceService)
+
+	mux.HandleFunc("POST /invoices", invoiceHandler.Create)
+	mux.HandleFunc("GET /invoices/{id}", invoiceHandler.GetByID)
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {

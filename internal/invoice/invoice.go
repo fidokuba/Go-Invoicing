@@ -4,27 +4,30 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"gorm.io/gorm"
 )
 
+// Notes is a pointer because that column is nullable in the invoices
+// table; every other field here is NOT NULL. DeletedAt is a pointer and
+// stays nil until the invoice is soft-deleted.
+//
+// VATTotal (not VatTotal) matches Go's convention of keeping acronyms
+// upper-cased, and matches the field name used elsewhere in this
+// milestone's domain/DTO naming.
 type Invoice struct {
-	ID             uuid.UUID `gorm:"primaryKey"`
-	OrganisationID uuid.UUID `gorm:"index"`
-	CustomerID     uuid.UUID `gorm:"index"`
-	InvoiceNumber  string    `gorm:"uniqueIndex:idx_invoice_org"`
+	ID             uuid.UUID
+	OrganisationID uuid.UUID
+	CustomerID     uuid.UUID
+	InvoiceNumber  string
 	IssueDate      time.Time
 	DueDate        time.Time
 	Subtotal       int64
-	VatTotal       int64
+	VATTotal       int64
 	Total          int64
 	Status         string // draft, sent, paid, overdue, cancelled
-	Notes          string `gorm:"type:text"`
+	Notes          *string
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
-	DeletedAt      gorm.DeletedAt `gorm:"index"`
-
-	Lines    []Line    `gorm:"foreignKey:InvoiceID"`
-	Payments []Payment `gorm:"foreignKey:InvoiceID"`
+	DeletedAt      *time.Time
 }
 
 func (i *Invoice) TableName() string {
@@ -33,12 +36,4 @@ func (i *Invoice) TableName() string {
 
 func (i *Invoice) IsOverdue() bool {
 	return i.Status != "paid" && time.Now().After(i.DueDate)
-}
-
-func (i *Invoice) RemainingBalance() int64 {
-	paid := int64(0)
-	for _, p := range i.Payments {
-		paid += p.Amount
-	}
-	return i.Total - paid
 }
