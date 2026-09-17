@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	admin "go-invoicing/internal/administration"
 	"go-invoicing/internal/customer"
 	"go-invoicing/internal/product"
 )
@@ -108,6 +109,36 @@ func createTestProduct(t *testing.T, db *pgxpool.Pool, organisationID uuid.UUID)
 	})
 
 	return p.ID
+}
+
+// createTestSettings uses the real administration package (a production
+// dependency of the invoice service, for invoice number allocation) to
+// create a settings row and register cleanup for it. Only tests that
+// exercise InvoiceService.Create end-to-end need this — the repository's
+// own tests below (Create/CreateLines called directly) never touch
+// settings at all.
+func createTestSettings(t *testing.T, db *pgxpool.Pool, organisationID uuid.UUID) *admin.Settings {
+	t.Helper()
+
+	repository := admin.NewPostgresSettingsRepository(db)
+	s := &admin.Settings{
+		ID:             uuid.New(),
+		OrganisationID: organisationID,
+		InvoicePrefix:  "INV-",
+		InvoiceNumber:  0,
+		Currency:       "GBP",
+		PaymentTerms:   30,
+	}
+
+	if err := repository.Create(context.Background(), s); err != nil {
+		t.Fatalf("create test settings: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_, _ = db.Exec(context.Background(), "DELETE FROM settings WHERE id = $1", s.ID)
+	})
+
+	return s
 }
 
 func TestPostgresInvoiceRepository_CreateAndGetByID(t *testing.T) {

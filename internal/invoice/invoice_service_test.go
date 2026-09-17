@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	admin "go-invoicing/internal/administration"
 	"go-invoicing/internal/customer"
 	"go-invoicing/internal/product"
 )
@@ -194,18 +195,89 @@ func (f *fakeProductRepository) GetByID(ctx context.Context, organisationID, pro
 	return &p, nil
 }
 
+// fakeSettingsRepository is a minimal in-memory admin.SettingsRepository
+// used to test the service's invoice-number-allocation orchestration
+// without touching PostgreSQL. Like fakeInvoiceRepository, WithTx ignores
+// its tx argument and returns the same fake, so it has no real
+// transactional/rollback semantics of its own — that guarantee (that a
+// rolled-back transaction leaves the allocated number un-consumed) is
+// proven separately against real PostgreSQL in invoice_transaction_test.go.
+type fakeSettingsRepository struct {
+	settings map[uuid.UUID]admin.Settings
+
+	getForUpdateErr        error
+	updateInvoiceNumberErr error
+}
+
+func newFakeSettingsRepository() *fakeSettingsRepository {
+	return &fakeSettingsRepository{settings: make(map[uuid.UUID]admin.Settings)}
+}
+
+func (f *fakeSettingsRepository) add(organisationID uuid.UUID) {
+	f.settings[organisationID] = admin.Settings{
+		ID:             uuid.New(),
+		OrganisationID: organisationID,
+		InvoicePrefix:  "INV-",
+		InvoiceNumber:  0,
+		Currency:       "GBP",
+		PaymentTerms:   30,
+	}
+}
+
+func (f *fakeSettingsRepository) WithTx(tx pgx.Tx) admin.SettingsRepository {
+	return f
+}
+
+func (f *fakeSettingsRepository) Create(ctx context.Context, settings *admin.Settings) error {
+	f.settings[settings.OrganisationID] = *settings
+	return nil
+}
+
+func (f *fakeSettingsRepository) GetByOrganisationID(ctx context.Context, organisationID uuid.UUID) (*admin.Settings, error) {
+	return f.get(organisationID)
+}
+
+func (f *fakeSettingsRepository) GetForUpdate(ctx context.Context, organisationID uuid.UUID) (*admin.Settings, error) {
+	if f.getForUpdateErr != nil {
+		return nil, f.getForUpdateErr
+	}
+	return f.get(organisationID)
+}
+
+func (f *fakeSettingsRepository) get(organisationID uuid.UUID) (*admin.Settings, error) {
+	s, ok := f.settings[organisationID]
+	if !ok {
+		return nil, admin.ErrSettingsNotFound
+	}
+	return &s, nil
+}
+
+func (f *fakeSettingsRepository) UpdateInvoiceNumber(ctx context.Context, organisationID uuid.UUID, invoiceNumber int) error {
+	if f.updateInvoiceNumberErr != nil {
+		return f.updateInvoiceNumberErr
+	}
+	s, ok := f.settings[organisationID]
+	if !ok {
+		return admin.ErrSettingsNotFound
+	}
+	s.InvoiceNumber = invoiceNumber
+	f.settings[organisationID] = s
+	return nil
+}
+
 // testFixture bundles a service with fakes pre-seeded with a valid
-// customer and product under one organisation, for tests that need a
-// happy-path reference to build requests around. repository and tx are
-// exposed so individual tests can inject a persistence failure or inspect
-// whether Commit/Rollback was called.
+// customer, product and settings row under one organisation, for tests
+// that need a happy-path reference to build requests around. repository,
+// settingsRepository and tx are exposed so individual tests can inject a
+// persistence failure or inspect whether Commit/Rollback was called.
 type testFixture struct {
-	service        *InvoiceService
-	repository     *fakeInvoiceRepository
-	tx             *fakeTx
-	organisationID uuid.UUID
-	customerID     uuid.UUID
-	productID      uuid.UUID
+	service            *InvoiceService
+	repository         *fakeInvoiceRepository
+	settingsRepository *fakeSettingsRepository
+	tx                 *fakeTx
+	organisationID     uuid.UUID
+	customerID         uuid.UUID
+	productID          uuid.UUID
 }
 
 func newTestFixture() *testFixture {
@@ -217,18 +289,22 @@ func newTestFixture() *testFixture {
 	productID := products.add(organisationID)
 
 	repository := newFakeInvoiceRepository()
+	settingsRepository := newFakeSettingsRepository()
+	settingsRepository.add(organisationID)
+
 	tx := &fakeTx{}
 	txBeginner := &fakeTxBeginner{tx: tx}
 
-	service := NewInvoiceService(repository, customers, products, txBeginner)
+	service := NewInvoiceService(repository, customers, products, settingsRepository, txBeginner)
 
 	return &testFixture{
-		service:        service,
-		repository:     repository,
-		tx:             tx,
-		organisationID: organisationID,
-		customerID:     customerID,
-		productID:      productID,
+		service:            service,
+		repository:         repository,
+		settingsRepository: settingsRepository,
+		tx:                 tx,
+		organisationID:     organisationID,
+		customerID:         customerID,
+		productID:          productID,
 	}
 }
 
@@ -728,6 +804,52 @@ func TestInvoiceService_Create_RollsBackOnLineInsertFailure(t *testing.T) {
 
 	if f.tx.committed {
 		t.Error("expected the transaction not to be committed")
+	}
+}
+
+func TestInvoiceService_Create_SettingsNotFound(t *testing.T) {
+	f := newTestFixture()
+	// A customer/product exist under this organisation, but no settings
+	// row does — simulating an organisation that predates automatic
+	// settings provisioning, or one whose settings row was never created.
+	f.settingsRepository = newFakeSettingsRepository()
+	// Same package as InvoiceService, so the unexported field can be
+	// swapped directly rather than rebuilding the whole fixture.
+	f.service.settingsRepository = f.settingsRepository
+	request := validRequest(f.customerID)
+
+	_, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	if !errors.Is(err, ErrInvoiceSettingsNotFound) {
+		t.Fatalf("expected ErrInvoiceSettingsNotFound, got %v", err)
+	}
+
+	if !f.tx.rolledBack {
+		t.Error("expected the transaction to be rolled back")
+	}
+}
+
+func TestInvoiceService_Create_RollsBackOnSettingsUpdateFailure(t *testing.T) {
+	f := newTestFixture()
+	f.settingsRepository.updateInvoiceNumberErr = errors.New("connection reset by peer")
+	request := validRequest(f.customerID)
+
+	_, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+
+	if !f.tx.rolledBack {
+		t.Error("expected the transaction to be rolled back")
+	}
+
+	if f.tx.committed {
+		t.Error("expected the transaction not to be committed")
+	}
+
+	// The repository's Create/CreateLines must never even be attempted
+	// once settings allocation has failed.
+	if len(f.repository.invoices) != 0 {
+		t.Error("expected no invoice to have been created")
 	}
 }
 

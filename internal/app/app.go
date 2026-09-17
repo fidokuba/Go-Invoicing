@@ -26,9 +26,12 @@ func (a *App) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	// Wire the organisation dependency chain:
-	// pool -> repository -> service -> handler.
+	// pool -> repository -> service -> handler. OrganisationService also
+	// depends on the settings repository to provision a default settings
+	// row for every new organisation (see OrganisationService.Create).
 	organisationRepository := admin.NewPostgresOrganisationRepository(a.db)
-	organisationService := admin.NewOrganisationService(organisationRepository)
+	settingsRepository := admin.NewPostgresSettingsRepository(a.db)
+	organisationService := admin.NewOrganisationService(organisationRepository, settingsRepository)
 	organisationHandler := admin.NewOrganisationHandler(organisationService)
 
 	mux.HandleFunc("POST /organisations", organisationHandler.Create)
@@ -54,10 +57,12 @@ func (a *App) Handler() http.Handler {
 	// The invoice service also depends on the customer and product
 	// repositories (already constructed above) to check, within the
 	// requesting organisation, that a referenced customer/product exists,
-	// and on the pool itself to begin the transaction that makes invoice
-	// creation atomic (a.db satisfies invoice.TxBeginner directly).
+	// on the settings repository (also constructed above) to allocate
+	// each invoice's sequential number, and on the pool itself to begin
+	// the transaction that makes invoice creation atomic (a.db satisfies
+	// invoice.TxBeginner directly).
 	invoiceRepository := invoice.NewPostgresInvoiceRepository(a.db)
-	invoiceService := invoice.NewInvoiceService(invoiceRepository, customerRepository, productRepository, a.db)
+	invoiceService := invoice.NewInvoiceService(invoiceRepository, customerRepository, productRepository, settingsRepository, a.db)
 	invoiceHandler := invoice.NewInvoiceHandler(invoiceService)
 
 	mux.HandleFunc("POST /invoices", invoiceHandler.Create)

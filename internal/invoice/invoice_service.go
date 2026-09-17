@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	admin "go-invoicing/internal/administration"
 	"go-invoicing/internal/customer"
 	"go-invoicing/internal/product"
 )
@@ -37,6 +39,9 @@ var (
 	ErrInvoiceLineVATRateNegative     = errors.New("invoice line VAT rate cannot be negative")
 	ErrInvoiceLineProductIDInvalid    = errors.New("invoice line product ID is not a valid UUID")
 	ErrInvoiceLineProductNotFound     = errors.New("invoice line product not found")
+
+	// Invoice number allocation.
+	ErrInvoiceSettingsNotFound = errors.New("organisation settings not found")
 )
 
 // TxBeginner starts a new transaction. *pgxpool.Pool satisfies this
@@ -54,11 +59,13 @@ type TxBeginner interface {
 // interfaces (not concrete implementations) solely to check — within the
 // requesting organisation — that a referenced customer or product exists;
 // it does not otherwise read or mutate customer/product data, and it
-// never reads a product's price.
+// never reads a product's price. It depends on SettingsRepository to
+// allocate each invoice's sequential number.
 type InvoiceService struct {
 	repository         InvoiceRepository
 	customerRepository customer.CustomerRepository
 	productRepository  product.ProductRepository
+	settingsRepository admin.SettingsRepository
 	txBeginner         TxBeginner
 }
 
@@ -66,12 +73,14 @@ func NewInvoiceService(
 	repository InvoiceRepository,
 	customerRepository customer.CustomerRepository,
 	productRepository product.ProductRepository,
+	settingsRepository admin.SettingsRepository,
 	txBeginner TxBeginner,
 ) *InvoiceService {
 	return &InvoiceService{
 		repository:         repository,
 		customerRepository: customerRepository,
 		productRepository:  productRepository,
+		settingsRepository: settingsRepository,
 		txBeginner:         txBeginner,
 	}
 }
@@ -95,15 +104,20 @@ type validatedLine struct {
 // Structural validation (presence, format, per-field rules) runs before
 // any database lookup, so a malformed request never reaches the database.
 //
-// The invoice number generated here is a placeholder — a fixed,
-// unique-by-construction value derived from the invoice's own ID — not
-// the sequential, concurrency-safe number a later milestone will
-// introduce.
+// The invoice number is allocated from the organisation's settings row
+// (InvoicePrefix + Settings.NextInvoiceNumber) inside the same
+// transaction as the invoice/line inserts, after taking a FOR UPDATE lock
+// on that settings row. Holding the lock for the rest of the transaction
+// is what makes concurrent invoice creation for the same organisation
+// safe: a second, concurrent call blocks at the lock acquisition step
+// until the first transaction commits or rolls back, so two invoices for
+// the same organisation can never be allocated the same number.
 //
-// The invoice row and every one of its lines are written inside a single
-// database transaction: if any insert fails, or if the commit itself
-// fails, everything from this call is rolled back — no partial invoice is
-// ever left behind.
+// The invoice row, every one of its lines, and the settings update are
+// all written inside that single database transaction: if any of them
+// fails, or if the commit itself fails, everything from this call is
+// rolled back — including the invoice number allocation — so a failed
+// creation never consumes a number.
 func (s *InvoiceService) Create(
 	ctx context.Context,
 	organisationID uuid.UUID,
@@ -182,11 +196,42 @@ func (s *InvoiceService) Create(
 
 	subtotal, vatTotal, total := sumInvoiceTotals(lines)
 
+	// BEGIN — everything from here to the matching Commit/Rollback below
+	// is one atomic unit: locking and incrementing the settings row, the
+	// invoice INSERT, and every line INSERT either all succeed together
+	// or are all undone together.
+	tx, err := s.txBeginner.Begin(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("begin invoice transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	txSettingsRepository := s.settingsRepository.WithTx(tx)
+
+	// FOR UPDATE: locks the settings row until this transaction commits
+	// or rolls back, so a concurrent Create for the same organisation
+	// cannot read the same "last allocated number" this call is about to
+	// increment.
+	settings, err := txSettingsRepository.GetForUpdate(ctx, organisationID)
+	if err != nil {
+		if errors.Is(err, admin.ErrSettingsNotFound) {
+			return nil, nil, ErrInvoiceSettingsNotFound
+		}
+
+		return nil, nil, fmt.Errorf("lock organisation settings: %w", err)
+	}
+
+	allocatedNumber := settings.NextInvoiceNumber()
+
+	if err := txSettingsRepository.UpdateInvoiceNumber(ctx, organisationID, settings.InvoiceNumber); err != nil {
+		return nil, nil, fmt.Errorf("update organisation settings: %w", err)
+	}
+
 	inv := &Invoice{
 		ID:             invoiceID,
 		OrganisationID: organisationID,
 		CustomerID:     customerID,
-		InvoiceNumber:  placeholderInvoiceNumber(invoiceID),
+		InvoiceNumber:  settings.InvoicePrefix + strconv.Itoa(allocatedNumber),
 		IssueDate:      issueDate,
 		DueDate:        dueDate,
 		Subtotal:       subtotal,
@@ -195,15 +240,6 @@ func (s *InvoiceService) Create(
 		Status:         "draft",
 		Notes:          nilIfEmpty(request.Notes),
 	}
-
-	// BEGIN — everything from here to the matching Commit/Rollback below
-	// is one atomic unit: the invoice INSERT and every line INSERT either
-	// all succeed together or are all undone together.
-	tx, err := s.txBeginner.Begin(ctx)
-	if err != nil {
-		return nil, nil, fmt.Errorf("begin invoice transaction: %w", err)
-	}
-	defer tx.Rollback(ctx)
 
 	txRepository := s.repository.WithTx(tx)
 
@@ -215,8 +251,8 @@ func (s *InvoiceService) Create(
 		return nil, nil, err
 	}
 
-	// COMMIT — only reached once the invoice and every line inserted
-	// without error.
+	// COMMIT — only reached once the settings update, the invoice, and
+	// every line inserted without error.
 	if err := tx.Commit(ctx); err != nil {
 		return nil, nil, fmt.Errorf("commit invoice transaction: %w", err)
 	}
@@ -324,15 +360,6 @@ func parseRequiredDate(value string, requiredErr, invalidErr error) (time.Time, 
 	}
 
 	return parsed, nil
-}
-
-// placeholderInvoiceNumber derives a guaranteed-unique invoice number from
-// the invoice's own ID. It is intentionally not sequential or
-// human-friendly — a later milestone replaces this with concurrency-safe
-// sequential numbering (see administration.Settings.NextInvoiceNumber,
-// which exists today but has no repository/service wired up yet).
-func placeholderInvoiceNumber(invoiceID uuid.UUID) string {
-	return "INV-" + invoiceID.String()
 }
 
 // nilIfEmpty converts a blank/whitespace-only string into a nil pointer so

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // fakeOrganisationRepository is an in-memory OrganisationRepository used to
@@ -46,9 +47,68 @@ func (f *fakeOrganisationRepository) GetByID(ctx context.Context, id uuid.UUID) 
 	return &organisation, nil
 }
 
+// fakeSettingsRepository is an in-memory SettingsRepository used to test
+// OrganisationService's settings provisioning without touching
+// PostgreSQL. WithTx ignores its tx argument and returns the same fake —
+// it has no real transactional semantics of its own.
+type fakeSettingsRepository struct {
+	mu       sync.Mutex
+	settings map[uuid.UUID]Settings
+}
+
+func newFakeSettingsRepository() *fakeSettingsRepository {
+	return &fakeSettingsRepository{
+		settings: make(map[uuid.UUID]Settings),
+	}
+}
+
+func (f *fakeSettingsRepository) WithTx(tx pgx.Tx) SettingsRepository {
+	return f
+}
+
+func (f *fakeSettingsRepository) Create(ctx context.Context, settings *Settings) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.settings[settings.OrganisationID] = *settings
+	return nil
+}
+
+func (f *fakeSettingsRepository) GetByOrganisationID(ctx context.Context, organisationID uuid.UUID) (*Settings, error) {
+	return f.get(organisationID)
+}
+
+func (f *fakeSettingsRepository) GetForUpdate(ctx context.Context, organisationID uuid.UUID) (*Settings, error) {
+	return f.get(organisationID)
+}
+
+func (f *fakeSettingsRepository) get(organisationID uuid.UUID) (*Settings, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	s, ok := f.settings[organisationID]
+	if !ok {
+		return nil, ErrSettingsNotFound
+	}
+	return &s, nil
+}
+
+func (f *fakeSettingsRepository) UpdateInvoiceNumber(ctx context.Context, organisationID uuid.UUID, invoiceNumber int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	s, ok := f.settings[organisationID]
+	if !ok {
+		return ErrSettingsNotFound
+	}
+	s.InvoiceNumber = invoiceNumber
+	f.settings[organisationID] = s
+	return nil
+}
+
 func newTestHandler() *OrganisationHandler {
 	repository := newFakeOrganisationRepository()
-	service := NewOrganisationService(repository)
+	service := NewOrganisationService(repository, newFakeSettingsRepository())
 	return NewOrganisationHandler(service)
 }
 
@@ -113,7 +173,7 @@ func TestOrganisationHandler_Create_InvalidJSON(t *testing.T) {
 
 func TestOrganisationHandler_GetByID(t *testing.T) {
 	repository := newFakeOrganisationRepository()
-	service := NewOrganisationService(repository)
+	service := NewOrganisationService(repository, newFakeSettingsRepository())
 	handler := NewOrganisationHandler(service)
 
 	organisation, err := service.Create(context.Background(), "Acme Ltd")
