@@ -3,12 +3,13 @@ package admin
 import (
 	"time"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
 type Organisation struct {
-	ID         string `gorm:"primaryKey"`
-	Name       string `gorm:"index"`
+	ID         uuid.UUID `gorm:"primaryKey"`
+	Name       string    `gorm:"index"`
 	Email      string
 	Phone      string
 	Website    string

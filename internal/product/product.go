@@ -3,15 +3,16 @@ package product
 import (
 	"time"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
 type Product struct {
-	ID             string `gorm:"primaryKey"`
-	OrganisationID string `gorm:"index"`
-	Name           string `gorm:"index"`
-	Description    string `gorm:"type:text"`
-	SKU            string `gorm:"uniqueIndex:idx_product_org"`
+	ID             uuid.UUID `gorm:"primaryKey"`
+	OrganisationID uuid.UUID `gorm:"index"`
+	Name           string    `gorm:"index"`
+	Description    string    `gorm:"type:text"`
+	SKU            string    `gorm:"uniqueIndex:idx_product_org"`
 	Price          float64
 	Category       string
 	IsActive       bool

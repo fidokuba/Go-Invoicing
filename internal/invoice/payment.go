@@ -1,10 +1,14 @@
 package invoice
 
-import "time"
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
 
 type Payment struct {
-	ID            string `gorm:"primaryKey"`
-	InvoiceID     string `gorm:"index"`
+	ID            uuid.UUID `gorm:"primaryKey"`
+	InvoiceID     uuid.UUID `gorm:"index"`
 	Amount        int64
 	PaymentMethod string // cash, credit_card, bank_transfer, check
 	PaymentDate   time.Time

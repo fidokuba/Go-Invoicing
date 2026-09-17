@@ -1,11 +1,16 @@
 package invoice
 
-import "time"
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
 
 type Line struct {
-	ID          string `gorm:"primaryKey"`
-	InvoiceID   string `gorm:"index"`
-	ProductID   string `gorm:"index"`
+	ID        uuid.UUID `gorm:"primaryKey"`
+	InvoiceID uuid.UUID `gorm:"index"`
+	// Nullable: a line can describe free-text work with no product behind it.
+	ProductID   *uuid.UUID `gorm:"index"`
 	Description string
 	Quantity    float64
 	UnitPrice   int64

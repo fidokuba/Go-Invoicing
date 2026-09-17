@@ -3,14 +3,15 @@ package invoice
 import (
 	"time"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
 type Invoice struct {
-	ID             string `gorm:"primaryKey"`
-	OrganisationID string `gorm:"index"`
-	CustomerID     string `gorm:"index"`
-	InvoiceNumber  string `gorm:"uniqueIndex:idx_invoice_org"`
+	ID             uuid.UUID `gorm:"primaryKey"`
+	OrganisationID uuid.UUID `gorm:"index"`
+	CustomerID     uuid.UUID `gorm:"index"`
+	InvoiceNumber  string    `gorm:"uniqueIndex:idx_invoice_org"`
 	IssueDate      time.Time
 	DueDate        time.Time
 	Subtotal       int64

@@ -3,12 +3,13 @@ package admin
 import (
 	"time"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
 type User struct {
-	ID             string `gorm:"primaryKey"`
-	OrganisationID string `gorm:"index"`
+	ID             uuid.UUID `gorm:"primaryKey"`
+	OrganisationID uuid.UUID `gorm:"index"`
 	Name           string
 	Email          string `gorm:"uniqueIndex:idx_user_org"`
 	PasswordHash   string

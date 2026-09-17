@@ -3,13 +3,14 @@ package customer
 import (
 	"time"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
 type Customer struct {
-	ID             string `gorm:"primaryKey"`
-	OrganisationID string `gorm:"index"`
-	Name           string `gorm:"index"`
+	ID             uuid.UUID `gorm:"primaryKey"`
+	OrganisationID uuid.UUID `gorm:"index"`
+	Name           string    `gorm:"index"`
 	Email          string
 	Phone          string
 	CompanyName    string
