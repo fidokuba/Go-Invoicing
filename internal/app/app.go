@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 
+	admin "go-invoicing/internal/administration"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -19,6 +21,15 @@ func New(db *pgxpool.Pool) *App {
 // creates a /health edpoint to check if the server connection is ok
 func (a *App) Handler() http.Handler {
 	mux := http.NewServeMux()
+
+	// Wire the organisation dependency chain:
+	// pool -> repository -> service -> handler.
+	organisationRepository := admin.NewPostgresOrganisationRepository(a.db)
+	organisationService := admin.NewOrganisationService(organisationRepository)
+	organisationHandler := admin.NewOrganisationHandler(organisationService)
+
+	mux.HandleFunc("POST /organisations", organisationHandler.Create)
+	mux.HandleFunc("GET /organisations/{id}", organisationHandler.GetByID)
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
