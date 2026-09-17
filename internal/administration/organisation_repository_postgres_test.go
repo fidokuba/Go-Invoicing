@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 
@@ -54,5 +55,35 @@ func TestPostgresOrganisationRepository_CreateAndGetByID(t *testing.T) {
 
 	if created.Name != organisation.Name {
 		t.Errorf("expected name %q, got %q", organisation.Name, created.Name)
+	}
+}
+
+func TestPostgresOrganisationRepository_GetByID_NotFound(t *testing.T) {
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL is not set")
+	}
+
+	ctx := context.Background()
+
+	db, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("create database pool: %v", err)
+	}
+	defer db.Close()
+
+	repository := NewPostgresOrganisationRepository(db)
+
+	organisation, err := repository.GetByID(ctx, uuid.New())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	if !errors.Is(err, ErrOrganisationNotFound) {
+		t.Fatalf("expected ErrOrganisationNotFound, got %v", err)
+	}
+
+	if organisation != nil {
+		t.Errorf("expected nil organisation, got %+v", organisation)
 	}
 }

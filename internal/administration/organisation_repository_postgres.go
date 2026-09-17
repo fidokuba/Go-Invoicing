@@ -2,11 +2,19 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// ErrOrganisationNotFound is returned when a lookup finds no matching
+// organisation, as opposed to a genuine database failure. Callers above the
+// repository (service, handler) can use errors.Is to distinguish a 404 from
+// a 500.
+var ErrOrganisationNotFound = errors.New("organisation not found")
 
 // PostgresOrganisationRepository is the PostgreSQL-backed implementation of
 // OrganisationRepository. It holds a connection pool rather than creating one
@@ -124,6 +132,10 @@ func (r *PostgresOrganisationRepository) GetByID(
 		&organisation.DeletedAt,
 	)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrOrganisationNotFound
+		}
+
 		return nil, fmt.Errorf("get organisation by id: %w", err)
 	}
 
