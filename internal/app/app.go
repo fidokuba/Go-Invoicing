@@ -6,6 +6,7 @@ import (
 
 	admin "go-invoicing/internal/administration"
 	"go-invoicing/internal/customer"
+	"go-invoicing/internal/product"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -39,6 +40,14 @@ func (a *App) Handler() http.Handler {
 
 	mux.HandleFunc("POST /customers", customerHandler.Create)
 	mux.HandleFunc("GET /customers/{id}", customerHandler.GetByID)
+
+	// Wire the product dependency chain: pool -> repository -> service -> handler.
+	productRepository := product.NewPostgresProductRepository(a.db)
+	productService := product.NewProductService(productRepository)
+	productHandler := product.NewProductHandler(productService)
+
+	mux.HandleFunc("POST /products", productHandler.Create)
+	mux.HandleFunc("GET /products/{id}", productHandler.GetByID)
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
