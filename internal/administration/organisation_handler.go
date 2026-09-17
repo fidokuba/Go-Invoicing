@@ -25,22 +25,30 @@ func NewOrganisationHandler(
 
 // Create handles POST /organisations.
 func (h *OrganisationHandler) Create(w http.ResponseWriter, r *http.Request) {
-	var organisation Organisation
+	var request CreateOrganisationRequest
 
-	if err := json.NewDecoder(r.Body).Decode(&organisation); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	if err := h.service.Create(r.Context(), &organisation); err != nil {
+	organisation, err := h.service.Create(r.Context(), request.Name)
+	if err != nil {
+		if errors.Is(err, ErrOrganisationNameRequired) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
 		http.Error(w, "failed to create organisation", http.StatusInternalServerError)
 		return
 	}
 
+	response := toOrganisationResponse(organisation)
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 
-	if err := json.NewEncoder(w).Encode(organisation); err != nil {
+	if err := json.NewEncoder(w).Encode(response); err != nil {
 		http.Error(w, "failed to encode response", http.StatusInternalServerError)
 	}
 }
@@ -66,9 +74,11 @@ func (h *OrganisationHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	response := toOrganisationResponse(organisation)
+
 	w.Header().Set("Content-Type", "application/json")
 
-	if err := json.NewEncoder(w).Encode(organisation); err != nil {
+	if err := json.NewEncoder(w).Encode(response); err != nil {
 		http.Error(w, "failed to encode response", http.StatusInternalServerError)
 	}
 }
