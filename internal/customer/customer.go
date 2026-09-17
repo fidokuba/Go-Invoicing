@@ -4,21 +4,24 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"gorm.io/gorm"
 )
 
+// Email, Phone, CompanyName and TaxID are pointers because those columns
+// are nullable in the customers table; ID, OrganisationID, Name and Status
+// are NOT NULL. DeletedAt is a pointer and stays nil until the customer is
+// soft-deleted.
 type Customer struct {
-	ID             uuid.UUID `gorm:"primaryKey"`
-	OrganisationID uuid.UUID `gorm:"index"`
-	Name           string    `gorm:"index"`
-	Email          string
-	Phone          string
-	CompanyName    string
-	TaxID          string
+	ID             uuid.UUID
+	OrganisationID uuid.UUID
+	Name           string
+	Email          *string
+	Phone          *string
+	CompanyName    *string
+	TaxID          *string
 	Status         string // active, inactive, archived
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
-	DeletedAt      gorm.DeletedAt `gorm:"index"`
+	DeletedAt      *time.Time
 
 	Addresses []Address `gorm:"foreignKey:CustomerID"`
 }

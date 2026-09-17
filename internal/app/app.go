@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	admin "go-invoicing/internal/administration"
+	"go-invoicing/internal/customer"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -30,6 +31,14 @@ func (a *App) Handler() http.Handler {
 
 	mux.HandleFunc("POST /organisations", organisationHandler.Create)
 	mux.HandleFunc("GET /organisations/{id}", organisationHandler.GetByID)
+
+	// Wire the customer dependency chain: pool -> repository -> service -> handler.
+	customerRepository := customer.NewPostgresCustomerRepository(a.db)
+	customerService := customer.NewCustomerService(customerRepository)
+	customerHandler := customer.NewCustomerHandler(customerService)
+
+	mux.HandleFunc("POST /customers", customerHandler.Create)
+	mux.HandleFunc("GET /customers/{id}", customerHandler.GetByID)
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {

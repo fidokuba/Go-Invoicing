@@ -22,7 +22,12 @@ func TestPostgresOrganisationRepository_CreateAndGetByID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create database pool: %v", err)
 	}
-	defer db.Close()
+	// Registered via t.Cleanup (not a bare defer) so this runs after the
+	// row-delete cleanup below: t.Cleanup callbacks fire in last-added,
+	// first-called order, all of them after the test function's own
+	// defers have already run. A plain "defer db.Close()" here would close
+	// the pool before a later-registered t.Cleanup got a chance to use it.
+	t.Cleanup(func() { db.Close() })
 
 	repository := NewPostgresOrganisationRepository(db)
 
@@ -70,7 +75,7 @@ func TestPostgresOrganisationRepository_GetByID_NotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create database pool: %v", err)
 	}
-	defer db.Close()
+	t.Cleanup(func() { db.Close() })
 
 	repository := NewPostgresOrganisationRepository(db)
 
