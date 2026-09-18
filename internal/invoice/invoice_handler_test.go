@@ -9,10 +9,21 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+
+	admin "go-invoicing/internal/administration"
 )
 
 func newTestHandler(f *testFixture) *InvoiceHandler {
 	return NewInvoiceHandler(f.service)
+}
+
+// withAuthenticatedOrganisation attaches an AuthenticatedUser identity
+// scoped to organisationID to r, the way AuthMiddleware.RequireAuth would
+// have — these tests invoke the handler directly, bypassing the
+// middleware, so they must set up the same context it would have.
+func withAuthenticatedOrganisation(r *http.Request, organisationID uuid.UUID) *http.Request {
+	identity := admin.AuthenticatedUser{UserID: uuid.New(), OrganisationID: organisationID, Role: admin.UserRoleUser}
+	return r.WithContext(admin.WithAuthenticatedUser(r.Context(), identity))
 }
 
 func TestInvoiceHandler_Create(t *testing.T) {
@@ -27,7 +38,8 @@ func TestInvoiceHandler_Create(t *testing.T) {
 			{"description": "Consulting", "quantity": 1.5, "unitPrice": 1000, "vatRate": 20}
 		]
 	}`)
-	request := httptest.NewRequest(http.MethodPost, "/invoices?organisationId="+f.organisationID.String(), body)
+	request := httptest.NewRequest(http.MethodPost, "/invoices", body)
+	request = withAuthenticatedOrganisation(request, f.organisationID)
 	recorder := httptest.NewRecorder()
 
 	handler.Create(recorder, request)
@@ -70,12 +82,53 @@ func TestInvoiceHandler_Create(t *testing.T) {
 	}
 }
 
+// TestInvoiceHandler_Create_IgnoresOrganisationIdQueryParameter is the
+// crux Milestone 4 Part 4 regression test: a client supplying
+// ?organisationId=<some other organisation> must have zero effect — the
+// created invoice must belong to the authenticated organisation, not the
+// one named in the query string. f.customerID only exists under
+// f.organisationID, so if the query parameter were mistakenly honoured
+// this would fail with "customer not found" instead of succeeding.
+func TestInvoiceHandler_Create_IgnoresOrganisationIdQueryParameter(t *testing.T) {
+	f := newTestFixture()
+	handler := newTestHandler(f)
+	otherOrganisationID := uuid.New()
+
+	body := bytes.NewBufferString(`{
+		"customerId": "` + f.customerID.String() + `",
+		"issueDate": "2026-01-01",
+		"dueDate": "2026-01-31",
+		"lines": [
+			{"description": "Consulting", "quantity": 1, "unitPrice": 1000, "vatRate": 20}
+		]
+	}`)
+	request := httptest.NewRequest(http.MethodPost, "/invoices?organisationId="+otherOrganisationID.String(), body)
+	request = withAuthenticatedOrganisation(request, f.organisationID)
+	recorder := httptest.NewRecorder()
+
+	handler.Create(recorder, request)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("expected status %d (organisationId query parameter must be ignored), got %d (body: %s)", http.StatusCreated, recorder.Code, recorder.Body.String())
+	}
+
+	var response InvoiceResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if response.OrganisationID != f.organisationID.String() {
+		t.Errorf("expected the invoice to belong to the authenticated organisation %q, got %q", f.organisationID.String(), response.OrganisationID)
+	}
+}
+
 func TestInvoiceHandler_Create_InvalidJSON(t *testing.T) {
 	f := newTestFixture()
 	handler := newTestHandler(f)
 
 	body := bytes.NewBufferString(`{`)
-	request := httptest.NewRequest(http.MethodPost, "/invoices?organisationId="+f.organisationID.String(), body)
+	request := httptest.NewRequest(http.MethodPost, "/invoices", body)
+	request = withAuthenticatedOrganisation(request, f.organisationID)
 	recorder := httptest.NewRecorder()
 
 	handler.Create(recorder, request)
@@ -96,7 +149,8 @@ func TestInvoiceHandler_Create_ValidationFailure(t *testing.T) {
 		"dueDate": "2026-01-31",
 		"lines": []
 	}`)
-	request := httptest.NewRequest(http.MethodPost, "/invoices?organisationId="+f.organisationID.String(), body)
+	request := httptest.NewRequest(http.MethodPost, "/invoices", body)
+	request = withAuthenticatedOrganisation(request, f.organisationID)
 	recorder := httptest.NewRecorder()
 
 	handler.Create(recorder, request)
@@ -118,7 +172,8 @@ func TestInvoiceHandler_Create_CustomerNotFound(t *testing.T) {
 			{"description": "Consulting", "quantity": 1, "unitPrice": 1000, "vatRate": 20}
 		]
 	}`)
-	request := httptest.NewRequest(http.MethodPost, "/invoices?organisationId="+f.organisationID.String(), body)
+	request := httptest.NewRequest(http.MethodPost, "/invoices", body)
+	request = withAuthenticatedOrganisation(request, f.organisationID)
 	recorder := httptest.NewRecorder()
 
 	handler.Create(recorder, request)
@@ -128,7 +183,12 @@ func TestInvoiceHandler_Create_CustomerNotFound(t *testing.T) {
 	}
 }
 
-func TestInvoiceHandler_Create_MissingOrganisationID(t *testing.T) {
+// TestInvoiceHandler_Create_MissingAuthenticatedContext proves Create
+// fails closed (401) when invoked without going through
+// AuthMiddleware.RequireAuth — replacing the old
+// TestInvoiceHandler_Create_MissingOrganisationID (400), since there is
+// no longer an organisationId query parameter to be missing.
+func TestInvoiceHandler_Create_MissingAuthenticatedContext(t *testing.T) {
 	f := newTestFixture()
 	handler := newTestHandler(f)
 
@@ -145,8 +205,8 @@ func TestInvoiceHandler_Create_MissingOrganisationID(t *testing.T) {
 
 	handler.Create(recorder, request)
 
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusBadRequest, recorder.Code, recorder.Body.String())
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusUnauthorized, recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -160,8 +220,9 @@ func TestInvoiceHandler_GetByID(t *testing.T) {
 		t.Fatalf("create invoice: %v", err)
 	}
 
-	httpRequest := httptest.NewRequest(http.MethodGet, "/invoices/"+created.ID.String()+"?organisationId="+f.organisationID.String(), nil)
+	httpRequest := httptest.NewRequest(http.MethodGet, "/invoices/"+created.ID.String(), nil)
 	httpRequest.SetPathValue("id", created.ID.String())
+	httpRequest = withAuthenticatedOrganisation(httpRequest, f.organisationID)
 	recorder := httptest.NewRecorder()
 
 	handler.GetByID(recorder, httpRequest)
@@ -212,8 +273,9 @@ func TestInvoiceHandler_GetByID_WithPayments(t *testing.T) {
 		t.Fatalf("create payment: %v", err)
 	}
 
-	httpRequest := httptest.NewRequest(http.MethodGet, "/invoices/"+created.ID.String()+"?organisationId="+f.organisationID.String(), nil)
+	httpRequest := httptest.NewRequest(http.MethodGet, "/invoices/"+created.ID.String(), nil)
 	httpRequest.SetPathValue("id", created.ID.String())
+	httpRequest = withAuthenticatedOrganisation(httpRequest, f.organisationID)
 	recorder := httptest.NewRecorder()
 
 	handler.GetByID(recorder, httpRequest)
@@ -256,8 +318,9 @@ func TestInvoiceHandler_GetByID_MultiplePayments(t *testing.T) {
 		}
 	}
 
-	httpRequest := httptest.NewRequest(http.MethodGet, "/invoices/"+created.ID.String()+"?organisationId="+f.organisationID.String(), nil)
+	httpRequest := httptest.NewRequest(http.MethodGet, "/invoices/"+created.ID.String(), nil)
 	httpRequest.SetPathValue("id", created.ID.String())
+	httpRequest = withAuthenticatedOrganisation(httpRequest, f.organisationID)
 	recorder := httptest.NewRecorder()
 
 	handler.GetByID(recorder, httpRequest)
@@ -299,8 +362,9 @@ func TestInvoiceHandler_GetByID_FullyPaid_OutstandingIsZero(t *testing.T) {
 		t.Fatalf("create payment: %v", err)
 	}
 
-	httpRequest := httptest.NewRequest(http.MethodGet, "/invoices/"+created.ID.String()+"?organisationId="+f.organisationID.String(), nil)
+	httpRequest := httptest.NewRequest(http.MethodGet, "/invoices/"+created.ID.String(), nil)
 	httpRequest.SetPathValue("id", created.ID.String())
+	httpRequest = withAuthenticatedOrganisation(httpRequest, f.organisationID)
 	recorder := httptest.NewRecorder()
 
 	handler.GetByID(recorder, httpRequest)
@@ -327,8 +391,9 @@ func TestInvoiceHandler_GetByID_InvalidUUID(t *testing.T) {
 	f := newTestFixture()
 	handler := newTestHandler(f)
 
-	request := httptest.NewRequest(http.MethodGet, "/invoices/not-a-uuid?organisationId="+f.organisationID.String(), nil)
+	request := httptest.NewRequest(http.MethodGet, "/invoices/not-a-uuid", nil)
 	request.SetPathValue("id", "not-a-uuid")
+	request = withAuthenticatedOrganisation(request, f.organisationID)
 	recorder := httptest.NewRecorder()
 
 	handler.GetByID(recorder, request)
@@ -338,7 +403,11 @@ func TestInvoiceHandler_GetByID_InvalidUUID(t *testing.T) {
 	}
 }
 
-func TestInvoiceHandler_GetByID_MissingOrganisationID(t *testing.T) {
+// TestInvoiceHandler_GetByID_MissingAuthenticatedContext proves GetByID
+// fails closed (401) when invoked without going through
+// AuthMiddleware.RequireAuth — replacing the old
+// TestInvoiceHandler_GetByID_MissingOrganisationID (400).
+func TestInvoiceHandler_GetByID_MissingAuthenticatedContext(t *testing.T) {
 	f := newTestFixture()
 	handler := newTestHandler(f)
 
@@ -349,8 +418,8 @@ func TestInvoiceHandler_GetByID_MissingOrganisationID(t *testing.T) {
 
 	handler.GetByID(recorder, request)
 
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusBadRequest, recorder.Code, recorder.Body.String())
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusUnauthorized, recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -359,8 +428,9 @@ func TestInvoiceHandler_GetByID_NotFound(t *testing.T) {
 	handler := newTestHandler(f)
 
 	id := uuid.New()
-	request := httptest.NewRequest(http.MethodGet, "/invoices/"+id.String()+"?organisationId="+f.organisationID.String(), nil)
+	request := httptest.NewRequest(http.MethodGet, "/invoices/"+id.String(), nil)
 	request.SetPathValue("id", id.String())
+	request = withAuthenticatedOrganisation(request, f.organisationID)
 	recorder := httptest.NewRecorder()
 
 	handler.GetByID(recorder, request)
@@ -381,13 +451,45 @@ func TestInvoiceHandler_GetByID_WrongOrganisation(t *testing.T) {
 	}
 
 	otherOrgID := uuid.New()
-	httpRequest := httptest.NewRequest(http.MethodGet, "/invoices/"+created.ID.String()+"?organisationId="+otherOrgID.String(), nil)
+	httpRequest := httptest.NewRequest(http.MethodGet, "/invoices/"+created.ID.String(), nil)
 	httpRequest.SetPathValue("id", created.ID.String())
+	httpRequest = withAuthenticatedOrganisation(httpRequest, otherOrgID)
 	recorder := httptest.NewRecorder()
 
 	handler.GetByID(recorder, httpRequest)
 
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusNotFound, recorder.Code, recorder.Body.String())
+	}
+}
+
+// TestInvoiceHandler_GetByID_IgnoresOrganisationIdQueryParameter proves a
+// client cannot use ?organisationId=<other> to reach into another
+// organisation's invoice — the authenticated context alone decides
+// tenant scope.
+func TestInvoiceHandler_GetByID_IgnoresOrganisationIdQueryParameter(t *testing.T) {
+	f := newTestFixture()
+	handler := newTestHandler(f)
+
+	request := validRequest(f.customerID)
+	created, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	if err != nil {
+		t.Fatalf("create invoice: %v", err)
+	}
+
+	attackerOrganisationID := uuid.New()
+
+	// Authenticated as attackerOrganisationID, but the query string names
+	// the real owner — if the query parameter had any effect, this would
+	// wrongly succeed.
+	httpRequest := httptest.NewRequest(http.MethodGet, "/invoices/"+created.ID.String()+"?organisationId="+f.organisationID.String(), nil)
+	httpRequest.SetPathValue("id", created.ID.String())
+	httpRequest = withAuthenticatedOrganisation(httpRequest, attackerOrganisationID)
+	recorder := httptest.NewRecorder()
+
+	handler.GetByID(recorder, httpRequest)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d (organisationId query parameter must be ignored), got %d (body: %s)", http.StatusNotFound, recorder.Code, recorder.Body.String())
 	}
 }

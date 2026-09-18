@@ -183,6 +183,13 @@ func TestInvoiceService_CreatePayment_WrongOrganisation_Rejected(t *testing.T) {
 	if !errors.Is(err, ErrInvoiceNotFound) {
 		t.Fatalf("expected ErrInvoiceNotFound for a cross-organisation payment, got %v", err)
 	}
+
+	// The rejection must happen at GetForUpdate, before the payment
+	// repository is ever reached — not merely return the right error
+	// while still writing something.
+	if len(f.paymentRepository.payments[invoiceID]) != 0 {
+		t.Errorf("expected no payment to have been created for a cross-organisation attempt, got %d", len(f.paymentRepository.payments[invoiceID]))
+	}
 }
 
 // --- Transaction orchestration (fakes; real atomicity is proven against

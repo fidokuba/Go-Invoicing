@@ -10,15 +10,18 @@ import (
 	"github.com/google/uuid"
 )
 
+// newPaymentTestRequest builds a request authenticated as organisationID
+// (via withAuthenticatedOrganisation, defined in invoice_handler_test.go)
+// rather than an organisationId query parameter — these handlers no
+// longer read one (Milestone 4 Part 4).
 func newPaymentTestRequest(method, url string, body *bytes.Buffer, invoiceID uuid.UUID, organisationID uuid.UUID) *http.Request {
 	if body == nil {
 		body = &bytes.Buffer{}
 	}
 
-	fullURL := url + "?organisationId=" + organisationID.String()
-
-	request := httptest.NewRequest(method, fullURL, body)
+	request := httptest.NewRequest(method, url, body)
 	request.SetPathValue("id", invoiceID.String())
+	request = withAuthenticatedOrganisation(request, organisationID)
 
 	return request
 }
@@ -133,8 +136,9 @@ func TestInvoiceHandler_CreatePayment_InvalidUUID(t *testing.T) {
 	handler := newTestHandler(f)
 
 	body := bytes.NewBufferString(`{"amount": 5000, "paymentMethod": "cash", "paymentDate": "2026-09-17"}`)
-	request := httptest.NewRequest(http.MethodPost, "/invoices/not-a-uuid/payments?organisationId="+f.organisationID.String(), body)
+	request := httptest.NewRequest(http.MethodPost, "/invoices/not-a-uuid/payments", body)
 	request.SetPathValue("id", "not-a-uuid")
+	request = withAuthenticatedOrganisation(request, f.organisationID)
 	recorder := httptest.NewRecorder()
 
 	handler.CreatePayment(recorder, request)
@@ -144,7 +148,11 @@ func TestInvoiceHandler_CreatePayment_InvalidUUID(t *testing.T) {
 	}
 }
 
-func TestInvoiceHandler_CreatePayment_MissingOrganisationID(t *testing.T) {
+// TestInvoiceHandler_CreatePayment_MissingAuthenticatedContext proves
+// CreatePayment fails closed (401) when invoked without going through
+// AuthMiddleware.RequireAuth — replacing the old
+// TestInvoiceHandler_CreatePayment_MissingOrganisationID (400).
+func TestInvoiceHandler_CreatePayment_MissingAuthenticatedContext(t *testing.T) {
 	f := newTestFixture()
 	handler := newTestHandler(f)
 	invoiceID := f.addInvoice(10000, InvoiceStatusSent)
@@ -156,8 +164,32 @@ func TestInvoiceHandler_CreatePayment_MissingOrganisationID(t *testing.T) {
 
 	handler.CreatePayment(recorder, request)
 
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusBadRequest, recorder.Code, recorder.Body.String())
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusUnauthorized, recorder.Code, recorder.Body.String())
+	}
+}
+
+// TestInvoiceHandler_CreatePayment_IgnoresOrganisationIdQueryParameter is
+// the crux Milestone 4 Part 4 regression test for payment creation: a
+// client authenticated as one organisation cannot use
+// ?organisationId=<the invoice's real owner> to create a payment against
+// an invoice belonging to a different organisation.
+func TestInvoiceHandler_CreatePayment_IgnoresOrganisationIdQueryParameter(t *testing.T) {
+	f := newTestFixture()
+	handler := newTestHandler(f)
+	invoiceID := f.addInvoice(10000, InvoiceStatusSent)
+	attackerOrganisationID := uuid.New()
+
+	body := bytes.NewBufferString(`{"amount": 5000, "paymentMethod": "cash", "paymentDate": "2026-09-17"}`)
+	request := httptest.NewRequest(http.MethodPost, "/invoices/"+invoiceID.String()+"/payments?organisationId="+f.organisationID.String(), body)
+	request.SetPathValue("id", invoiceID.String())
+	request = withAuthenticatedOrganisation(request, attackerOrganisationID)
+	recorder := httptest.NewRecorder()
+
+	handler.CreatePayment(recorder, request)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d (organisationId query parameter must be ignored), got %d (body: %s)", http.StatusNotFound, recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -338,14 +370,57 @@ func TestInvoiceHandler_GetPayments_InvalidUUID(t *testing.T) {
 	f := newTestFixture()
 	handler := newTestHandler(f)
 
-	request := httptest.NewRequest(http.MethodGet, "/invoices/not-a-uuid/payments?organisationId="+f.organisationID.String(), nil)
+	request := httptest.NewRequest(http.MethodGet, "/invoices/not-a-uuid/payments", nil)
 	request.SetPathValue("id", "not-a-uuid")
+	request = withAuthenticatedOrganisation(request, f.organisationID)
 	recorder := httptest.NewRecorder()
 
 	handler.GetPayments(recorder, request)
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusBadRequest, recorder.Code, recorder.Body.String())
+	}
+}
+
+// TestInvoiceHandler_GetPayments_MissingAuthenticatedContext proves
+// GetPayments fails closed (401) when invoked without going through
+// AuthMiddleware.RequireAuth.
+func TestInvoiceHandler_GetPayments_MissingAuthenticatedContext(t *testing.T) {
+	f := newTestFixture()
+	handler := newTestHandler(f)
+	invoiceID := f.addInvoice(10000, InvoiceStatusSent)
+
+	request := httptest.NewRequest(http.MethodGet, "/invoices/"+invoiceID.String()+"/payments", nil)
+	request.SetPathValue("id", invoiceID.String())
+	recorder := httptest.NewRecorder()
+
+	handler.GetPayments(recorder, request)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusUnauthorized, recorder.Code, recorder.Body.String())
+	}
+}
+
+// TestInvoiceHandler_GetPayments_IgnoresOrganisationIdQueryParameter is
+// the crux Milestone 4 Part 4 regression test for payment retrieval: a
+// client authenticated as one organisation cannot use
+// ?organisationId=<the invoice's real owner> to list payments for an
+// invoice belonging to a different organisation.
+func TestInvoiceHandler_GetPayments_IgnoresOrganisationIdQueryParameter(t *testing.T) {
+	f := newTestFixture()
+	handler := newTestHandler(f)
+	invoiceID := f.addInvoice(10000, InvoiceStatusSent)
+	attackerOrganisationID := uuid.New()
+
+	request := httptest.NewRequest(http.MethodGet, "/invoices/"+invoiceID.String()+"/payments?organisationId="+f.organisationID.String(), nil)
+	request.SetPathValue("id", invoiceID.String())
+	request = withAuthenticatedOrganisation(request, attackerOrganisationID)
+	recorder := httptest.NewRecorder()
+
+	handler.GetPayments(recorder, request)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d (organisationId query parameter must be ignored), got %d (body: %s)", http.StatusNotFound, recorder.Code, recorder.Body.String())
 	}
 }
 

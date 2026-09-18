@@ -6,16 +6,22 @@ import (
 	"net/http"
 
 	"github.com/google/uuid"
+
+	admin "go-invoicing/internal/administration"
 )
 
 // InvoiceHandler owns the HTTP-specific concerns for invoices: decoding
 // requests, calling the service, translating errors into status codes, and
 // encoding responses. It holds no SQL and no business rules.
 //
-// There is no authentication/organisation-identity middleware yet, so the
-// organisation scope is read explicitly from an "organisationId" query
-// parameter on every request, matching the Customer/Product handlers'
-// convention.
+// Every route is protected (Milestone 4 Part 4): organisation identity
+// comes exclusively from admin.RequireAuthenticatedUser, never from a
+// client-supplied organisationId — see that function's doc comment for
+// the fail-closed behaviour when no authenticated identity is present.
+// This matters most for payment creation/retrieval: the organisation ID
+// passed to InvoiceService is what its existing organisation-scoped
+// invoice lookup (and, for CreatePayment, its row lock) uses to establish
+// that the invoice belongs to the caller before anything else happens.
 type InvoiceHandler struct {
 	service *InvoiceService
 }
@@ -28,11 +34,10 @@ func NewInvoiceHandler(
 	}
 }
 
-// Create handles POST /invoices?organisationId={organisationId}.
+// Create handles POST /invoices.
 func (h *InvoiceHandler) Create(w http.ResponseWriter, r *http.Request) {
-	organisationID, err := uuid.Parse(r.URL.Query().Get("organisationId"))
-	if err != nil {
-		http.Error(w, "invalid or missing organisationId", http.StatusBadRequest)
+	identity, ok := admin.RequireAuthenticatedUser(w, r)
+	if !ok {
 		return
 	}
 
@@ -43,7 +48,7 @@ func (h *InvoiceHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	inv, lines, err := h.service.Create(r.Context(), organisationID, request)
+	inv, lines, err := h.service.Create(r.Context(), identity.OrganisationID, request)
 	if err != nil {
 		if errors.Is(err, ErrInvoiceCustomerNotFound) || errors.Is(err, ErrInvoiceLineProductNotFound) {
 			http.Error(w, err.Error(), http.StatusNotFound)
@@ -71,11 +76,10 @@ func (h *InvoiceHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// GetByID handles GET /invoices/{id}?organisationId={organisationId}.
+// GetByID handles GET /invoices/{id}.
 func (h *InvoiceHandler) GetByID(w http.ResponseWriter, r *http.Request) {
-	organisationID, err := uuid.Parse(r.URL.Query().Get("organisationId"))
-	if err != nil {
-		http.Error(w, "invalid or missing organisationId", http.StatusBadRequest)
+	identity, ok := admin.RequireAuthenticatedUser(w, r)
+	if !ok {
 		return
 	}
 
@@ -85,7 +89,7 @@ func (h *InvoiceHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	inv, lines, amountPaid, err := h.service.GetByID(r.Context(), organisationID, id)
+	inv, lines, amountPaid, err := h.service.GetByID(r.Context(), identity.OrganisationID, id)
 	if err != nil {
 		if errors.Is(err, ErrInvoiceNotFound) {
 			http.Error(w, "invoice not found", http.StatusNotFound)
@@ -105,11 +109,10 @@ func (h *InvoiceHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// CreatePayment handles POST /invoices/{id}/payments?organisationId={organisationId}.
+// CreatePayment handles POST /invoices/{id}/payments.
 func (h *InvoiceHandler) CreatePayment(w http.ResponseWriter, r *http.Request) {
-	organisationID, err := uuid.Parse(r.URL.Query().Get("organisationId"))
-	if err != nil {
-		http.Error(w, "invalid or missing organisationId", http.StatusBadRequest)
+	identity, ok := admin.RequireAuthenticatedUser(w, r)
+	if !ok {
 		return
 	}
 
@@ -132,7 +135,7 @@ func (h *InvoiceHandler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payment, _, err := h.service.CreatePayment(r.Context(), organisationID, invoiceID, request)
+	payment, _, err := h.service.CreatePayment(r.Context(), identity.OrganisationID, invoiceID, request)
 	if err != nil {
 		if errors.Is(err, ErrInvoiceNotFound) {
 			http.Error(w, "invoice not found", http.StatusNotFound)
@@ -158,11 +161,10 @@ func (h *InvoiceHandler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// GetPayments handles GET /invoices/{id}/payments?organisationId={organisationId}.
+// GetPayments handles GET /invoices/{id}/payments.
 func (h *InvoiceHandler) GetPayments(w http.ResponseWriter, r *http.Request) {
-	organisationID, err := uuid.Parse(r.URL.Query().Get("organisationId"))
-	if err != nil {
-		http.Error(w, "invalid or missing organisationId", http.StatusBadRequest)
+	identity, ok := admin.RequireAuthenticatedUser(w, r)
+	if !ok {
 		return
 	}
 
@@ -172,7 +174,7 @@ func (h *InvoiceHandler) GetPayments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payments, err := h.service.GetPayments(r.Context(), organisationID, invoiceID)
+	payments, err := h.service.GetPayments(r.Context(), identity.OrganisationID, invoiceID)
 	if err != nil {
 		if errors.Is(err, ErrInvoiceNotFound) {
 			http.Error(w, "invoice not found", http.StatusNotFound)

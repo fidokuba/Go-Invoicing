@@ -17,17 +17,28 @@ import (
 var ErrOrganisationNotFound = errors.New("organisation not found")
 
 // PostgresOrganisationRepository is the PostgreSQL-backed implementation of
-// OrganisationRepository. It holds a connection pool rather than creating one
-// itself, so the caller decides how the pool is configured and when it is
-// closed.
+// OrganisationRepository. It holds a dbExecutor (see
+// settings_repository_postgres.go) rather than a concrete pool, so the
+// same code runs unmodified whether it's operating directly on the pool
+// or inside a transaction WithTx provides.
 type PostgresOrganisationRepository struct {
-	db *pgxpool.Pool
+	db dbExecutor
 }
 
 // NewPostgresOrganisationRepository wires an existing pool into a repository.
 func NewPostgresOrganisationRepository(db *pgxpool.Pool) *PostgresOrganisationRepository {
 	return &PostgresOrganisationRepository{
 		db: db,
+	}
+}
+
+// WithTx returns a repository that runs its operations against tx instead
+// of the pool, so an organisation can be created within the same
+// caller-managed transaction as its default settings and first user. It
+// does not begin, commit or roll back anything itself.
+func (r *PostgresOrganisationRepository) WithTx(tx pgx.Tx) OrganisationRepository {
+	return &PostgresOrganisationRepository{
+		db: tx,
 	}
 }
 

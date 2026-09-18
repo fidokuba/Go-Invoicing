@@ -81,7 +81,7 @@ func TestInvoiceService_Create_CommitsAllRowsTogether(t *testing.T) {
 		t.Errorf("expected persisted total %d, got %d", inv.Total, persisted.Total)
 	}
 
-	persistedLines, err := invoiceRepository.GetLinesByInvoiceID(ctx, inv.ID)
+	persistedLines, err := invoiceRepository.GetLinesByInvoiceID(ctx, organisationID, inv.ID)
 	if err != nil {
 		t.Fatalf("get persisted lines: %v", err)
 	}

@@ -34,24 +34,79 @@ func (a *App) Handler() http.Handler {
 	organisationService := admin.NewOrganisationService(organisationRepository, settingsRepository)
 	organisationHandler := admin.NewOrganisationHandler(organisationService)
 
-	mux.HandleFunc("POST /organisations", organisationHandler.Create)
-	mux.HandleFunc("GET /organisations/{id}", organisationHandler.GetByID)
+	// Wire the user dependency chain: pool -> repository -> service ->
+	// handler. UserService also depends on the organisation repository
+	// (already constructed above) to check that the requesting
+	// organisation exists before a user is created against it.
+	userRepository := admin.NewPostgresUserRepository(a.db)
+	userService := admin.NewUserService(userRepository, organisationRepository)
+	userHandler := admin.NewUserHandler(userService)
+
+	// Wire the auth dependency chain: pool -> repository -> service ->
+	// handler/middleware. AuthService also depends on the user repository
+	// (already constructed above) to look users up by email, and on the
+	// pool itself (a.db satisfies auth's TxBeginner directly) to commit a
+	// new session and the user's LastLogin update as a single
+	// transaction. AuthMiddleware depends on both the session and user
+	// repositories to validate a bearer token on every protected route.
+	sessionRepository := admin.NewPostgresSessionRepository(a.db)
+	authService := admin.NewAuthService(userRepository, sessionRepository, a.db)
+	authHandler := admin.NewAuthHandler(authService)
+	authMiddleware := admin.NewAuthMiddleware(sessionRepository, userRepository)
+
+	mux.HandleFunc("POST /auth/login", authHandler.Login)
+
+	// Wire the registration dependency chain: pool -> repositories ->
+	// service -> handler. POST /register (Milestone 4 Part 5) is now the
+	// ONLY way an organisation and its first (admin) user can ever be
+	// created — it replaces the old public POST /organisations and public
+	// POST /users?organisationId= bootstrap routes entirely; neither is
+	// registered any more. RegistrationService owns its own transaction
+	// (a.db satisfies its TxBeginner directly) across the organisation,
+	// settings, and first-user inserts.
+	registrationService := admin.NewRegistrationService(organisationRepository, settingsRepository, userRepository, a.db)
+	registrationHandler := admin.NewRegistrationHandler(registrationService)
+
+	mux.HandleFunc("POST /register", registrationHandler.Register)
+
+	// POST /users (Milestone 4 Part 5) is now a protected, role-gated
+	// route for creating additional users within an existing,
+	// already-bootstrapped organisation: only admin or manager may reach
+	// it at all (RequireRole), organisation identity comes exclusively
+	// from AuthenticatedUser.OrganisationID (no organisationId query
+	// parameter is read anywhere any more), and UserService.Create
+	// itself enforces which target role the caller's role may assign —
+	// see that method's doc comment for why that rule lives there too,
+	// not only in this route gate.
+	mux.HandleFunc(
+		"POST /users",
+		authMiddleware.RequireAuth(admin.RequireRole(admin.UserRoleAdmin, admin.UserRoleManager)(userHandler.Create)),
+	)
+	mux.HandleFunc("GET /users/{id}", authMiddleware.RequireAuth(userHandler.GetByID))
+
+	// GET /organisation (Milestone 4 Part 4) is a self-resource route: it
+	// always returns the authenticated caller's own organisation, sourced
+	// from AuthenticatedUser.OrganisationID — there is no {id} path
+	// segment, so there is no client-supplied organisation identifier to
+	// remove or ignore here. This replaces the earlier protected
+	// GET /organisations/{id}.
+	mux.HandleFunc("GET /organisation", authMiddleware.RequireAuth(organisationHandler.GetCurrent))
 
 	// Wire the customer dependency chain: pool -> repository -> service -> handler.
 	customerRepository := customer.NewPostgresCustomerRepository(a.db)
 	customerService := customer.NewCustomerService(customerRepository)
 	customerHandler := customer.NewCustomerHandler(customerService)
 
-	mux.HandleFunc("POST /customers", customerHandler.Create)
-	mux.HandleFunc("GET /customers/{id}", customerHandler.GetByID)
+	mux.HandleFunc("POST /customers", authMiddleware.RequireAuth(customerHandler.Create))
+	mux.HandleFunc("GET /customers/{id}", authMiddleware.RequireAuth(customerHandler.GetByID))
 
 	// Wire the product dependency chain: pool -> repository -> service -> handler.
 	productRepository := product.NewPostgresProductRepository(a.db)
 	productService := product.NewProductService(productRepository)
 	productHandler := product.NewProductHandler(productService)
 
-	mux.HandleFunc("POST /products", productHandler.Create)
-	mux.HandleFunc("GET /products/{id}", productHandler.GetByID)
+	mux.HandleFunc("POST /products", authMiddleware.RequireAuth(productHandler.Create))
+	mux.HandleFunc("GET /products/{id}", authMiddleware.RequireAuth(productHandler.GetByID))
 
 	// Wire the invoice dependency chain: pool -> repository -> service -> handler.
 	// The invoice service also depends on the customer and product
@@ -67,10 +122,10 @@ func (a *App) Handler() http.Handler {
 	invoiceService := invoice.NewInvoiceService(invoiceRepository, customerRepository, productRepository, settingsRepository, paymentRepository, a.db)
 	invoiceHandler := invoice.NewInvoiceHandler(invoiceService)
 
-	mux.HandleFunc("POST /invoices", invoiceHandler.Create)
-	mux.HandleFunc("GET /invoices/{id}", invoiceHandler.GetByID)
-	mux.HandleFunc("POST /invoices/{id}/payments", invoiceHandler.CreatePayment)
-	mux.HandleFunc("GET /invoices/{id}/payments", invoiceHandler.GetPayments)
+	mux.HandleFunc("POST /invoices", authMiddleware.RequireAuth(invoiceHandler.Create))
+	mux.HandleFunc("GET /invoices/{id}", authMiddleware.RequireAuth(invoiceHandler.GetByID))
+	mux.HandleFunc("POST /invoices/{id}/payments", authMiddleware.RequireAuth(invoiceHandler.CreatePayment))
+	mux.HandleFunc("GET /invoices/{id}/payments", authMiddleware.RequireAuth(invoiceHandler.GetPayments))
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {

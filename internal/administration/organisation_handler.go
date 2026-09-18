@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-
-	"github.com/google/uuid"
 )
 
 // OrganisationHandler owns the HTTP-specific concerns for organisations:
@@ -53,17 +51,19 @@ func (h *OrganisationHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// GetByID handles GET /organisations/{id}.
-func (h *OrganisationHandler) GetByID(w http.ResponseWriter, r *http.Request) {
-	idString := r.PathValue("id")
-
-	id, err := uuid.Parse(idString)
-	if err != nil {
-		http.Error(w, "invalid organisation ID", http.StatusBadRequest)
+// GetCurrent handles GET /organisation — a self-resource endpoint with no
+// client-supplied organisation ID at all (Milestone 4 Part 4). The
+// organisation returned is always the authenticated caller's own: there
+// is no path or query parameter for a tenant ID to select a different
+// one, so there is no cross-tenant case to guard against here the way
+// there is for every other GetByID in this codebase.
+func (h *OrganisationHandler) GetCurrent(w http.ResponseWriter, r *http.Request) {
+	identity, ok := RequireAuthenticatedUser(w, r)
+	if !ok {
 		return
 	}
 
-	organisation, err := h.service.GetByID(r.Context(), id)
+	organisation, err := h.service.GetByID(r.Context(), identity.OrganisationID)
 	if err != nil {
 		if errors.Is(err, ErrOrganisationNotFound) {
 			http.Error(w, "organisation not found", http.StatusNotFound)

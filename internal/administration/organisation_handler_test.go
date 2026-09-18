@@ -19,6 +19,8 @@ import (
 type fakeOrganisationRepository struct {
 	mu            sync.Mutex
 	organisations map[uuid.UUID]Organisation
+
+	createErr error
 }
 
 func newFakeOrganisationRepository() *fakeOrganisationRepository {
@@ -27,9 +29,20 @@ func newFakeOrganisationRepository() *fakeOrganisationRepository {
 	}
 }
 
+// WithTx ignores its tx argument and returns the same fake — it has no
+// real transactional semantics of its own, matching
+// fakeSettingsRepository's own WithTx below.
+func (f *fakeOrganisationRepository) WithTx(tx pgx.Tx) OrganisationRepository {
+	return f
+}
+
 func (f *fakeOrganisationRepository) Create(ctx context.Context, organisation *Organisation) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	if f.createErr != nil {
+		return f.createErr
+	}
 
 	f.organisations[organisation.ID] = *organisation
 	return nil
@@ -54,6 +67,8 @@ func (f *fakeOrganisationRepository) GetByID(ctx context.Context, id uuid.UUID) 
 type fakeSettingsRepository struct {
 	mu       sync.Mutex
 	settings map[uuid.UUID]Settings
+
+	createErr error
 }
 
 func newFakeSettingsRepository() *fakeSettingsRepository {
@@ -69,6 +84,10 @@ func (f *fakeSettingsRepository) WithTx(tx pgx.Tx) SettingsRepository {
 func (f *fakeSettingsRepository) Create(ctx context.Context, settings *Settings) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	if f.createErr != nil {
+		return f.createErr
+	}
 
 	f.settings[settings.OrganisationID] = *settings
 	return nil
@@ -171,7 +190,24 @@ func TestOrganisationHandler_Create_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestOrganisationHandler_GetByID(t *testing.T) {
+// withAuthenticatedOrganisation attaches an AuthenticatedUser identity
+// scoped to organisationID to r, the way AuthMiddleware.RequireAuth would
+// have — for tests invoking a protected handler directly, bypassing the
+// middleware.
+func withAuthenticatedOrganisation(r *http.Request, organisationID uuid.UUID) *http.Request {
+	identity := AuthenticatedUser{UserID: uuid.New(), OrganisationID: organisationID, Role: UserRoleUser}
+	return r.WithContext(WithAuthenticatedUser(r.Context(), identity))
+}
+
+// withAuthenticatedIdentity attaches identity to r's context directly,
+// for tests that need to control UserID and/or Role as well as
+// OrganisationID (e.g. self-vs-other and role-based authorisation tests),
+// not just the organisation withAuthenticatedOrganisation covers.
+func withAuthenticatedIdentity(r *http.Request, identity AuthenticatedUser) *http.Request {
+	return r.WithContext(WithAuthenticatedUser(r.Context(), identity))
+}
+
+func TestOrganisationHandler_GetCurrent(t *testing.T) {
 	repository := newFakeOrganisationRepository()
 	service := NewOrganisationService(repository, newFakeSettingsRepository())
 	handler := NewOrganisationHandler(service)
@@ -181,11 +217,11 @@ func TestOrganisationHandler_GetByID(t *testing.T) {
 		t.Fatalf("create organisation: %v", err)
 	}
 
-	request := httptest.NewRequest(http.MethodGet, "/organisations/"+organisation.ID.String(), nil)
-	request.SetPathValue("id", organisation.ID.String())
+	request := httptest.NewRequest(http.MethodGet, "/organisation", nil)
+	request = withAuthenticatedOrganisation(request, organisation.ID)
 	recorder := httptest.NewRecorder()
 
-	handler.GetByID(recorder, request)
+	handler.GetCurrent(recorder, request)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusOK, recorder.Code, recorder.Body.String())
@@ -201,31 +237,40 @@ func TestOrganisationHandler_GetByID(t *testing.T) {
 	}
 }
 
-func TestOrganisationHandler_GetByID_NotFound(t *testing.T) {
+// TestOrganisationHandler_GetCurrent_NotFound proves that GetCurrent
+// still returns 404 for an authenticated identity whose OrganisationID
+// doesn't match any stored organisation — there's no client-supplied ID
+// to be invalid, but the organisation itself can still be gone (e.g. a
+// stale session outliving its organisation, however unlikely today).
+func TestOrganisationHandler_GetCurrent_NotFound(t *testing.T) {
 	handler := newTestHandler()
 
-	id := uuid.New()
-	request := httptest.NewRequest(http.MethodGet, "/organisations/"+id.String(), nil)
-	request.SetPathValue("id", id.String())
+	request := httptest.NewRequest(http.MethodGet, "/organisation", nil)
+	request = withAuthenticatedOrganisation(request, uuid.New())
 	recorder := httptest.NewRecorder()
 
-	handler.GetByID(recorder, request)
+	handler.GetCurrent(recorder, request)
 
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusNotFound, recorder.Code, recorder.Body.String())
 	}
 }
 
-func TestOrganisationHandler_GetByID_InvalidUUID(t *testing.T) {
+// TestOrganisationHandler_GetCurrent_MissingAuthenticatedContext proves
+// GetCurrent fails closed (401) if invoked without going through
+// AuthMiddleware.RequireAuth, rather than the 400 "invalid organisation
+// ID" this handler used to return before Milestone 4 Part 4 — there is no
+// client-supplied organisation ID left to be invalid or missing; the only
+// remaining failure mode is a missing authenticated identity.
+func TestOrganisationHandler_GetCurrent_MissingAuthenticatedContext(t *testing.T) {
 	handler := newTestHandler()
 
-	request := httptest.NewRequest(http.MethodGet, "/organisations/not-a-uuid", nil)
-	request.SetPathValue("id", "not-a-uuid")
+	request := httptest.NewRequest(http.MethodGet, "/organisation", nil)
 	recorder := httptest.NewRecorder()
 
-	handler.GetByID(recorder, request)
+	handler.GetCurrent(recorder, request)
 
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusBadRequest, recorder.Code, recorder.Body.String())
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusUnauthorized, recorder.Code, recorder.Body.String())
 	}
 }

@@ -6,17 +6,18 @@ import (
 	"net/http"
 
 	"github.com/google/uuid"
+
+	admin "go-invoicing/internal/administration"
 )
 
 // ProductHandler owns the HTTP-specific concerns for products: decoding
 // requests, calling the service, translating errors into status codes, and
 // encoding responses. It holds no SQL and no business rules.
 //
-// There is no authentication/organisation-identity middleware yet, so the
-// organisation scope is read explicitly from an "organisationId" query
-// parameter on every request, matching the Customer handler's convention.
-// This is expected to be replaced once request-scoped organisation
-// identity exists.
+// Both routes are protected (Milestone 4 Part 4): organisation identity
+// comes exclusively from admin.RequireAuthenticatedUser, never from a
+// client-supplied organisationId — see that function's doc comment for
+// the fail-closed behaviour when no authenticated identity is present.
 type ProductHandler struct {
 	service *ProductService
 }
@@ -29,11 +30,10 @@ func NewProductHandler(
 	}
 }
 
-// Create handles POST /products?organisationId={organisationId}.
+// Create handles POST /products.
 func (h *ProductHandler) Create(w http.ResponseWriter, r *http.Request) {
-	organisationID, err := uuid.Parse(r.URL.Query().Get("organisationId"))
-	if err != nil {
-		http.Error(w, "invalid or missing organisationId", http.StatusBadRequest)
+	identity, ok := admin.RequireAuthenticatedUser(w, r)
+	if !ok {
 		return
 	}
 
@@ -46,7 +46,7 @@ func (h *ProductHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	p, err := h.service.Create(
 		r.Context(),
-		organisationID,
+		identity.OrganisationID,
 		request.Name,
 		request.Description,
 		request.SKU,
@@ -80,11 +80,10 @@ func (h *ProductHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// GetByID handles GET /products/{id}?organisationId={organisationId}.
+// GetByID handles GET /products/{id}.
 func (h *ProductHandler) GetByID(w http.ResponseWriter, r *http.Request) {
-	organisationID, err := uuid.Parse(r.URL.Query().Get("organisationId"))
-	if err != nil {
-		http.Error(w, "invalid or missing organisationId", http.StatusBadRequest)
+	identity, ok := admin.RequireAuthenticatedUser(w, r)
+	if !ok {
 		return
 	}
 
@@ -96,7 +95,7 @@ func (h *ProductHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p, err := h.service.GetByID(r.Context(), organisationID, id)
+	p, err := h.service.GetByID(r.Context(), identity.OrganisationID, id)
 	if err != nil {
 		if errors.Is(err, ErrProductNotFound) {
 			http.Error(w, "product not found", http.StatusNotFound)

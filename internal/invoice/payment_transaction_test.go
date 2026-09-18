@@ -90,7 +90,7 @@ func TestInvoiceService_CreatePayment_Persisted(t *testing.T) {
 
 	paymentRepository := NewPostgresPaymentRepository(db)
 
-	persisted, err := paymentRepository.GetByInvoiceID(ctx, invoiceID)
+	persisted, err := paymentRepository.GetByInvoiceID(ctx, organisationID, invoiceID)
 	if err != nil {
 		t.Fatalf("get payments: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestInvoiceService_CreatePayment_MultiplePaymentsAccumulate(t *testing.T) {
 
 	paymentRepository := NewPostgresPaymentRepository(db)
 
-	total, err := paymentRepository.GetTotalPaidByInvoiceID(ctx, invoiceID)
+	total, err := paymentRepository.GetTotalPaidByInvoiceID(ctx, organisationID, invoiceID)
 	if err != nil {
 		t.Fatalf("get total paid: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestInvoiceService_CreatePayment_OverpaymentTransaction_CreatesNothing(t *t
 
 	paymentRepository := NewPostgresPaymentRepository(db)
 
-	payments, err := paymentRepository.GetByInvoiceID(ctx, invoiceID)
+	payments, err := paymentRepository.GetByInvoiceID(ctx, organisationID, invoiceID)
 	if err != nil {
 		t.Fatalf("get payments: %v", err)
 	}
@@ -229,6 +229,64 @@ func TestInvoiceService_CreatePayment_OverpaymentTransaction_CreatesNothing(t *t
 
 	if inv.Status != InvoiceStatusSent {
 		t.Errorf("expected status to remain %q after a rejected payment, got %q", InvoiceStatusSent, inv.Status)
+	}
+}
+
+// TestInvoiceService_CreatePayment_WrongOrganisation_LeavesNoTrace is the
+// real-Postgres counterpart to the fake-based
+// TestInvoiceService_CreatePayment_WrongOrganisation_Rejected: proves,
+// against the real database, that an authenticated Organisation A cannot
+// create a payment against an Organisation B invoice, and that the
+// attempt leaves the database completely unchanged — no new payment row,
+// and the invoice's own status untouched. The rejection happens at
+// GetForUpdate, before the transaction ever reaches the payment
+// repository or the status update, exactly as
+// TestInvoiceService_CreatePayment_OverpaymentTransaction_CreatesNothing
+// proves for a different rejection reason.
+func TestInvoiceService_CreatePayment_WrongOrganisation_LeavesNoTrace(t *testing.T) {
+	db := newTestPool(t)
+	ctx := context.Background()
+
+	organisationA := createTestOrganisation(t, db)
+	organisationB := createTestOrganisation(t, db)
+	customerID := createTestCustomer(t, db, organisationB)
+	invoiceID := createTestInvoiceWithTotal(t, db, organisationB, customerID, 10000, InvoiceStatusSent)
+
+	service := newPaymentTestService(db)
+
+	_, _, err := service.CreatePayment(ctx, organisationA, invoiceID, CreatePaymentRequest{
+		Amount:        5000,
+		PaymentMethod: "cash",
+	})
+	if !errors.Is(err, ErrInvoiceNotFound) {
+		t.Fatalf("expected ErrInvoiceNotFound for a cross-organisation payment attempt, got %v", err)
+	}
+
+	var paymentCount int
+	if err := db.QueryRow(ctx, "SELECT count(*) FROM payments WHERE invoice_id = $1", invoiceID).Scan(&paymentCount); err != nil {
+		t.Fatalf("count payments: %v", err)
+	}
+	if paymentCount != 0 {
+		t.Errorf("expected 0 payments after a rejected cross-organisation attempt, got %d", paymentCount)
+	}
+
+	invoiceRepository := NewPostgresInvoiceRepository(db)
+	inv, err := invoiceRepository.GetByID(ctx, organisationB, invoiceID)
+	if err != nil {
+		t.Fatalf("get invoice under its real organisation: %v", err)
+	}
+	if inv.Status != InvoiceStatusSent {
+		t.Errorf("expected status to remain %q after the rejected cross-organisation attempt, got %q", InvoiceStatusSent, inv.Status)
+	}
+
+	// The organisation A caller must never be able to observe organisation
+	// B's invoice at all, from any angle GetPayments uses either.
+	payments, err := service.GetPayments(ctx, organisationA, invoiceID)
+	if !errors.Is(err, ErrInvoiceNotFound) {
+		t.Fatalf("expected ErrInvoiceNotFound listing payments for a cross-organisation invoice, got %v", err)
+	}
+	if payments != nil {
+		t.Errorf("expected a nil payments slice on rejection, got %+v", payments)
 	}
 }
 
@@ -293,7 +351,7 @@ func TestInvoiceService_CreatePayment_ConcurrentPaymentsCannotOverpay(t *testing
 
 	paymentRepository := NewPostgresPaymentRepository(db)
 
-	payments, err := paymentRepository.GetByInvoiceID(ctx, invoiceID)
+	payments, err := paymentRepository.GetByInvoiceID(ctx, organisationID, invoiceID)
 	if err != nil {
 		t.Fatalf("get payments: %v", err)
 	}
@@ -302,7 +360,7 @@ func TestInvoiceService_CreatePayment_ConcurrentPaymentsCannotOverpay(t *testing
 		t.Fatalf("expected exactly 1 payment row, got %d", len(payments))
 	}
 
-	total, err := paymentRepository.GetTotalPaidByInvoiceID(ctx, invoiceID)
+	total, err := paymentRepository.GetTotalPaidByInvoiceID(ctx, organisationID, invoiceID)
 	if err != nil {
 		t.Fatalf("get total paid: %v", err)
 	}

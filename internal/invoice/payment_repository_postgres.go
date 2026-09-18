@@ -38,11 +38,23 @@ func (r *PostgresPaymentRepository) WithTx(tx pgx.Tx) PaymentRepository {
 	}
 }
 
-// Create inserts a new payment row. created_at and updated_at are left to
-// PostgreSQL's DEFAULT NOW(), matching every other Create in this
-// project (Invoice, Line, Organisation, Customer, Product, Settings).
+// Create inserts a new payment row via INSERT ... SELECT: the row is only
+// inserted at all if organisationID and invoiceID together match a real,
+// tenant-owned invoice (Milestone 4 Part 6) — invoice_id is sourced from
+// the matched invoices row itself (i.id), not blindly trusted from the
+// caller's payment.InvoiceID, so there is no way for this statement to
+// insert a payment against an invoice it didn't independently verify.
+// created_at and updated_at are left to PostgreSQL's DEFAULT NOW(),
+// matching every other Create in this project.
+//
+// If no tenant-owned invoice matches, zero rows are inserted and this
+// returns ErrInvoiceNotFound — the same not-found domain error the
+// service-level ownership check (InvoiceRepository.GetForUpdate) already
+// returns for this case, so the two layers of scoping stay externally
+// indistinguishable from each other and from a genuinely missing invoice.
 func (r *PostgresPaymentRepository) Create(
 	ctx context.Context,
+	organisationID uuid.UUID,
 	payment *Payment,
 ) error {
 	const query = `
@@ -55,12 +67,15 @@ func (r *PostgresPaymentRepository) Create(
 			reference,
 			notes
 		)
-		VALUES (
-			$1, $2, $3, $4, $5, $6, $7
-		)
+		SELECT
+			$1, i.id, $3, $4, $5, $6, $7
+		FROM invoices i
+		WHERE i.id = $2
+			AND i.organisation_id = $8
+			AND i.deleted_at IS NULL
 	`
 
-	_, err := r.db.Exec(
+	tag, err := r.db.Exec(
 		ctx,
 		query,
 		payment.ID,
@@ -70,9 +85,14 @@ func (r *PostgresPaymentRepository) Create(
 		payment.PaymentDate,
 		payment.Reference,
 		payment.Notes,
+		organisationID,
 	)
 	if err != nil {
 		return fmt.Errorf("create payment: %w", err)
+	}
+
+	if tag.RowsAffected() == 0 {
+		return ErrInvoiceNotFound
 	}
 
 	return nil
@@ -80,29 +100,36 @@ func (r *PostgresPaymentRepository) Create(
 
 // GetByInvoiceID fetches every payment belonging to an invoice, ordered by
 // payment_date and then created_at so results are deterministic even when
-// multiple payments share the same payment_date. It does not itself check
-// organisation scope — see the PaymentRepository doc comment.
+// multiple payments share the same payment_date. organisationID is
+// enforced via a join back to invoices (Milestone 4 Part 6) — payments
+// has no organisation_id column of its own. An invoice belonging to
+// another organisation yields an empty slice, exactly as a genuinely
+// payment-less invoice would, so no cross-tenant existence leaks through
+// a different result shape.
 func (r *PostgresPaymentRepository) GetByInvoiceID(
 	ctx context.Context,
+	organisationID uuid.UUID,
 	invoiceID uuid.UUID,
 ) ([]*Payment, error) {
 	const query = `
 		SELECT
-			id,
-			invoice_id,
-			amount,
-			payment_method,
-			payment_date,
-			reference,
-			notes,
-			created_at,
-			updated_at
-		FROM payments
-		WHERE invoice_id = $1
-		ORDER BY payment_date, created_at
+			p.id,
+			p.invoice_id,
+			p.amount,
+			p.payment_method,
+			p.payment_date,
+			p.reference,
+			p.notes,
+			p.created_at,
+			p.updated_at
+		FROM payments p
+		JOIN invoices i ON i.id = p.invoice_id
+		WHERE p.invoice_id = $1
+			AND i.organisation_id = $2
+		ORDER BY p.payment_date, p.created_at
 	`
 
-	rows, err := r.db.Query(ctx, query, invoiceID)
+	rows, err := r.db.Query(ctx, query, invoiceID, organisationID)
 	if err != nil {
 		return nil, fmt.Errorf("get payments: %w", err)
 	}
@@ -139,21 +166,27 @@ func (r *PostgresPaymentRepository) GetByInvoiceID(
 
 // GetTotalPaidByInvoiceID sums every payment for an invoice in PostgreSQL
 // rather than loading each row into Go. COALESCE guards against SUM's
-// NULL result when the invoice has no payments at all, so this returns 0
-// in that case rather than a NULL-scan error.
+// NULL result when the invoice has no payments at all — or when
+// organisationID doesn't match the invoice's real owner (Milestone 4
+// Part 6, enforced via the same join GetByInvoiceID uses) — so both cases
+// return 0 rather than a NULL-scan error or a cross-tenant amount, and
+// are indistinguishable from each other.
 func (r *PostgresPaymentRepository) GetTotalPaidByInvoiceID(
 	ctx context.Context,
+	organisationID uuid.UUID,
 	invoiceID uuid.UUID,
 ) (int64, error) {
 	const query = `
-		SELECT COALESCE(SUM(amount), 0)
-		FROM payments
-		WHERE invoice_id = $1
+		SELECT COALESCE(SUM(p.amount), 0)
+		FROM payments p
+		JOIN invoices i ON i.id = p.invoice_id
+		WHERE p.invoice_id = $1
+			AND i.organisation_id = $2
 	`
 
 	var total int64
 
-	if err := r.db.QueryRow(ctx, query, invoiceID).Scan(&total); err != nil {
+	if err := r.db.QueryRow(ctx, query, invoiceID, organisationID).Scan(&total); err != nil {
 		return 0, fmt.Errorf("get total paid: %w", err)
 	}
 

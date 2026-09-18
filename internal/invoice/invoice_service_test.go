@@ -68,7 +68,15 @@ func (f *fakeInvoiceRepository) GetByID(ctx context.Context, organisationID, inv
 	return &inv, nil
 }
 
-func (f *fakeInvoiceRepository) GetLinesByInvoiceID(ctx context.Context, invoiceID uuid.UUID) ([]*Line, error) {
+// GetLinesByInvoiceID mirrors the real repository's Milestone 4 Part 6
+// organisation check: an invoice belonging to a different organisation
+// yields an empty slice, exactly as GetByID's own not-found translation
+// keeps cross-tenant lookups indistinguishable from "no lines."
+func (f *fakeInvoiceRepository) GetLinesByInvoiceID(ctx context.Context, organisationID, invoiceID uuid.UUID) ([]*Line, error) {
+	inv, ok := f.invoices[invoiceID]
+	if !ok || inv.OrganisationID != organisationID {
+		return nil, nil
+	}
 	return f.lines[invoiceID], nil
 }
 
@@ -83,12 +91,15 @@ func (f *fakeInvoiceRepository) GetForUpdate(ctx context.Context, organisationID
 	return &inv, nil
 }
 
-func (f *fakeInvoiceRepository) UpdateStatus(ctx context.Context, invoiceID uuid.UUID, status string) error {
+// UpdateStatus mirrors the real repository's Milestone 4 Part 6
+// organisation check: an invoice that exists but belongs to a different
+// organisation is treated identically to one that doesn't exist at all.
+func (f *fakeInvoiceRepository) UpdateStatus(ctx context.Context, organisationID, invoiceID uuid.UUID, status string) error {
 	if f.updateStatusErr != nil {
 		return f.updateStatusErr
 	}
 	inv, ok := f.invoices[invoiceID]
-	if !ok {
+	if !ok || inv.OrganisationID != organisationID {
 		return ErrInvoiceNotFound
 	}
 	inv.Status = status
@@ -311,7 +322,18 @@ func (f *fakePaymentRepository) WithTx(tx pgx.Tx) PaymentRepository {
 	return f
 }
 
-func (f *fakePaymentRepository) Create(ctx context.Context, payment *Payment) error {
+// Create, like every other method here, accepts organisationID to match
+// PaymentRepository's real (Milestone 4 Part 6) signature, but doesn't
+// itself validate it — this fake has no reference to invoice ownership
+// data at all (unlike fakeInvoiceRepository, it only ever sees payments
+// keyed by invoiceID). It has no real tenant-scoping semantics of its
+// own, the same "fakes aren't the real thing" caveat already documented
+// on WithTx elsewhere in this file; the actual repository-level
+// enforcement is proven separately against real PostgreSQL in
+// payment_repository_postgres_test.go. Tests relying on cross-tenant
+// rejection go through InvoiceService, which never reaches this fake for
+// a foreign invoice because GetForUpdate rejects it first.
+func (f *fakePaymentRepository) Create(ctx context.Context, organisationID uuid.UUID, payment *Payment) error {
 	if f.createErr != nil {
 		return f.createErr
 	}
@@ -319,11 +341,11 @@ func (f *fakePaymentRepository) Create(ctx context.Context, payment *Payment) er
 	return nil
 }
 
-func (f *fakePaymentRepository) GetByInvoiceID(ctx context.Context, invoiceID uuid.UUID) ([]*Payment, error) {
+func (f *fakePaymentRepository) GetByInvoiceID(ctx context.Context, organisationID, invoiceID uuid.UUID) ([]*Payment, error) {
 	return f.payments[invoiceID], nil
 }
 
-func (f *fakePaymentRepository) GetTotalPaidByInvoiceID(ctx context.Context, invoiceID uuid.UUID) (int64, error) {
+func (f *fakePaymentRepository) GetTotalPaidByInvoiceID(ctx context.Context, organisationID, invoiceID uuid.UUID) (int64, error) {
 	if f.getTotalPaidErr != nil {
 		return 0, f.getTotalPaidErr
 	}

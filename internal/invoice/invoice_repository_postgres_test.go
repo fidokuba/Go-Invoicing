@@ -244,7 +244,7 @@ func TestPostgresInvoiceRepository_CreateAndGetByID(t *testing.T) {
 		t.Errorf("expected notes %q, got %v", notes, created.Notes)
 	}
 
-	gotLines, err := repository.GetLinesByInvoiceID(ctx, inv.ID)
+	gotLines, err := repository.GetLinesByInvoiceID(ctx, organisationID, inv.ID)
 	if err != nil {
 		t.Fatalf("get invoice lines: %v", err)
 	}

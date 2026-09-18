@@ -4,21 +4,34 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"gorm.io/gorm"
 )
 
+// User roles. Named constants rather than scattered string literals —
+// same reasoning as InvoiceStatus* in the invoice package: this is about
+// to have real role-dependent logic (UserService.Create validates
+// against this exact set), so a typo in a literal should be a compile
+// error, not a silent acceptance of an invalid role.
+const (
+	UserRoleAdmin   = "admin"
+	UserRoleManager = "manager"
+	UserRoleUser    = "user"
+)
+
+// DeletedAt is a pointer because that column is nullable in the users
+// table; every other field here is NOT NULL except LastLogin, which is
+// also nullable and already correctly a pointer.
 type User struct {
-	ID             uuid.UUID `gorm:"primaryKey"`
-	OrganisationID uuid.UUID `gorm:"index"`
+	ID             uuid.UUID
+	OrganisationID uuid.UUID
 	Name           string
-	Email          string `gorm:"uniqueIndex:idx_user_org"`
+	Email          string
 	PasswordHash   string
-	Role           string // admin, manager, user
+	Role           string // one of the UserRole* constants above
 	IsActive       bool
 	LastLogin      *time.Time
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
-	DeletedAt      gorm.DeletedAt `gorm:"index"`
+	DeletedAt      *time.Time
 }
 
 func (u *User) TableName() string {
@@ -26,5 +39,5 @@ func (u *User) TableName() string {
 }
 
 func (u *User) IsAdmin() bool {
-	return u.Role == "admin"
+	return u.Role == UserRoleAdmin
 }

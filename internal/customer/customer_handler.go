@@ -6,16 +6,18 @@ import (
 	"net/http"
 
 	"github.com/google/uuid"
+
+	admin "go-invoicing/internal/administration"
 )
 
 // CustomerHandler owns the HTTP-specific concerns for customers: decoding
 // requests, calling the service, translating errors into status codes, and
 // encoding responses. It holds no SQL and no business rules.
 //
-// There is no authentication/organisation-identity middleware yet, so the
-// organisation scope is read explicitly from an "organisationId" query
-// parameter on every request. This is expected to be replaced once
-// request-scoped organisation identity exists.
+// Both routes are protected (Milestone 4 Part 4): organisation identity
+// comes exclusively from admin.RequireAuthenticatedUser, never from a
+// client-supplied organisationId — see that function's doc comment for
+// the fail-closed behaviour when no authenticated identity is present.
 type CustomerHandler struct {
 	service *CustomerService
 }
@@ -28,11 +30,10 @@ func NewCustomerHandler(
 	}
 }
 
-// Create handles POST /customers?organisationId={organisationId}.
+// Create handles POST /customers.
 func (h *CustomerHandler) Create(w http.ResponseWriter, r *http.Request) {
-	organisationID, err := uuid.Parse(r.URL.Query().Get("organisationId"))
-	if err != nil {
-		http.Error(w, "invalid or missing organisationId", http.StatusBadRequest)
+	identity, ok := admin.RequireAuthenticatedUser(w, r)
+	if !ok {
 		return
 	}
 
@@ -45,7 +46,7 @@ func (h *CustomerHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	c, err := h.service.Create(
 		r.Context(),
-		organisationID,
+		identity.OrganisationID,
 		request.Name,
 		request.Email,
 		request.Phone,
@@ -72,11 +73,10 @@ func (h *CustomerHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// GetByID handles GET /customers/{id}?organisationId={organisationId}.
+// GetByID handles GET /customers/{id}.
 func (h *CustomerHandler) GetByID(w http.ResponseWriter, r *http.Request) {
-	organisationID, err := uuid.Parse(r.URL.Query().Get("organisationId"))
-	if err != nil {
-		http.Error(w, "invalid or missing organisationId", http.StatusBadRequest)
+	identity, ok := admin.RequireAuthenticatedUser(w, r)
+	if !ok {
 		return
 	}
 
@@ -88,7 +88,7 @@ func (h *CustomerHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	c, err := h.service.GetByID(r.Context(), organisationID, id)
+	c, err := h.service.GetByID(r.Context(), identity.OrganisationID, id)
 	if err != nil {
 		if errors.Is(err, ErrCustomerNotFound) {
 			http.Error(w, "customer not found", http.StatusNotFound)

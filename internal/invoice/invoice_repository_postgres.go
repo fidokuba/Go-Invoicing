@@ -288,9 +288,19 @@ func (r *PostgresInvoiceRepository) GetForUpdate(
 	return &inv, nil
 }
 
-// UpdateStatus persists a new status for the invoice.
+// UpdateStatus persists a new status for the invoice. organisationID is
+// part of the UPDATE's own WHERE clause (Milestone 4 Part 6): this cannot
+// mutate another organisation's invoice merely because a caller forgot to
+// check ownership first — it independently re-checks, even though every
+// current caller has already locked the row via GetForUpdate in the same
+// transaction. A row that exists but belongs to a different organisation
+// is indistinguishable from one that doesn't exist at all: both leave
+// RowsAffected at 0 and return ErrInvoiceNotFound, preserving the
+// existing not-found semantics rather than introducing a new,
+// externally-distinguishable error.
 func (r *PostgresInvoiceRepository) UpdateStatus(
 	ctx context.Context,
+	organisationID uuid.UUID,
 	invoiceID uuid.UUID,
 	status string,
 ) error {
@@ -299,10 +309,11 @@ func (r *PostgresInvoiceRepository) UpdateStatus(
 		SET status = $1,
 			updated_at = NOW()
 		WHERE id = $2
+			AND organisation_id = $3
 			AND deleted_at IS NULL
 	`
 
-	tag, err := r.db.Exec(ctx, query, status, invoiceID)
+	tag, err := r.db.Exec(ctx, query, status, invoiceID, organisationID)
 	if err != nil {
 		return fmt.Errorf("update invoice status: %w", err)
 	}
@@ -315,33 +326,41 @@ func (r *PostgresInvoiceRepository) UpdateStatus(
 }
 
 // GetLinesByInvoiceID fetches every line belonging to an invoice, ordered
-// by creation. It does not itself check organisation scope — callers are
-// expected to have already confirmed (via GetByID) that the invoice
-// belongs to the caller's organisation, so a second scoped join here would
-// be redundant.
+// by creation. organisationID is required (Milestone 4 Part 6) and
+// enforced via a join back to invoices — invoice_lines has no
+// organisation_id column of its own, so this is how the query itself
+// scopes the read, rather than depending solely on the caller having
+// already confirmed ownership via GetByID/GetForUpdate first. A line
+// belonging to another organisation's invoice is indistinguishable from
+// no lines at all: this returns an empty slice, exactly as it would for
+// an invoice with genuinely no lines, so no cross-tenant existence leaks
+// through a different result shape.
 func (r *PostgresInvoiceRepository) GetLinesByInvoiceID(
 	ctx context.Context,
+	organisationID uuid.UUID,
 	invoiceID uuid.UUID,
 ) ([]*Line, error) {
 	const query = `
 		SELECT
-			id,
-			invoice_id,
-			product_id,
-			description,
-			quantity,
-			unit_price,
-			vat_rate,
-			vat_amount,
-			total,
-			created_at,
-			updated_at
-		FROM invoice_lines
-		WHERE invoice_id = $1
-		ORDER BY created_at
+			il.id,
+			il.invoice_id,
+			il.product_id,
+			il.description,
+			il.quantity,
+			il.unit_price,
+			il.vat_rate,
+			il.vat_amount,
+			il.total,
+			il.created_at,
+			il.updated_at
+		FROM invoice_lines il
+		JOIN invoices i ON i.id = il.invoice_id
+		WHERE il.invoice_id = $1
+			AND i.organisation_id = $2
+		ORDER BY il.created_at
 	`
 
-	rows, err := r.db.Query(ctx, query, invoiceID)
+	rows, err := r.db.Query(ctx, query, invoiceID, organisationID)
 	if err != nil {
 		return nil, fmt.Errorf("get invoice lines: %w", err)
 	}

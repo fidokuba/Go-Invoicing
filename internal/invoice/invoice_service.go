@@ -287,12 +287,12 @@ func (s *InvoiceService) GetByID(
 		return nil, nil, 0, err
 	}
 
-	lines, err := s.repository.GetLinesByInvoiceID(ctx, invoiceID)
+	lines, err := s.repository.GetLinesByInvoiceID(ctx, organisationID, invoiceID)
 	if err != nil {
 		return nil, nil, 0, err
 	}
 
-	amountPaid, err := s.paymentRepository.GetTotalPaidByInvoiceID(ctx, invoiceID)
+	amountPaid, err := s.paymentRepository.GetTotalPaidByInvoiceID(ctx, organisationID, invoiceID)
 	if err != nil {
 		return nil, nil, 0, err
 	}
@@ -404,7 +404,7 @@ func (s *InvoiceService) CreatePayment(
 
 	// Computed only after the lock is held, so a concurrent payment
 	// against the same invoice cannot read this same total.
-	totalPaid, err := txPaymentRepository.GetTotalPaidByInvoiceID(ctx, invoiceID)
+	totalPaid, err := txPaymentRepository.GetTotalPaidByInvoiceID(ctx, organisationID, invoiceID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("get total paid: %w", err)
 	}
@@ -415,12 +415,12 @@ func (s *InvoiceService) CreatePayment(
 		return nil, nil, ErrPaymentExceedsOutstanding
 	}
 
-	if err := txPaymentRepository.Create(ctx, payment); err != nil {
+	if err := txPaymentRepository.Create(ctx, organisationID, payment); err != nil {
 		return nil, nil, err
 	}
 
 	if payment.Amount == outstanding {
-		if err := txInvoiceRepository.UpdateStatus(ctx, invoiceID, InvoiceStatusPaid); err != nil {
+		if err := txInvoiceRepository.UpdateStatus(ctx, organisationID, invoiceID, InvoiceStatusPaid); err != nil {
 			return nil, nil, fmt.Errorf("update invoice status: %w", err)
 		}
 
@@ -460,7 +460,7 @@ func (s *InvoiceService) GetPayments(
 		return nil, err
 	}
 
-	return s.paymentRepository.GetByInvoiceID(ctx, invoiceID)
+	return s.paymentRepository.GetByInvoiceID(ctx, organisationID, invoiceID)
 }
 
 // validateLines applies every per-line structural rule (description,
