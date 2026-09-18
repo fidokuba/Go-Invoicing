@@ -82,3 +82,47 @@ func (h *OrganisationHandler) GetCurrent(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "failed to encode response", http.StatusInternalServerError)
 	}
 }
+
+// Update handles PATCH /organisation (Milestone 7 Part 1) — admin-only,
+// enforced by the RequireRole middleware wrapping this route in app.go,
+// not by anything in this handler. Organisation identity comes
+// exclusively from the authenticated caller's own OrganisationID, exactly
+// like GetCurrent: there is no {id} anywhere in this route for a client
+// to supply, so there is no cross-tenant case to guard against here.
+func (h *OrganisationHandler) Update(w http.ResponseWriter, r *http.Request) {
+	identity, ok := RequireAuthenticatedUser(w, r)
+	if !ok {
+		return
+	}
+
+	var request UpdateOrganisationRequest
+
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	organisation, err := h.service.Update(r.Context(), identity.OrganisationID, request)
+	if err != nil {
+		if errors.Is(err, ErrOrganisationNotFound) {
+			http.Error(w, "organisation not found", http.StatusNotFound)
+			return
+		}
+
+		if errors.Is(err, ErrOrganisationNameRequired) || errors.Is(err, ErrOrganisationEmailInvalid) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		http.Error(w, "failed to update organisation", http.StatusInternalServerError)
+		return
+	}
+
+	response := toOrganisationResponse(organisation)
+
+	w.Header().Set("Content-Type", "application/json")
+
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+	}
+}

@@ -60,6 +60,18 @@ func (f *fakeOrganisationRepository) GetByID(ctx context.Context, id uuid.UUID) 
 	return &organisation, nil
 }
 
+func (f *fakeOrganisationRepository) Update(ctx context.Context, organisationID uuid.UUID, organisation *Organisation) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if _, ok := f.organisations[organisationID]; !ok {
+		return ErrOrganisationNotFound
+	}
+
+	f.organisations[organisationID] = *organisation
+	return nil
+}
+
 // fakeSettingsRepository is an in-memory SettingsRepository used to test
 // OrganisationService's settings provisioning without touching
 // PostgreSQL. WithTx ignores its tx argument and returns the same fake —

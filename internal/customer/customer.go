@@ -22,8 +22,6 @@ type Customer struct {
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 	DeletedAt      *time.Time
-
-	Addresses []Address `gorm:"foreignKey:CustomerID"`
 }
 
 func (c *Customer) TableName() string {

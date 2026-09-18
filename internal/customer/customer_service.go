@@ -12,18 +12,33 @@ import (
 // (or whitespace-only) name.
 var ErrCustomerNameRequired = errors.New("customer name is required")
 
-// CustomerService sits between the HTTP layer and the repository. It
-// depends on the CustomerRepository interface, not on any concrete
-// implementation.
+// Billing address field-required errors (Milestone 7 Part 1). State is
+// deliberately not in this list — not every country uses one, and the
+// schema/DTO already treat it as optional.
+var (
+	ErrBillingAddressStreetRequired     = errors.New("billing address street is required")
+	ErrBillingAddressCityRequired       = errors.New("billing address city is required")
+	ErrBillingAddressPostalCodeRequired = errors.New("billing address postal code is required")
+	ErrBillingAddressCountryRequired    = errors.New("billing address country is required")
+)
+
+// CustomerService sits between the HTTP layer and the repository. It also
+// depends on AddressRepository for a customer's billing address
+// (Milestone 7 Part 1) — treated as part of the customer aggregate rather
+// than a separate service, the same way InvoiceService owns payment
+// operations directly rather than delegating to a PaymentService.
 type CustomerService struct {
-	repository CustomerRepository
+	repository        CustomerRepository
+	addressRepository AddressRepository
 }
 
 func NewCustomerService(
 	repository CustomerRepository,
+	addressRepository AddressRepository,
 ) *CustomerService {
 	return &CustomerService{
-		repository: repository,
+		repository:        repository,
+		addressRepository: addressRepository,
 	}
 }
 
@@ -80,4 +95,64 @@ func nilIfEmpty(value string) *string {
 		return nil
 	}
 	return &value
+}
+
+// GetBillingAddress delegates straight to the repository; organisation
+// scoping happens there, joined through the customer.
+func (s *CustomerService) GetBillingAddress(
+	ctx context.Context,
+	organisationID uuid.UUID,
+	customerID uuid.UUID,
+) (*Address, error) {
+	return s.addressRepository.GetBillingAddressByCustomerID(ctx, organisationID, customerID)
+}
+
+// UpsertBillingAddress validates the request and creates or replaces
+// customerID's billing address — see AddressRepository.UpsertBillingAddress
+// for how the "create if absent, replace if present" behaviour is a
+// single atomic operation rather than a read-then-write this service
+// performs itself.
+//
+// Street, City, PostalCode and Country must all be non-blank after
+// trimming: an address record that's missing any of these isn't useful on
+// an invoice. State is trimmed but may be blank — not every country uses
+// one.
+func (s *CustomerService) UpsertBillingAddress(
+	ctx context.Context,
+	organisationID uuid.UUID,
+	customerID uuid.UUID,
+	request UpsertBillingAddressRequest,
+) (*Address, error) {
+	street := strings.TrimSpace(request.Street)
+	if street == "" {
+		return nil, ErrBillingAddressStreetRequired
+	}
+
+	city := strings.TrimSpace(request.City)
+	if city == "" {
+		return nil, ErrBillingAddressCityRequired
+	}
+
+	postalCode := strings.TrimSpace(request.PostalCode)
+	if postalCode == "" {
+		return nil, ErrBillingAddressPostalCodeRequired
+	}
+
+	country := strings.TrimSpace(request.Country)
+	if country == "" {
+		return nil, ErrBillingAddressCountryRequired
+	}
+
+	address := &Address{
+		ID:         uuid.New(),
+		CustomerID: customerID,
+		Type:       AddressTypeBilling,
+		Street:     street,
+		City:       city,
+		State:      strings.TrimSpace(request.State),
+		PostalCode: postalCode,
+		Country:    country,
+	}
+
+	return s.addressRepository.UpsertBillingAddress(ctx, organisationID, customerID, address)
 }

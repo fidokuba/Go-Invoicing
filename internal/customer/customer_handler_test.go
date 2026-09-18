@@ -14,8 +14,19 @@ import (
 )
 
 func newTestHandler() *CustomerHandler {
-	service := NewCustomerService(newFakeCustomerRepository())
+	service := NewCustomerService(newFakeCustomerRepository(), newFakeAddressRepository())
 	return NewCustomerHandler(service)
+}
+
+// newTestHandlerWithFakes is like newTestHandler but also returns the two
+// underlying fakes, for tests (billing-address ones) that need to
+// register a customer/organisation relationship or a customer directly
+// against the repositories rather than only through the handler.
+func newTestHandlerWithFakes() (*CustomerHandler, *fakeCustomerRepository, *fakeAddressRepository) {
+	customerRepository := newFakeCustomerRepository()
+	addressRepository := newFakeAddressRepository()
+	service := NewCustomerService(customerRepository, addressRepository)
+	return NewCustomerHandler(service), customerRepository, addressRepository
 }
 
 // withAuthenticatedOrganisation attaches an AuthenticatedUser identity
@@ -144,7 +155,7 @@ func TestCustomerHandler_Create_MissingAuthenticatedContext(t *testing.T) {
 
 func TestCustomerHandler_GetByID(t *testing.T) {
 	repository := newFakeCustomerRepository()
-	service := NewCustomerService(repository)
+	service := NewCustomerService(repository, newFakeAddressRepository())
 	handler := NewCustomerHandler(service)
 
 	organisationID := uuid.New()
@@ -180,7 +191,7 @@ func TestCustomerHandler_GetByID(t *testing.T) {
 // tenant scope.
 func TestCustomerHandler_GetByID_IgnoresOrganisationIdQueryParameter(t *testing.T) {
 	repository := newFakeCustomerRepository()
-	service := NewCustomerService(repository)
+	service := NewCustomerService(repository, newFakeAddressRepository())
 	handler := NewCustomerHandler(service)
 
 	ownerOrganisationID := uuid.New()
@@ -259,7 +270,7 @@ func TestCustomerHandler_GetByID_NotFound(t *testing.T) {
 
 func TestCustomerHandler_GetByID_WrongOrganisation(t *testing.T) {
 	repository := newFakeCustomerRepository()
-	service := NewCustomerService(repository)
+	service := NewCustomerService(repository, newFakeAddressRepository())
 	handler := NewCustomerHandler(service)
 
 	organisationA := uuid.New()

@@ -92,13 +92,34 @@ func (a *App) Handler() http.Handler {
 	// GET /organisations/{id}.
 	mux.HandleFunc("GET /organisation", authMiddleware.RequireAuth(organisationHandler.GetCurrent))
 
+	// PATCH /organisation (Milestone 7 Part 1) is admin-only: organisation
+	// identity/legal/business details affect every invoice the tenant
+	// produces, so it isn't freely mutable by every role the way customer/
+	// product/invoice data is. Same RequireRole gate POST /users already
+	// uses, no new role-hierarchy logic.
+	mux.HandleFunc(
+		"PATCH /organisation",
+		authMiddleware.RequireAuth(admin.RequireRole(admin.UserRoleAdmin)(organisationHandler.Update)),
+	)
+
 	// Wire the customer dependency chain: pool -> repository -> service -> handler.
+	// AddressRepository (Milestone 7 Part 1) is a second, small dependency
+	// of CustomerService, for a customer's billing address — see
+	// CustomerService's own doc comment for why it lives there rather than
+	// a separate service.
 	customerRepository := customer.NewPostgresCustomerRepository(a.db)
-	customerService := customer.NewCustomerService(customerRepository)
+	addressRepository := customer.NewPostgresAddressRepository(a.db)
+	customerService := customer.NewCustomerService(customerRepository, addressRepository)
 	customerHandler := customer.NewCustomerHandler(customerService)
 
 	mux.HandleFunc("POST /customers", authMiddleware.RequireAuth(customerHandler.Create))
 	mux.HandleFunc("GET /customers/{id}", authMiddleware.RequireAuth(customerHandler.GetByID))
+
+	// Billing address (Milestone 7 Part 1): available to every authenticated
+	// role, same policy as every other customer/invoice business-data route
+	// — only organisation PATCH is admin-only.
+	mux.HandleFunc("GET /customers/{id}/billing-address", authMiddleware.RequireAuth(customerHandler.GetBillingAddress))
+	mux.HandleFunc("PUT /customers/{id}/billing-address", authMiddleware.RequireAuth(customerHandler.UpsertBillingAddress))
 
 	// Wire the product dependency chain: pool -> repository -> service -> handler.
 	productRepository := product.NewPostgresProductRepository(a.db)

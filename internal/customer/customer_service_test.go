@@ -3,6 +3,7 @@ package customer
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -36,8 +37,72 @@ func (f *fakeCustomerRepository) GetByID(ctx context.Context, organisationID, cu
 	return &c, nil
 }
 
+// fakeAddressRepository is an in-memory AddressRepository used to test
+// CustomerService's billing-address methods without touching PostgreSQL.
+// The real repository derives "does this customer belong to this
+// organisation" from a live join against the customers table; this fake
+// has no such table to join against, so tests register that relationship
+// explicitly via registerCustomer first — the fake then enforces it
+// exactly the way the real repository's JOIN would.
+type fakeAddressRepository struct {
+	mu                    sync.Mutex
+	customerOrganisations map[uuid.UUID]uuid.UUID
+	billingAddresses      map[uuid.UUID]Address
+}
+
+func newFakeAddressRepository() *fakeAddressRepository {
+	return &fakeAddressRepository{
+		customerOrganisations: make(map[uuid.UUID]uuid.UUID),
+		billingAddresses:      make(map[uuid.UUID]Address),
+	}
+}
+
+func (f *fakeAddressRepository) registerCustomer(customerID, organisationID uuid.UUID) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.customerOrganisations[customerID] = organisationID
+}
+
+func (f *fakeAddressRepository) GetBillingAddressByCustomerID(ctx context.Context, organisationID, customerID uuid.UUID) (*Address, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.customerOrganisations[customerID] != organisationID {
+		return nil, ErrBillingAddressNotFound
+	}
+
+	a, ok := f.billingAddresses[customerID]
+	if !ok {
+		return nil, ErrBillingAddressNotFound
+	}
+
+	result := a
+	return &result, nil
+}
+
+// UpsertBillingAddress preserves the existing row's ID across an update —
+// mirroring the real repository's ON CONFLICT ... DO UPDATE, which never
+// creates a second row for the same customer.
+func (f *fakeAddressRepository) UpsertBillingAddress(ctx context.Context, organisationID, customerID uuid.UUID, address *Address) (*Address, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.customerOrganisations[customerID] != organisationID {
+		return nil, ErrBillingAddressNotFound
+	}
+
+	stored := *address
+	if existing, ok := f.billingAddresses[customerID]; ok {
+		stored.ID = existing.ID
+	}
+	f.billingAddresses[customerID] = stored
+
+	result := stored
+	return &result, nil
+}
+
 func TestCustomerService_Create_MissingName(t *testing.T) {
-	service := NewCustomerService(newFakeCustomerRepository())
+	service := NewCustomerService(newFakeCustomerRepository(), newFakeAddressRepository())
 
 	_, err := service.Create(context.Background(), uuid.New(), "   ", "", "", "", "")
 
@@ -48,7 +113,7 @@ func TestCustomerService_Create_MissingName(t *testing.T) {
 
 func TestCustomerService_Create_Success(t *testing.T) {
 	organisationID := uuid.New()
-	service := NewCustomerService(newFakeCustomerRepository())
+	service := NewCustomerService(newFakeCustomerRepository(), newFakeAddressRepository())
 
 	c, err := service.Create(
 		context.Background(),

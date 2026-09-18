@@ -107,3 +107,99 @@ func (h *CustomerHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to encode response", http.StatusInternalServerError)
 	}
 }
+
+// GetBillingAddress handles GET /customers/{id}/billing-address.
+func (h *CustomerHandler) GetBillingAddress(w http.ResponseWriter, r *http.Request) {
+	identity, ok := admin.RequireAuthenticatedUser(w, r)
+	if !ok {
+		return
+	}
+
+	customerID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "invalid customer ID", http.StatusBadRequest)
+		return
+	}
+
+	address, err := h.service.GetBillingAddress(r.Context(), identity.OrganisationID, customerID)
+	if err != nil {
+		if errors.Is(err, ErrBillingAddressNotFound) {
+			http.Error(w, "billing address not found", http.StatusNotFound)
+			return
+		}
+
+		http.Error(w, "failed to get billing address", http.StatusInternalServerError)
+		return
+	}
+
+	response := toAddressResponse(address)
+
+	w.Header().Set("Content-Type", "application/json")
+
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+	}
+}
+
+// UpsertBillingAddress handles PUT /customers/{id}/billing-address —
+// creates the customer's billing address if none exists yet, or replaces
+// it in place if one already does (see CustomerService.UpsertBillingAddress).
+func (h *CustomerHandler) UpsertBillingAddress(w http.ResponseWriter, r *http.Request) {
+	identity, ok := admin.RequireAuthenticatedUser(w, r)
+	if !ok {
+		return
+	}
+
+	customerID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "invalid customer ID", http.StatusBadRequest)
+		return
+	}
+
+	var request UpsertBillingAddressRequest
+
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	address, err := h.service.UpsertBillingAddress(r.Context(), identity.OrganisationID, customerID, request)
+	if err != nil {
+		if errors.Is(err, ErrBillingAddressNotFound) {
+			http.Error(w, "customer not found", http.StatusNotFound)
+			return
+		}
+
+		if isBillingAddressValidationError(err) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		http.Error(w, "failed to save billing address", http.StatusInternalServerError)
+		return
+	}
+
+	response := toAddressResponse(address)
+
+	w.Header().Set("Content-Type", "application/json")
+
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+	}
+}
+
+// isBillingAddressValidationError reports whether err is one of
+// CustomerService.UpsertBillingAddress's input-validation sentinels,
+// which map to HTTP 400 — as opposed to ErrBillingAddressNotFound (404)
+// or an unexpected failure (500).
+func isBillingAddressValidationError(err error) bool {
+	switch {
+	case errors.Is(err, ErrBillingAddressStreetRequired),
+		errors.Is(err, ErrBillingAddressCityRequired),
+		errors.Is(err, ErrBillingAddressPostalCodeRequired),
+		errors.Is(err, ErrBillingAddressCountryRequired):
+		return true
+	default:
+		return false
+	}
+}

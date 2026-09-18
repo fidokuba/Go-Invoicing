@@ -45,3 +45,50 @@ func toCustomerResponse(c *Customer) CustomerResponse {
 		UpdatedAt:      c.UpdatedAt.Format(time.RFC3339),
 	}
 }
+
+// UpsertBillingAddressRequest is the shape a client PUTs to
+// /customers/{id}/billing-address. This is a whole-resource replace, not
+// a partial patch (see PUT semantics on the handler), so every field is a
+// plain string — there is no need to distinguish "omitted" from
+// "explicitly empty" the way UpdateOrganisationRequest does. Street,
+// City, PostalCode and Country are required by CustomerService
+// .UpsertBillingAddress; State may be left blank.
+type UpsertBillingAddressRequest struct {
+	Street     string `json:"street"`
+	City       string `json:"city"`
+	State      string `json:"state"`
+	PostalCode string `json:"postalCode"`
+	Country    string `json:"country"`
+}
+
+// AddressResponse is the shape returned for a customer's billing address.
+type AddressResponse struct {
+	ID         string `json:"id"`
+	CustomerID string `json:"customerId"`
+	Type       string `json:"type"`
+	Street     string `json:"street"`
+	City       string `json:"city"`
+	State      string `json:"state,omitempty"`
+	PostalCode string `json:"postalCode"`
+	Country    string `json:"country"`
+	CreatedAt  string `json:"createdAt"`
+	UpdatedAt  string `json:"updatedAt"`
+}
+
+// toAddressResponse maps the internal domain model onto the API's response
+// shape. IsDefault is deliberately not exposed — see Address's own doc
+// comment for why nothing reads it yet.
+func toAddressResponse(a *Address) AddressResponse {
+	return AddressResponse{
+		ID:         a.ID.String(),
+		CustomerID: a.CustomerID.String(),
+		Type:       a.Type,
+		Street:     a.Street,
+		City:       a.City,
+		State:      a.State,
+		PostalCode: a.PostalCode,
+		Country:    a.Country,
+		CreatedAt:  a.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:  a.UpdatedAt.Format(time.RFC3339),
+	}
+}

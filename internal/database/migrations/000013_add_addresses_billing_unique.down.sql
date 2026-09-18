@@ -1,0 +1,1 @@
+DROP INDEX addresses_customer_billing_unique;

@@ -163,10 +163,13 @@ func TestApp_ProtectedRoutes_RejectRequestsWithoutAuthorization(t *testing.T) {
 		path   string
 	}{
 		{http.MethodGet, "/organisation"},
+		{http.MethodPatch, "/organisation"},
 		{http.MethodPost, "/users"},
 		{http.MethodGet, "/users/" + id},
 		{http.MethodPost, "/customers"},
 		{http.MethodGet, "/customers/" + id},
+		{http.MethodGet, "/customers/" + id + "/billing-address"},
+		{http.MethodPut, "/customers/" + id + "/billing-address"},
 		{http.MethodPost, "/products"},
 		{http.MethodGet, "/products/" + id},
 		{http.MethodPost, "/invoices"},
@@ -300,6 +303,11 @@ func cleanupOrganisation(db *pgxpool.Pool, organisationID string) {
 	_, _ = db.Exec(ctx, "DELETE FROM invoice_lines WHERE invoice_id IN (SELECT id FROM invoices WHERE organisation_id = $1)", organisationID)
 	_, _ = db.Exec(ctx, "DELETE FROM invoices WHERE organisation_id = $1", organisationID)
 	_, _ = db.Exec(ctx, "DELETE FROM products WHERE organisation_id = $1", organisationID)
+	// addresses has no organisation_id column of its own (Milestone 7 Part
+	// 1) — scoped via customers, and must be deleted before customers
+	// itself, or the customers delete below silently fails on the
+	// addresses_customer_id_fkey foreign key.
+	_, _ = db.Exec(ctx, "DELETE FROM addresses WHERE customer_id IN (SELECT id FROM customers WHERE organisation_id = $1)", organisationID)
 	_, _ = db.Exec(ctx, "DELETE FROM customers WHERE organisation_id = $1", organisationID)
 	_, _ = db.Exec(ctx, "DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE organisation_id = $1)", organisationID)
 	_, _ = db.Exec(ctx, "DELETE FROM users WHERE organisation_id = $1", organisationID)
@@ -396,6 +404,79 @@ func TestApp_RoleMatrix_UserManagement(t *testing.T) {
 	}
 }
 
+// TestApp_RoleMatrix_OrganisationUpdate proves PATCH /organisation
+// (Milestone 7 Part 1) is admin-only: manager and user must both be
+// rejected with 403, exactly like every other admin-only route in this
+// project, while GET /organisation remains open to all three roles
+// (already covered by TestApp_EndToEnd_RegisterLoginThenAccessProtectedRoute
+// and the cross-tenant test).
+func TestApp_RoleMatrix_OrganisationUpdate(t *testing.T) {
+	handler, db := newTestApp(t)
+	tenant := registerTenant(t, handler, db, "Org Update Role Org", "org-update-admin@example.com")
+
+	_, managerToken := createAndLoginUser(t, handler, tenant.token, "Manager", "org-update-manager@example.com", admin.UserRoleManager)
+	_, userToken := createAndLoginUser(t, handler, tenant.token, "User", "org-update-user@example.com", admin.UserRoleUser)
+
+	tests := []struct {
+		name       string
+		actorToken string
+		wantStatus int
+	}{
+		{"admin can update organisation", tenant.token, http.StatusOK},
+		{"manager cannot update organisation", managerToken, http.StatusForbidden},
+		{"user cannot update organisation", userToken, http.StatusForbidden},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := doRequest(handler, http.MethodPatch, "/organisation", tt.actorToken, bytes.NewBufferString(`{"city":"London"}`))
+			if recorder.Code != tt.wantStatus {
+				t.Fatalf("expected status %d, got %d (body: %s)", tt.wantStatus, recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
+// TestApp_OrganisationUpdate_EndToEnd exercises genuine partial-update
+// semantics through the real HTTP/service/repository/PostgreSQL stack:
+// an update that only supplies Email must leave a previously-set Phone
+// untouched, and the change must be visible on a subsequent GET.
+func TestApp_OrganisationUpdate_EndToEnd(t *testing.T) {
+	handler, db := newTestApp(t)
+	tenant := registerTenant(t, handler, db, "Org Update E2E Org", "org-update-e2e-admin@example.com")
+
+	firstRecorder := doRequest(handler, http.MethodPatch, "/organisation", tenant.token, bytes.NewBufferString(`{"phone":"+44 20 7946 0958"}`))
+	if firstRecorder.Code != http.StatusOK {
+		t.Fatalf("first update: status %d (body: %s)", firstRecorder.Code, firstRecorder.Body.String())
+	}
+
+	secondRecorder := doRequest(handler, http.MethodPatch, "/organisation", tenant.token, bytes.NewBufferString(`{"email":"contact@org-update-e2e.test"}`))
+	if secondRecorder.Code != http.StatusOK {
+		t.Fatalf("second update: status %d (body: %s)", secondRecorder.Code, secondRecorder.Body.String())
+	}
+
+	getRecorder := doRequest(handler, http.MethodGet, "/organisation", tenant.token, nil)
+	if getRecorder.Code != http.StatusOK {
+		t.Fatalf("get organisation: status %d (body: %s)", getRecorder.Code, getRecorder.Body.String())
+	}
+
+	var response struct {
+		Phone *string `json:"phone"`
+		Email *string `json:"email"`
+	}
+	if err := json.NewDecoder(getRecorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode organisation response: %v", err)
+	}
+
+	if response.Phone == nil || *response.Phone != "+44 20 7946 0958" {
+		t.Errorf("expected phone to remain set from the first update, got %v", response.Phone)
+	}
+
+	if response.Email == nil || *response.Email != "contact@org-update-e2e.test" {
+		t.Errorf("expected email to be set by the second update, got %v", response.Email)
+	}
+}
+
 // TestApp_ManagerPrivilegeEscalation_EndToEnd is the explicit end-to-end
 // proof that a manager cannot escalate their own organisation's
 // privilege structure by creating an admin — the crux security guarantee
@@ -459,6 +540,19 @@ func TestApp_RoleMatrix_BusinessDataOperationsAvailableToAllRoles(t *testing.T) 
 
 			if recorder := doRequest(handler, http.MethodGet, "/customers/"+customer.ID, role.token, nil); recorder.Code != http.StatusOK {
 				t.Fatalf("get customer as %s: status %d (body: %s)", role.name, recorder.Code, recorder.Body.String())
+			}
+
+			// Billing address (Milestone 7 Part 1): all three roles may
+			// create/read a customer's billing address, same policy as
+			// every other customer/invoice business-data route.
+			billingAddressBody := bytes.NewBufferString(`{"street":"1 ` + role.name + ` Way","city":"London","postalCode":"E1 6AN","country":"GB"}`)
+			billingAddressRecorder := doRequest(handler, http.MethodPut, "/customers/"+customer.ID+"/billing-address", role.token, billingAddressBody)
+			if billingAddressRecorder.Code != http.StatusOK {
+				t.Fatalf("put billing address as %s: status %d (body: %s)", role.name, billingAddressRecorder.Code, billingAddressRecorder.Body.String())
+			}
+
+			if recorder := doRequest(handler, http.MethodGet, "/customers/"+customer.ID+"/billing-address", role.token, nil); recorder.Code != http.StatusOK {
+				t.Fatalf("get billing address as %s: status %d (body: %s)", role.name, recorder.Code, recorder.Body.String())
 			}
 
 			productRecorder := doRequest(handler, http.MethodPost, "/products", role.token, bytes.NewBufferString(`{"name":"`+role.name+`'s Product","sku":"SKU-`+role.name+`","price":500}`))
@@ -806,6 +900,8 @@ func TestApp_CrossTenantIsolation_TwoOrganisations(t *testing.T) {
 		body   string // built fresh into a new *bytes.Buffer per request — a *bytes.Buffer is drained after one use
 	}{
 		{"get tenant B customer", http.MethodGet, "/customers/" + customerB.ID, ""},
+		{"get tenant B customer's billing address", http.MethodGet, "/customers/" + customerB.ID + "/billing-address", ""},
+		{"put tenant B customer's billing address", http.MethodPut, "/customers/" + customerB.ID + "/billing-address", `{"street":"Attacker St","city":"X","postalCode":"00000","country":"XX"}`},
 		{"get tenant B product", http.MethodGet, "/products/" + productB.ID, ""},
 		{"get tenant B invoice", http.MethodGet, "/invoices/" + invoiceB.ID, ""},
 		{"send tenant B invoice", http.MethodPost, "/invoices/" + invoiceB.ID + "/send", ""},
@@ -843,6 +939,14 @@ func TestApp_CrossTenantIsolation_TwoOrganisations(t *testing.T) {
 	}
 	if len(payments) != 0 {
 		t.Errorf("expected tenant B's invoice to have 0 payments after tenant A's blocked attempts, got %d", len(payments))
+	}
+
+	// Confirm tenant A's blocked billing-address PUT attempt didn't create
+	// one for tenant B either — tenant B, acting as itself, must still see
+	// no billing address for its own customer.
+	billingAddressRecorder := doRequest(handler, http.MethodGet, "/customers/"+customerB.ID+"/billing-address", tenantB.token, nil)
+	if billingAddressRecorder.Code != http.StatusNotFound {
+		t.Fatalf("expected tenant B's customer to still have no billing address after tenant A's blocked attempts, got status %d (body: %s)", billingAddressRecorder.Code, billingAddressRecorder.Body.String())
 	}
 
 	// Cross-tenant user-management: tenant A cannot escalate/attack via

@@ -152,3 +152,57 @@ func (r *PostgresOrganisationRepository) GetByID(
 
 	return &organisation, nil
 }
+
+// Update persists every mutable party-detail field in one statement.
+// Logo is intentionally absent from the SET list, so it is never touched
+// here — see OrganisationRepository.Update's own comment. updated_at is
+// bumped explicitly (Create leaves it to the column default, but this is
+// a genuine change, not an initial insert).
+func (r *PostgresOrganisationRepository) Update(
+	ctx context.Context,
+	organisationID uuid.UUID,
+	organisation *Organisation,
+) error {
+	const query = `
+		UPDATE organisations
+		SET
+			name        = $1,
+			email       = $2,
+			phone       = $3,
+			website     = $4,
+			address     = $5,
+			city        = $6,
+			state       = $7,
+			postal_code = $8,
+			country     = $9,
+			tax_id      = $10,
+			updated_at  = NOW()
+		WHERE id = $11
+			AND deleted_at IS NULL
+	`
+
+	tag, err := r.db.Exec(
+		ctx,
+		query,
+		organisation.Name,
+		organisation.Email,
+		organisation.Phone,
+		organisation.Website,
+		organisation.Address,
+		organisation.City,
+		organisation.State,
+		organisation.PostalCode,
+		organisation.Country,
+		organisation.TaxID,
+		organisationID,
+	)
+	if err != nil {
+		return fmt.Errorf("update organisation: %w", err)
+	}
+
+	if tag.RowsAffected() == 0 {
+		return ErrOrganisationNotFound
+	}
+
+	return nil
+}
