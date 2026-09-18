@@ -300,6 +300,64 @@ func (s *InvoiceService) GetByID(
 	return inv, lines, amountPaid, nil
 }
 
+// Send finalises a Draft invoice into the Sent lifecycle state — this is
+// a lifecycle transition only: it does not generate a PDF, send an
+// email, or contact the customer in any way (those belong to a later
+// milestone). "Sent" here means "finalised," not "delivered."
+//
+// BEGIN
+//
+//	lock invoice row (FOR UPDATE) and verify it belongs to organisationID
+//	apply the in-memory Draft -> Sent guard (Invoice.MarkSent)
+//	persist status + sent_at together (InvoiceRepository.MarkSent)
+//
+// # COMMIT
+//
+// The row is locked before the domain guard runs and held until
+// commit/rollback, exactly like CreatePayment's own GetForUpdate usage —
+// that's what makes two concurrent Send calls against the same invoice
+// safe: the second call blocks at the lock-acquisition step until the
+// first transaction finishes, then observes the now-Sent status and
+// returns ErrInvoiceAlreadySent rather than double-transitioning or
+// corrupting state. A rejected transition (already Sent, or Paid) never
+// reaches the repository write at all — MarkSent's guard fails first, so
+// nothing is persisted and the transaction rolls back having made no
+// change.
+func (s *InvoiceService) Send(
+	ctx context.Context,
+	organisationID uuid.UUID,
+	invoiceID uuid.UUID,
+) (*Invoice, error) {
+	tx, err := s.txBeginner.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin send transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	txRepository := s.repository.WithTx(tx)
+
+	inv, err := txRepository.GetForUpdate(ctx, organisationID, invoiceID)
+	if err != nil {
+		return nil, err
+	}
+
+	sentAt := time.Now().UTC()
+
+	if err := inv.MarkSent(sentAt); err != nil {
+		return nil, err
+	}
+
+	if err := txRepository.MarkSent(ctx, organisationID, invoiceID, sentAt); err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit send transaction: %w", err)
+	}
+
+	return inv, nil
+}
+
 // CreatePaymentRequest is the caller-supplied shape for recording a
 // payment against an invoice. There is no HTTP handler for this yet (that
 // belongs to a later step), but the shape matches this project's existing
@@ -398,6 +456,18 @@ func (s *InvoiceService) CreatePayment(
 	inv, err := txInvoiceRepository.GetForUpdate(ctx, organisationID, invoiceID)
 	if err != nil {
 		return nil, nil, err
+	}
+
+	// Checked only after the lock is held, so a concurrent Send or
+	// another payment can't change the invoice's status out from under
+	// this decision. Based on persisted Status (Invoice.CanAcceptPayment),
+	// deliberately not the derived EffectiveStatus: an invoice the API
+	// currently shows a client as "overdue" is still persisted Sent, and
+	// must remain payable. Draft (nothing finalised yet) and Paid (already
+	// settled, by lifecycle rule rather than by an outstanding-balance
+	// coincidence) are both rejected here, before any payment math runs.
+	if !inv.CanAcceptPayment() {
+		return nil, nil, ErrInvoiceCannotAcceptPayment
 	}
 
 	txPaymentRepository := s.paymentRepository.WithTx(tx)

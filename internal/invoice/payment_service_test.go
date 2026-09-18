@@ -15,6 +15,49 @@ func validPaymentRequest() CreatePaymentRequest {
 	}
 }
 
+// --- Lifecycle eligibility (Milestone 5) ---
+
+// TestInvoiceService_CreatePayment_DraftRejected proves the lifecycle gap
+// the Milestone 5 investigation found — a Draft invoice could previously
+// be paid directly — is closed: CreatePayment now checks
+// Invoice.CanAcceptPayment before any payment math runs.
+func TestInvoiceService_CreatePayment_DraftRejected(t *testing.T) {
+	f := newTestFixture()
+	invoiceID := f.addInvoice(10000, InvoiceStatusDraft)
+
+	_, _, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, validPaymentRequest())
+	if !errors.Is(err, ErrInvoiceCannotAcceptPayment) {
+		t.Fatalf("expected ErrInvoiceCannotAcceptPayment, got %v", err)
+	}
+}
+
+// TestInvoiceService_CreatePayment_DraftRejectionWritesNoPayment proves
+// the rejection happens before the payment repository is ever reached —
+// not merely that the right error is returned while something is still
+// written.
+func TestInvoiceService_CreatePayment_DraftRejectionWritesNoPayment(t *testing.T) {
+	f := newTestFixture()
+	invoiceID := f.addInvoice(10000, InvoiceStatusDraft)
+
+	if _, _, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, validPaymentRequest()); err == nil {
+		t.Fatal("expected an error")
+	}
+
+	if len(f.paymentRepository.payments[invoiceID]) != 0 {
+		t.Errorf("expected no payment to have been created, got %d", len(f.paymentRepository.payments[invoiceID]))
+	}
+}
+
+func TestInvoiceService_CreatePayment_PaidRejectedExplicitly(t *testing.T) {
+	f := newTestFixture()
+	invoiceID := f.addInvoice(10000, InvoiceStatusPaid)
+
+	_, _, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, validPaymentRequest())
+	if !errors.Is(err, ErrInvoiceCannotAcceptPayment) {
+		t.Fatalf("expected ErrInvoiceCannotAcceptPayment, got %v", err)
+	}
+}
+
 // --- Validation ---
 
 func TestInvoiceService_CreatePayment_Success(t *testing.T) {
@@ -145,10 +188,12 @@ func TestInvoiceService_CreatePayment_Overpayment_Rejected(t *testing.T) {
 	}
 }
 
+// TestInvoiceService_CreatePayment_AgainstAlreadyPaidInvoice_Rejected
+// proves a Paid invoice is now rejected by the Milestone 5 lifecycle
+// check (Invoice.CanAcceptPayment) itself, not merely as a coincidence of
+// its outstanding balance already being 0 — the explicit check runs
+// before the outstanding-balance math is ever reached.
 func TestInvoiceService_CreatePayment_AgainstAlreadyPaidInvoice_Rejected(t *testing.T) {
-	// A fully paid invoice has an outstanding balance of 0, so any
-	// further strictly-positive payment must be rejected as an
-	// overpayment — there is no separate "already paid" check.
 	f := newTestFixture()
 	invoiceID := f.addInvoice(10000, InvoiceStatusPaid)
 	f.paymentRepository.payments[invoiceID] = []*Payment{
@@ -156,8 +201,8 @@ func TestInvoiceService_CreatePayment_AgainstAlreadyPaidInvoice_Rejected(t *test
 	}
 
 	_, _, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, validPaymentRequest())
-	if !errors.Is(err, ErrPaymentExceedsOutstanding) {
-		t.Fatalf("expected ErrPaymentExceedsOutstanding for a payment against an already-paid invoice, got %v", err)
+	if !errors.Is(err, ErrInvoiceCannotAcceptPayment) {
+		t.Fatalf("expected ErrInvoiceCannotAcceptPayment for a payment against an already-paid invoice, got %v", err)
 	}
 }
 

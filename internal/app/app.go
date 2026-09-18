@@ -124,6 +124,10 @@ func (a *App) Handler() http.Handler {
 
 	mux.HandleFunc("POST /invoices", authMiddleware.RequireAuth(invoiceHandler.Create))
 	mux.HandleFunc("GET /invoices/{id}", authMiddleware.RequireAuth(invoiceHandler.GetByID))
+	// POST /invoices/{id}/send (Milestone 5) is a lifecycle finalisation
+	// operation only — no PDF, no email — available to every authenticated
+	// role, same as every other invoice/payment route.
+	mux.HandleFunc("POST /invoices/{id}/send", authMiddleware.RequireAuth(invoiceHandler.Send))
 	mux.HandleFunc("POST /invoices/{id}/payments", authMiddleware.RequireAuth(invoiceHandler.CreatePayment))
 	mux.HandleFunc("GET /invoices/{id}/payments", authMiddleware.RequireAuth(invoiceHandler.GetPayments))
 

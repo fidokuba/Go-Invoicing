@@ -2,6 +2,7 @@ package invoice
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -53,4 +54,14 @@ type InvoiceRepository interface {
 	// already checked ownership. This is deliberate redundancy with the
 	// service-level check, not a replacement for it.
 	UpdateStatus(ctx context.Context, organisationID uuid.UUID, invoiceID uuid.UUID, status string) error
+
+	// MarkSent (Milestone 5) atomically persists the Draft -> Sent
+	// transition: status and sent_at are set together in a single UPDATE
+	// statement, so the two columns can never be observably out of sync
+	// (e.g. status already "sent" while sent_at is still NULL) even if a
+	// failure occurs elsewhere in the enclosing transaction — the whole
+	// transaction simply rolls back instead. Called through the same
+	// GetForUpdate-locked transaction as UpdateStatus, and carries the
+	// same organisation_id predicate for the same defense-in-depth reason.
+	MarkSent(ctx context.Context, organisationID uuid.UUID, invoiceID uuid.UUID, sentAt time.Time) error
 }

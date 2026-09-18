@@ -292,11 +292,21 @@ func TestInvoiceService_CreatePayment_WrongOrganisation_LeavesNoTrace(t *testing
 
 // TestInvoiceService_CreatePayment_ConcurrentPaymentsCannotOverpay is the
 // concurrency proof: two goroutines each attempt to pay the invoice's
-// entire £100.00 balance at the same time. Exactly one must succeed and
-// exactly one must be rejected as an overpayment, regardless of which one
-// happens to win the race for the invoice's row lock — the assertions
-// below only look at final database state and success/failure counts,
-// never at which goroutine "won".
+// entire £100.00 balance at the same time. Exactly one must succeed;
+// the other must be rejected, regardless of which one happens to win the
+// race for the invoice's row lock — the assertions below only look at
+// final database state and success/failure counts, never at which
+// goroutine "won".
+//
+// The loser's rejection reason is Milestone 5's lifecycle check
+// (ErrInvoiceCannotAcceptPayment), not the older outstanding-balance
+// check (ErrPaymentExceedsOutstanding): both goroutines attempt to pay
+// the exact full balance, so whichever one is second to acquire the lock
+// finds the invoice already Paid — by the winner's own commit — rather
+// than merely fully-outstanding-but-still-Sent. A genuine
+// still-Sent-but-overpaying scenario would still surface
+// ErrPaymentExceedsOutstanding instead; that path is unchanged and
+// already covered by the non-concurrent overpayment tests.
 func TestInvoiceService_CreatePayment_ConcurrentPaymentsCannotOverpay(t *testing.T) {
 	db := newTestPool(t)
 	ctx := context.Background()
@@ -328,14 +338,14 @@ func TestInvoiceService_CreatePayment_ConcurrentPaymentsCannotOverpay(t *testing
 	wg.Wait()
 
 	successCount := 0
-	overpaymentRejectionCount := 0
+	rejectionCount := 0
 
 	for i, err := range errs {
 		switch {
 		case err == nil:
 			successCount++
-		case errors.Is(err, ErrPaymentExceedsOutstanding):
-			overpaymentRejectionCount++
+		case errors.Is(err, ErrInvoiceCannotAcceptPayment):
+			rejectionCount++
 		default:
 			t.Fatalf("goroutine %d: unexpected error: %v", i, err)
 		}
@@ -345,8 +355,8 @@ func TestInvoiceService_CreatePayment_ConcurrentPaymentsCannotOverpay(t *testing
 		t.Errorf("expected exactly 1 successful payment, got %d", successCount)
 	}
 
-	if overpaymentRejectionCount != 1 {
-		t.Errorf("expected exactly 1 payment rejected as an overpayment, got %d", overpaymentRejectionCount)
+	if rejectionCount != 1 {
+		t.Errorf("expected exactly 1 payment rejected via ErrInvoiceCannotAcceptPayment, got %d", rejectionCount)
 	}
 
 	paymentRepository := NewPostgresPaymentRepository(db)

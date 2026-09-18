@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -170,6 +171,7 @@ func TestApp_ProtectedRoutes_RejectRequestsWithoutAuthorization(t *testing.T) {
 		{http.MethodGet, "/products/" + id},
 		{http.MethodPost, "/invoices"},
 		{http.MethodGet, "/invoices/" + id},
+		{http.MethodPost, "/invoices/" + id + "/send"},
 		{http.MethodPost, "/invoices/" + id + "/payments"},
 		{http.MethodGet, "/invoices/" + id + "/payments"},
 	}
@@ -491,6 +493,14 @@ func TestApp_RoleMatrix_BusinessDataOperationsAvailableToAllRoles(t *testing.T) 
 				t.Fatalf("get invoice as %s: status %d (body: %s)", role.name, recorder.Code, recorder.Body.String())
 			}
 
+			// A newly-created invoice is Draft and cannot accept a payment
+			// (Milestone 5) — send it first. This also proves all three
+			// roles may use the new Send endpoint.
+			sendRecorder := doRequest(handler, http.MethodPost, "/invoices/"+invoice.ID+"/send", role.token, nil)
+			if sendRecorder.Code != http.StatusOK {
+				t.Fatalf("send invoice as %s: status %d (body: %s)", role.name, sendRecorder.Code, sendRecorder.Body.String())
+			}
+
 			paymentRecorder := doRequest(handler, http.MethodPost, "/invoices/"+invoice.ID+"/payments", role.token, bytes.NewBufferString(`{"amount":100,"paymentMethod":"cash","paymentDate":"2026-01-15"}`))
 			if paymentRecorder.Code != http.StatusCreated {
 				t.Fatalf("create payment as %s: status %d (body: %s)", role.name, paymentRecorder.Code, paymentRecorder.Body.String())
@@ -596,6 +606,124 @@ func TestApp_MidSessionSoftDeletion_TokenStopsWorking(t *testing.T) {
 	}
 }
 
+// TestApp_InvoiceLifecycle_DraftSentPaid is the Milestone 5 end-to-end
+// happy path: Create (Draft) -> payment rejected -> Send (Sent) ->
+// repeated Send rejected -> partial payment (still Sent) -> final
+// payment (Paid) -> Send after Paid rejected. The due date is computed a
+// full year out specifically so this test never becomes flaky as real
+// time passes — the exact day-before/on/day-after Overdue boundary is
+// deliberately tested at the domain layer (invoice_test.go) instead of
+// here, per Milestone 5's own guidance that current-time-dependent HTTP
+// assertions would be brittle.
+func TestApp_InvoiceLifecycle_DraftSentPaid(t *testing.T) {
+	handler, db := newTestApp(t)
+	tenant := registerTenant(t, handler, db, "Lifecycle Org", "lifecycle-admin@example.com")
+
+	customerRecorder := doRequest(handler, http.MethodPost, "/customers", tenant.token, bytes.NewBufferString(`{"name":"Lifecycle Customer"}`))
+	if customerRecorder.Code != http.StatusCreated {
+		t.Fatalf("create customer: status %d (body: %s)", customerRecorder.Code, customerRecorder.Body.String())
+	}
+	var customer struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(customerRecorder.Body).Decode(&customer)
+
+	farFutureDueDate := time.Now().UTC().AddDate(1, 0, 0).Format("2006-01-02")
+
+	invoiceBody := bytes.NewBufferString(`{
+		"customerId": "` + customer.ID + `",
+		"issueDate": "2026-01-01",
+		"dueDate": "` + farFutureDueDate + `",
+		"lines": [{"description": "Consulting", "quantity": 1, "unitPrice": 1000, "vatRate": 0}]
+	}`)
+	invoiceRecorder := doRequest(handler, http.MethodPost, "/invoices", tenant.token, invoiceBody)
+	if invoiceRecorder.Code != http.StatusCreated {
+		t.Fatalf("create invoice: status %d (body: %s)", invoiceRecorder.Code, invoiceRecorder.Body.String())
+	}
+	var invoice struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(invoiceRecorder.Body).Decode(&invoice); err != nil {
+		t.Fatalf("decode invoice response: %v", err)
+	}
+	if invoice.Status != "draft" {
+		t.Fatalf("expected a newly-created invoice to be %q, got %q", "draft", invoice.Status)
+	}
+
+	// Draft cannot accept payment.
+	paymentAgainstDraft := doRequest(handler, http.MethodPost, "/invoices/"+invoice.ID+"/payments", tenant.token, bytes.NewBufferString(`{"amount":1000,"paymentMethod":"cash","paymentDate":"2026-01-15"}`))
+	if paymentAgainstDraft.Code != http.StatusConflict {
+		t.Fatalf("expected status %d paying a Draft invoice, got %d (body: %s)", http.StatusConflict, paymentAgainstDraft.Code, paymentAgainstDraft.Body.String())
+	}
+
+	// Draft -> Sent.
+	sendRecorder := doRequest(handler, http.MethodPost, "/invoices/"+invoice.ID+"/send", tenant.token, nil)
+	if sendRecorder.Code != http.StatusOK {
+		t.Fatalf("send invoice: status %d (body: %s)", sendRecorder.Code, sendRecorder.Body.String())
+	}
+	var sentInvoice struct {
+		Status string  `json:"status"`
+		SentAt *string `json:"sentAt"`
+	}
+	if err := json.NewDecoder(sendRecorder.Body).Decode(&sentInvoice); err != nil {
+		t.Fatalf("decode send response: %v", err)
+	}
+	if sentInvoice.Status != "sent" {
+		t.Errorf("expected status %q after send, got %q", "sent", sentInvoice.Status)
+	}
+	if sentInvoice.SentAt == nil || *sentInvoice.SentAt == "" {
+		t.Error("expected sentAt to be populated after send")
+	}
+
+	// Repeated send is rejected, not silently successful.
+	repeatSendRecorder := doRequest(handler, http.MethodPost, "/invoices/"+invoice.ID+"/send", tenant.token, nil)
+	if repeatSendRecorder.Code != http.StatusConflict {
+		t.Fatalf("expected status %d for a repeated send, got %d (body: %s)", http.StatusConflict, repeatSendRecorder.Code, repeatSendRecorder.Body.String())
+	}
+
+	// Partial payment: still Sent (due date is a year out, never overdue
+	// for the life of this test).
+	partialPaymentRecorder := doRequest(handler, http.MethodPost, "/invoices/"+invoice.ID+"/payments", tenant.token, bytes.NewBufferString(`{"amount":400,"paymentMethod":"cash","paymentDate":"2026-01-15"}`))
+	if partialPaymentRecorder.Code != http.StatusCreated {
+		t.Fatalf("create partial payment: status %d (body: %s)", partialPaymentRecorder.Code, partialPaymentRecorder.Body.String())
+	}
+
+	afterPartialRecorder := doRequest(handler, http.MethodGet, "/invoices/"+invoice.ID, tenant.token, nil)
+	var afterPartial struct {
+		Status     string `json:"status"`
+		AmountPaid int64  `json:"amountPaid"`
+	}
+	_ = json.NewDecoder(afterPartialRecorder.Body).Decode(&afterPartial)
+	if afterPartial.Status != "sent" {
+		t.Errorf("expected status to remain %q after a partial payment, got %q", "sent", afterPartial.Status)
+	}
+	if afterPartial.AmountPaid != 400 {
+		t.Errorf("expected amountPaid 400, got %d", afterPartial.AmountPaid)
+	}
+
+	// Final payment: Sent -> Paid.
+	finalPaymentRecorder := doRequest(handler, http.MethodPost, "/invoices/"+invoice.ID+"/payments", tenant.token, bytes.NewBufferString(`{"amount":600,"paymentMethod":"cash","paymentDate":"2026-01-20"}`))
+	if finalPaymentRecorder.Code != http.StatusCreated {
+		t.Fatalf("create final payment: status %d (body: %s)", finalPaymentRecorder.Code, finalPaymentRecorder.Body.String())
+	}
+
+	afterFinalRecorder := doRequest(handler, http.MethodGet, "/invoices/"+invoice.ID, tenant.token, nil)
+	var afterFinal struct {
+		Status string `json:"status"`
+	}
+	_ = json.NewDecoder(afterFinalRecorder.Body).Decode(&afterFinal)
+	if afterFinal.Status != "paid" {
+		t.Errorf("expected status %q after the final payment, got %q", "paid", afterFinal.Status)
+	}
+
+	// Paid invoices can never be (re-)sent.
+	sendAfterPaidRecorder := doRequest(handler, http.MethodPost, "/invoices/"+invoice.ID+"/send", tenant.token, nil)
+	if sendAfterPaidRecorder.Code != http.StatusConflict {
+		t.Fatalf("expected status %d sending a Paid invoice, got %d (body: %s)", http.StatusConflict, sendAfterPaidRecorder.Code, sendAfterPaidRecorder.Body.String())
+	}
+}
+
 // TestApp_CrossTenantIsolation_TwoOrganisations is the genuine
 // two-organisation end-to-end isolation test: two real organisations,
 // each with its own real logged-in admin, proving through the full
@@ -680,6 +808,7 @@ func TestApp_CrossTenantIsolation_TwoOrganisations(t *testing.T) {
 		{"get tenant B customer", http.MethodGet, "/customers/" + customerB.ID, ""},
 		{"get tenant B product", http.MethodGet, "/products/" + productB.ID, ""},
 		{"get tenant B invoice", http.MethodGet, "/invoices/" + invoiceB.ID, ""},
+		{"send tenant B invoice", http.MethodPost, "/invoices/" + invoiceB.ID + "/send", ""},
 		{"create payment against tenant B invoice", http.MethodPost, "/invoices/" + invoiceB.ID + "/payments", `{"amount":100,"paymentMethod":"cash","paymentDate":"2026-01-15"}`},
 		{"list payments for tenant B invoice", http.MethodGet, "/invoices/" + invoiceB.ID + "/payments", ""},
 		{"get tenant B user", http.MethodGet, "/users/" + tenantB.userID, ""},

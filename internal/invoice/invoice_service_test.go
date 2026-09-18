@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -29,6 +30,7 @@ type fakeInvoiceRepository struct {
 	createLinesErr  error
 	getForUpdateErr error
 	updateStatusErr error
+	markSentErr     error
 }
 
 func newFakeInvoiceRepository() *fakeInvoiceRepository {
@@ -103,6 +105,24 @@ func (f *fakeInvoiceRepository) UpdateStatus(ctx context.Context, organisationID
 		return ErrInvoiceNotFound
 	}
 	inv.Status = status
+	f.invoices[invoiceID] = inv
+	return nil
+}
+
+// MarkSent mirrors the real repository's Milestone 4 Part 6 organisation
+// check and Milestone 5's atomic status+sent_at write: an invoice that
+// exists but belongs to a different organisation is treated identically
+// to one that doesn't exist at all, and both fields are set together.
+func (f *fakeInvoiceRepository) MarkSent(ctx context.Context, organisationID, invoiceID uuid.UUID, sentAt time.Time) error {
+	if f.markSentErr != nil {
+		return f.markSentErr
+	}
+	inv, ok := f.invoices[invoiceID]
+	if !ok || inv.OrganisationID != organisationID {
+		return ErrInvoiceNotFound
+	}
+	inv.Status = InvoiceStatusSent
+	inv.SentAt = &sentAt
 	f.invoices[invoiceID] = inv
 	return nil
 }
@@ -415,6 +435,12 @@ func (f *testFixture) addInvoice(total int64, status string) uuid.UUID {
 		InvoiceNumber:  "INV-TEST-" + uuid.New().String(),
 		Total:          total,
 		Status:         status,
+		// 30 days out: comfortably in the future, so a Sent invoice
+		// built by this helper never accidentally derives as Overdue via
+		// Invoice.EffectiveStatus (Milestone 5) merely because it was
+		// never given a DueDate. Tests that specifically need an overdue
+		// or boundary DueDate set one explicitly afterwards.
+		DueDate: time.Now().UTC().AddDate(0, 0, 30),
 	}
 	f.repository.invoices[inv.ID] = inv
 	return inv.ID

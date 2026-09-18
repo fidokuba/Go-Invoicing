@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -66,7 +67,7 @@ func (h *InvoiceHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	// A brand-new invoice cannot have any payments yet — no query needed
 	// to know amountPaid is 0.
-	response := toInvoiceResponse(inv, lines, 0)
+	response := toInvoiceResponse(inv, lines, 0, time.Now().UTC())
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -100,7 +101,59 @@ func (h *InvoiceHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := toInvoiceResponse(inv, lines, amountPaid)
+	response := toInvoiceResponse(inv, lines, amountPaid, time.Now().UTC())
+
+	w.Header().Set("Content-Type", "application/json")
+
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+	}
+}
+
+// Send handles POST /invoices/{id}/send — a lifecycle finalisation
+// operation only (Milestone 5): it does not generate a PDF, send an
+// email, or contact the customer. See InvoiceService.Send's doc comment
+// for the transition and locking behaviour.
+func (h *InvoiceHandler) Send(w http.ResponseWriter, r *http.Request) {
+	identity, ok := admin.RequireAuthenticatedUser(w, r)
+	if !ok {
+		return
+	}
+
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "invalid invoice ID", http.StatusBadRequest)
+		return
+	}
+
+	if _, err := h.service.Send(r.Context(), identity.OrganisationID, id); err != nil {
+		if errors.Is(err, ErrInvoiceNotFound) {
+			http.Error(w, "invoice not found", http.StatusNotFound)
+			return
+		}
+
+		if errors.Is(err, ErrInvoiceAlreadySent) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+
+		http.Error(w, "failed to send invoice", http.StatusInternalServerError)
+		return
+	}
+
+	// Send only returns the bare *Invoice; re-fetch through the existing
+	// GetByID path to build the same full InvoiceResponse shape (lines +
+	// amountPaid) every other invoice-returning endpoint already uses,
+	// rather than duplicating that assembly here. A newly-sent invoice
+	// cannot have any payments yet (CreatePayment already refuses a Draft
+	// invoice), so this adds no surprising state, just the lines.
+	inv, lines, amountPaid, err := h.service.GetByID(r.Context(), identity.OrganisationID, id)
+	if err != nil {
+		http.Error(w, "failed to get invoice", http.StatusInternalServerError)
+		return
+	}
+
+	response := toInvoiceResponse(inv, lines, amountPaid, time.Now().UTC())
 
 	w.Header().Set("Content-Type", "application/json")
 
@@ -139,6 +192,11 @@ func (h *InvoiceHandler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, ErrInvoiceNotFound) {
 			http.Error(w, "invoice not found", http.StatusNotFound)
+			return
+		}
+
+		if errors.Is(err, ErrInvoiceCannotAcceptPayment) {
+			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
 

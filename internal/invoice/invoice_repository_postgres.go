@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -173,6 +174,7 @@ func (r *PostgresInvoiceRepository) GetByID(
 			vat_total,
 			total,
 			status,
+			sent_at,
 			notes,
 			created_at,
 			updated_at,
@@ -201,6 +203,7 @@ func (r *PostgresInvoiceRepository) GetByID(
 		&inv.VATTotal,
 		&inv.Total,
 		&inv.Status,
+		&inv.SentAt,
 		&inv.Notes,
 		&inv.CreatedAt,
 		&inv.UpdatedAt,
@@ -243,6 +246,7 @@ func (r *PostgresInvoiceRepository) GetForUpdate(
 			vat_total,
 			total,
 			status,
+			sent_at,
 			notes,
 			created_at,
 			updated_at,
@@ -272,6 +276,7 @@ func (r *PostgresInvoiceRepository) GetForUpdate(
 		&inv.VATTotal,
 		&inv.Total,
 		&inv.Status,
+		&inv.SentAt,
 		&inv.Notes,
 		&inv.CreatedAt,
 		&inv.UpdatedAt,
@@ -316,6 +321,50 @@ func (r *PostgresInvoiceRepository) UpdateStatus(
 	tag, err := r.db.Exec(ctx, query, status, invoiceID, organisationID)
 	if err != nil {
 		return fmt.Errorf("update invoice status: %w", err)
+	}
+
+	if tag.RowsAffected() == 0 {
+		return ErrInvoiceNotFound
+	}
+
+	return nil
+}
+
+// MarkSent persists the Draft -> Sent transition: status and sent_at are
+// set together in one UPDATE statement (Milestone 5), so the two columns
+// can never be observably out of sync with each other, even under a
+// failure — either both change, or (if this statement itself never runs,
+// e.g. the enclosing transaction rolled back) neither does. It carries
+// the same organisation_id predicate as UpdateStatus, for the same
+// defense-in-depth reason.
+//
+// This does not also guard against a non-Draft current status in SQL:
+// InvoiceService.Send already holds this row's FOR UPDATE lock and has
+// already checked Invoice.MarkSent (the in-memory guard) inside the same
+// transaction before ever calling this method, so no concurrent
+// modification of status can occur between that check and this write —
+// adding a redundant "AND status = 'draft'" clause here would only add a
+// second, harder-to-diagnose way to reach RowsAffected() == 0 without
+// closing any gap the lock doesn't already close.
+func (r *PostgresInvoiceRepository) MarkSent(
+	ctx context.Context,
+	organisationID uuid.UUID,
+	invoiceID uuid.UUID,
+	sentAt time.Time,
+) error {
+	const query = `
+		UPDATE invoices
+		SET status = $1,
+			sent_at = $2,
+			updated_at = NOW()
+		WHERE id = $3
+			AND organisation_id = $4
+			AND deleted_at IS NULL
+	`
+
+	tag, err := r.db.Exec(ctx, query, InvoiceStatusSent, sentAt, invoiceID, organisationID)
+	if err != nil {
+		return fmt.Errorf("mark invoice sent: %w", err)
 	}
 
 	if tag.RowsAffected() == 0 {

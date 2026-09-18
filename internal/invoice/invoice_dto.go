@@ -54,6 +54,17 @@ type InvoiceLineResponse struct {
 // AmountPaid and AmountOutstanding are not persisted columns — they are
 // derived by toInvoiceResponse from the invoice's Total and whatever
 // amountPaid its caller supplies (see that function's doc comment).
+//
+// Status (Milestone 5) is the invoice's EFFECTIVE status — Draft/Sent/
+// Overdue/Paid — not necessarily the same as what's persisted in the
+// database: a persisted Sent invoice past its due date is reported here
+// as "overdue" without the database ever being touched. There is
+// deliberately no second "persistedStatus" field; internally
+// Invoice.Status continues to mean the persisted value, but nothing in
+// this API has asked for that distinction to be externally visible.
+//
+// SentAt is nil for a Draft invoice and populated the moment Send
+// succeeds.
 type InvoiceResponse struct {
 	ID                string                `json:"id"`
 	OrganisationID    string                `json:"organisationId"`
@@ -67,6 +78,7 @@ type InvoiceResponse struct {
 	AmountPaid        int64                 `json:"amountPaid"`
 	AmountOutstanding int64                 `json:"amountOutstanding"`
 	Status            string                `json:"status"`
+	SentAt            *string               `json:"sentAt,omitempty"`
 	Notes             *string               `json:"notes,omitempty"`
 	Lines             []InvoiceLineResponse `json:"lines"`
 	CreatedAt         string                `json:"createdAt"`
@@ -84,7 +96,11 @@ type InvoiceResponse struct {
 // handler passes the literal 0 (a brand-new invoice cannot have any
 // payments yet — no query needed to know that), while GetByID's handler
 // passes the amountPaid InvoiceService.GetByID already fetched.
-func toInvoiceResponse(inv *Invoice, lines []*Line, amountPaid int64) InvoiceResponse {
+//
+// now is used only to derive Status via Invoice.EffectiveStatus — this
+// function stays pure/deterministic itself rather than calling
+// time.Now(); the HTTP handler supplies the real current time.
+func toInvoiceResponse(inv *Invoice, lines []*Line, amountPaid int64, now time.Time) InvoiceResponse {
 	lineResponses := make([]InvoiceLineResponse, 0, len(lines))
 
 	for _, l := range lines {
@@ -106,6 +122,12 @@ func toInvoiceResponse(inv *Invoice, lines []*Line, amountPaid int64) InvoiceRes
 		})
 	}
 
+	var sentAt *string
+	if inv.SentAt != nil {
+		s := inv.SentAt.Format(time.RFC3339)
+		sentAt = &s
+	}
+
 	return InvoiceResponse{
 		ID:                inv.ID.String(),
 		OrganisationID:    inv.OrganisationID.String(),
@@ -118,7 +140,8 @@ func toInvoiceResponse(inv *Invoice, lines []*Line, amountPaid int64) InvoiceRes
 		Total:             inv.Total,
 		AmountPaid:        amountPaid,
 		AmountOutstanding: inv.Total - amountPaid,
-		Status:            inv.Status,
+		Status:            inv.EffectiveStatus(now),
+		SentAt:            sentAt,
 		Notes:             inv.Notes,
 		Lines:             lineResponses,
 		CreatedAt:         inv.CreatedAt.Format(time.RFC3339),

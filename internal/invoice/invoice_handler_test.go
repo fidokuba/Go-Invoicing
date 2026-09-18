@@ -264,6 +264,12 @@ func TestInvoiceHandler_GetByID_WithPayments(t *testing.T) {
 		t.Fatalf("create invoice: %v", err)
 	}
 
+	// A newly-created invoice is Draft and cannot accept a payment — send
+	// it first.
+	if _, err := f.service.Send(context.Background(), f.organisationID, created.ID); err != nil {
+		t.Fatalf("send invoice: %v", err)
+	}
+
 	// validRequest's default line is quantity 1, unitPrice 1000, vatRate
 	// 20 -> total 1200. Pay less than that: a partial payment.
 	if _, _, err := f.service.CreatePayment(context.Background(), f.organisationID, created.ID, CreatePaymentRequest{
@@ -309,6 +315,10 @@ func TestInvoiceHandler_GetByID_MultiplePayments(t *testing.T) {
 		t.Fatalf("create invoice: %v", err)
 	}
 
+	if _, err := f.service.Send(context.Background(), f.organisationID, created.ID); err != nil {
+		t.Fatalf("send invoice: %v", err)
+	}
+
 	for _, amount := range []int64{300, 400} {
 		if _, _, err := f.service.CreatePayment(context.Background(), f.organisationID, created.ID, CreatePaymentRequest{
 			Amount:        amount,
@@ -352,6 +362,10 @@ func TestInvoiceHandler_GetByID_FullyPaid_OutstandingIsZero(t *testing.T) {
 	created, _, err := f.service.Create(context.Background(), f.organisationID, request)
 	if err != nil {
 		t.Fatalf("create invoice: %v", err)
+	}
+
+	if _, err := f.service.Send(context.Background(), f.organisationID, created.ID); err != nil {
+		t.Fatalf("send invoice: %v", err)
 	}
 
 	// validRequest's default line totals 1200 — pay exactly that.
