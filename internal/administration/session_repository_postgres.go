@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -114,4 +115,34 @@ func (r *PostgresSessionRepository) GetByTokenHash(
 	}
 
 	return &s, nil
+}
+
+// DeleteExpired removes up to limit expired-or-revoked sessions in one
+// bounded DELETE. The subquery selects candidate ids first so LIMIT
+// applies to which rows are chosen, then the outer DELETE removes exactly
+// those — a single DELETE ... WHERE expires_at <= $1 OR revoked_at IS NOT
+// NULL LIMIT $2 isn't valid PostgreSQL syntax (DELETE has no LIMIT
+// clause), hence the id-subquery form.
+func (r *PostgresSessionRepository) DeleteExpired(
+	ctx context.Context,
+	now time.Time,
+	limit int,
+) (int64, error) {
+	const query = `
+		DELETE FROM sessions
+		WHERE id IN (
+			SELECT id
+			FROM sessions
+			WHERE expires_at <= $1
+			   OR revoked_at IS NOT NULL
+			LIMIT $2
+		)
+	`
+
+	tag, err := r.db.Exec(ctx, query, now, limit)
+	if err != nil {
+		return 0, fmt.Errorf("delete expired sessions: %w", err)
+	}
+
+	return tag.RowsAffected(), nil
 }

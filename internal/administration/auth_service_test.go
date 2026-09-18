@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -30,6 +31,12 @@ type fakeSessionRepository struct {
 	// passed to GetByTokenHash, so tests can prove a raw token was hashed
 	// before ever reaching the repository.
 	lastTokenHashArg string
+
+	// deleteExpiredFunc lets Milestone 6 worker tests control DeleteExpired
+	// precisely (call count, returned counts/errors) without this shared
+	// fake needing a real notion of expiry. Nil means "nothing to delete" —
+	// the correct default for every auth-focused test that never sets it.
+	deleteExpiredFunc func(ctx context.Context, now time.Time, limit int) (int64, error)
 }
 
 func newFakeSessionRepository() *fakeSessionRepository {
@@ -64,6 +71,14 @@ func (f *fakeSessionRepository) GetByTokenHash(ctx context.Context, tokenHash st
 	}
 
 	return nil, ErrSessionNotFound
+}
+
+func (f *fakeSessionRepository) DeleteExpired(ctx context.Context, now time.Time, limit int) (int64, error) {
+	if f.deleteExpiredFunc != nil {
+		return f.deleteExpiredFunc(ctx, now, limit)
+	}
+
+	return 0, nil
 }
 
 // fakeTx is a minimal stand-in for a pgx.Tx. Only Commit and Rollback are
