@@ -18,6 +18,7 @@ func TestInvoiceService_Send_PersistsStatusAndSentAt(t *testing.T) {
 
 	organisationID := createTestOrganisation(t, db)
 	customerID := createTestCustomer(t, db, organisationID)
+	createTestSettings(t, db, organisationID)
 	invoiceID := createTestInvoiceWithTotal(t, db, organisationID, customerID, 10000, InvoiceStatusDraft)
 
 	service := newPaymentTestService(db)
@@ -59,6 +60,7 @@ func TestInvoiceService_Send_RepeatedSendLeavesStateUnchanged(t *testing.T) {
 
 	organisationID := createTestOrganisation(t, db)
 	customerID := createTestCustomer(t, db, organisationID)
+	createTestSettings(t, db, organisationID)
 	invoiceID := createTestInvoiceWithTotal(t, db, organisationID, customerID, 10000, InvoiceStatusDraft)
 
 	service := newPaymentTestService(db)
@@ -102,6 +104,7 @@ func TestInvoiceService_Send_ConcurrentSend_ExactlyOneSucceeds(t *testing.T) {
 
 	organisationID := createTestOrganisation(t, db)
 	customerID := createTestCustomer(t, db, organisationID)
+	createTestSettings(t, db, organisationID)
 	invoiceID := createTestInvoiceWithTotal(t, db, organisationID, customerID, 10000, InvoiceStatusDraft)
 
 	service := newPaymentTestService(db)
@@ -169,6 +172,7 @@ func TestInvoiceService_CreatePayment_DraftAttemptCreatesNoPaymentRows(t *testin
 
 	organisationID := createTestOrganisation(t, db)
 	customerID := createTestCustomer(t, db, organisationID)
+	createTestSettings(t, db, organisationID)
 	invoiceID := createTestInvoiceWithTotal(t, db, organisationID, customerID, 10000, InvoiceStatusDraft)
 
 	service := newPaymentTestService(db)
@@ -209,6 +213,7 @@ func TestInvoiceService_SendThenPaymentRace_SerializesSafely(t *testing.T) {
 
 	organisationID := createTestOrganisation(t, db)
 	customerID := createTestCustomer(t, db, organisationID)
+	createTestSettings(t, db, organisationID)
 	invoiceID := createTestInvoiceWithTotal(t, db, organisationID, customerID, 10000, InvoiceStatusDraft)
 
 	service := newPaymentTestService(db)

@@ -57,6 +57,18 @@ var ErrInvoiceCannotAcceptPayment = errors.New("invoice cannot accept payment in
 // VATTotal (not VatTotal) matches Go's convention of keeping acronyms
 // upper-cased, and matches the field name used elsewhere in this
 // milestone's domain/DTO naming.
+// SellerName/SellerEmail/.../CustomerCountry/Currency (Milestone 7 Part
+// 2) are the immutable party snapshot, captured exactly once by MarkSent
+// at the Draft -> Sent transition and never rewritten afterward — see
+// InvoicePartySnapshot for what each field means and where it comes
+// from. Every one of them is nil on a Draft invoice, and nil on any
+// invoice Sent before this feature existed (the migration adds these as
+// nullable columns specifically to accommodate that history honestly
+// rather than fabricating it). SellerName, CustomerName and Currency are
+// business-required for any invoice actually finalised through Send, but
+// remain pointers at this struct level because the column itself must
+// stay nullable for the reasons above — MarkSent is what enforces the
+// requirement, not the Go type.
 type Invoice struct {
 	ID             uuid.UUID
 	OrganisationID uuid.UUID
@@ -70,9 +82,34 @@ type Invoice struct {
 	Status         string // persisted lifecycle state: one of the InvoiceStatus* constants above
 	SentAt         *time.Time
 	Notes          *string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	DeletedAt      *time.Time
+
+	SellerName       *string
+	SellerEmail      *string
+	SellerPhone      *string
+	SellerWebsite    *string
+	SellerAddress    *string
+	SellerCity       *string
+	SellerState      *string
+	SellerPostalCode *string
+	SellerCountry    *string
+	SellerTaxID      *string
+
+	CustomerName        *string
+	CustomerCompanyName *string
+	CustomerEmail       *string
+	CustomerPhone       *string
+	CustomerTaxID       *string
+	CustomerAddress     *string
+	CustomerCity        *string
+	CustomerState       *string
+	CustomerPostalCode  *string
+	CustomerCountry     *string
+
+	Currency *string
+
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	DeletedAt *time.Time
 }
 
 func (i *Invoice) TableName() string {
@@ -80,27 +117,65 @@ func (i *Invoice) TableName() string {
 }
 
 // MarkSent applies the Draft -> Sent transition to the in-memory Invoice:
-// it requires the current persisted Status to be Draft, and on success
-// sets Status to Sent and SentAt to sentAt. Every non-Draft status —
-// already Sent, Paid, or (defensively) anything else — is rejected with
-// ErrInvoiceAlreadySent; this method never partially applies the
-// transition; it either changes both fields together or changes neither.
+// it requires the current persisted Status to be Draft, and requires
+// snapshot to be valid (see InvoicePartySnapshot.Validate) — a Draft
+// invoice can only become Sent together with its immutable party
+// snapshot, never without one. On success it sets Status to Sent, SentAt
+// to sentAt, and copies every snapshot field onto the invoice. Every
+// non-Draft status — already Sent, Paid, or (defensively) anything else —
+// is rejected with ErrInvoiceAlreadySent before snapshot is even
+// examined, which is what makes a repeated Send attempt provably never
+// recapture or overwrite an already-captured snapshot (Milestone 7 Part
+// 2): the guard fails first, so none of the assignments below ever run.
+// This method never partially applies the transition; it either changes
+// every field together or changes nothing.
 //
 // This only mutates the Go value. InvoiceService.Send is what persists
-// the result — see that method's comment for why the two fields are
-// written together in one repository call, under the same lock this
-// check runs against.
+// the result — see that method's comment for why every field is written
+// together in one repository call, under the same lock this check runs
+// against.
 //
 // No generic state-machine abstraction: with exactly one guarded
 // transition, an explicit method reads more clearly than a table of
 // transitions would.
-func (i *Invoice) MarkSent(sentAt time.Time) error {
+func (i *Invoice) MarkSent(sentAt time.Time, snapshot InvoicePartySnapshot) error {
 	if i.Status != InvoiceStatusDraft {
 		return ErrInvoiceAlreadySent
 	}
 
+	if err := snapshot.Validate(); err != nil {
+		return err
+	}
+
 	i.Status = InvoiceStatusSent
 	i.SentAt = &sentAt
+
+	sellerName := snapshot.SellerName
+	i.SellerName = &sellerName
+	i.SellerEmail = snapshot.SellerEmail
+	i.SellerPhone = snapshot.SellerPhone
+	i.SellerWebsite = snapshot.SellerWebsite
+	i.SellerAddress = snapshot.SellerAddress
+	i.SellerCity = snapshot.SellerCity
+	i.SellerState = snapshot.SellerState
+	i.SellerPostalCode = snapshot.SellerPostalCode
+	i.SellerCountry = snapshot.SellerCountry
+	i.SellerTaxID = snapshot.SellerTaxID
+
+	customerName := snapshot.CustomerName
+	i.CustomerName = &customerName
+	i.CustomerCompanyName = snapshot.CustomerCompanyName
+	i.CustomerEmail = snapshot.CustomerEmail
+	i.CustomerPhone = snapshot.CustomerPhone
+	i.CustomerTaxID = snapshot.CustomerTaxID
+	i.CustomerAddress = snapshot.CustomerAddress
+	i.CustomerCity = snapshot.CustomerCity
+	i.CustomerState = snapshot.CustomerState
+	i.CustomerPostalCode = snapshot.CustomerPostalCode
+	i.CustomerCountry = snapshot.CustomerCountry
+
+	currency := snapshot.Currency
+	i.Currency = &currency
 
 	return nil
 }

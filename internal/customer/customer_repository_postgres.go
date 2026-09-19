@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -14,18 +15,39 @@ import (
 // within the given organisation, as opposed to a genuine database failure.
 var ErrCustomerNotFound = errors.New("customer not found")
 
+// dbExecutor is the minimal query surface this repository needs. Both
+// *pgxpool.Pool and pgx.Tx implement it, which is what lets these methods
+// run unmodified whether they're operating directly on the pool or inside
+// a transaction the caller is managing — the repository doesn't know or
+// care which. Same pattern as invoice.dbExecutor and
+// administration.dbExecutor.
+type dbExecutor interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 // PostgresCustomerRepository is the PostgreSQL-backed implementation of
-// CustomerRepository. It holds a connection pool rather than creating one
-// itself, so the caller decides how the pool is configured and when it is
-// closed.
+// CustomerRepository. It holds a dbExecutor rather than a concrete pool,
+// so the same code runs unmodified whether it's operating directly on the
+// pool or inside a transaction WithTx provides.
 type PostgresCustomerRepository struct {
-	db *pgxpool.Pool
+	db dbExecutor
 }
 
 // NewPostgresCustomerRepository wires an existing pool into a repository.
 func NewPostgresCustomerRepository(db *pgxpool.Pool) *PostgresCustomerRepository {
 	return &PostgresCustomerRepository{
 		db: db,
+	}
+}
+
+// WithTx returns a repository that runs its operations against tx instead
+// of the pool, so a customer's identity fields can be read within the
+// same transaction InvoiceService.Send uses to capture its snapshot. It
+// does not begin, commit or roll back anything itself.
+func (r *PostgresCustomerRepository) WithTx(tx pgx.Tx) CustomerRepository {
+	return &PostgresCustomerRepository{
+		db: tx,
 	}
 }
 

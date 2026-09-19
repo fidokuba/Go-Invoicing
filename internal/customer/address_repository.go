@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // ErrBillingAddressNotFound is returned both when a customer has no
@@ -30,6 +31,14 @@ var ErrBillingAddressNotFound = errors.New("billing address not found")
 // customer ID, even if the service layer's own check were ever bypassed
 // or forgotten.
 type AddressRepository interface {
+	// WithTx returns a repository whose operations run against the
+	// supplied transaction instead of the default connection pool
+	// (Milestone 7 Part 2) — needed so InvoiceService.Send can read a
+	// customer's billing address for its snapshot within the same
+	// transaction that locks and finalises the invoice. The repository
+	// itself never calls Begin, Commit or Rollback.
+	WithTx(tx pgx.Tx) AddressRepository
+
 	// GetBillingAddressByCustomerID returns customerID's billing address.
 	// Returns ErrBillingAddressNotFound if the customer doesn't exist,
 	// doesn't belong to organisationID, or simply has no billing address

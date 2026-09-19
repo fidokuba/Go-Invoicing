@@ -40,12 +40,26 @@ var (
 	ErrInvoiceLineProductIDInvalid    = errors.New("invoice line product ID is not a valid UUID")
 	ErrInvoiceLineProductNotFound     = errors.New("invoice line product not found")
 
-	// Invoice number allocation.
+	// Invoice number allocation. Reused by Send (Milestone 7 Part 2) for
+	// the identical "this organisation has no settings row" case when
+	// reading Settings.Currency for the snapshot.
 	ErrInvoiceSettingsNotFound = errors.New("organisation settings not found")
 
 	// Payments. ErrPaymentAmountInvalid (amount must be > 0) is owned by
 	// Payment.Validate in payment.go, not redefined here.
 	ErrPaymentExceedsOutstanding = errors.New("payment amount exceeds the invoice's outstanding balance")
+
+	// ErrInvoiceSnapshotDataUnavailable is returned by Send when the
+	// organisation itself, or the invoice's customer, cannot be loaded
+	// while building the immutable party snapshot (Milestone 7 Part 2) —
+	// an extremely unusual state (the organisation is the caller's own
+	// authenticated tenant, and the customer was already confirmed to
+	// exist within it when the invoice was created), but one Send must
+	// still refuse to finalise into rather than persist an incomplete
+	// snapshot. Distinct from ErrInvoiceSettingsNotFound, which already
+	// has its own established meaning and is reused as-is for the
+	// analogous missing-settings case.
+	ErrInvoiceSnapshotDataUnavailable = errors.New("required business data for the invoice snapshot is unavailable")
 )
 
 // TxBeginner starts a new transaction. *pgxpool.Pool satisfies this
@@ -62,36 +76,49 @@ type TxBeginner interface {
 // It also depends on the CustomerRepository and ProductRepository
 // interfaces (not concrete implementations) solely to check — within the
 // requesting organisation — that a referenced customer or product exists;
-// it does not otherwise read or mutate customer/product data, and it
-// never reads a product's price. It depends on SettingsRepository to
-// allocate each invoice's sequential number, and on PaymentRepository for
-// CreatePayment — payments are treated as part of the invoice aggregate
-// rather than a separate service, since recording one is inseparable from
-// checking and possibly updating the owning invoice's own state.
+// it does not otherwise read or mutate customer/product data (outside of
+// Send's snapshot capture — see below), and it never reads a product's
+// price. It depends on SettingsRepository to allocate each invoice's
+// sequential number, and on PaymentRepository for CreatePayment —
+// payments are treated as part of the invoice aggregate rather than a
+// separate service, since recording one is inseparable from checking and
+// possibly updating the owning invoice's own state.
+//
+// OrganisationRepository and AddressRepository (Milestone 7 Part 2) exist
+// solely for Send's immutable party-snapshot capture: reading the
+// organisation's own party details and the invoice's customer's billing
+// address, once, at the Draft -> Sent transition. Nothing else in this
+// service touches either.
 type InvoiceService struct {
-	repository         InvoiceRepository
-	customerRepository customer.CustomerRepository
-	productRepository  product.ProductRepository
-	settingsRepository admin.SettingsRepository
-	paymentRepository  PaymentRepository
-	txBeginner         TxBeginner
+	repository             InvoiceRepository
+	customerRepository     customer.CustomerRepository
+	productRepository      product.ProductRepository
+	organisationRepository admin.OrganisationRepository
+	addressRepository      customer.AddressRepository
+	settingsRepository     admin.SettingsRepository
+	paymentRepository      PaymentRepository
+	txBeginner             TxBeginner
 }
 
 func NewInvoiceService(
 	repository InvoiceRepository,
 	customerRepository customer.CustomerRepository,
 	productRepository product.ProductRepository,
+	organisationRepository admin.OrganisationRepository,
+	addressRepository customer.AddressRepository,
 	settingsRepository admin.SettingsRepository,
 	paymentRepository PaymentRepository,
 	txBeginner TxBeginner,
 ) *InvoiceService {
 	return &InvoiceService{
-		repository:         repository,
-		customerRepository: customerRepository,
-		productRepository:  productRepository,
-		settingsRepository: settingsRepository,
-		paymentRepository:  paymentRepository,
-		txBeginner:         txBeginner,
+		repository:             repository,
+		customerRepository:     customerRepository,
+		productRepository:      productRepository,
+		organisationRepository: organisationRepository,
+		addressRepository:      addressRepository,
+		settingsRepository:     settingsRepository,
+		paymentRepository:      paymentRepository,
+		txBeginner:             txBeginner,
 	}
 }
 
@@ -308,21 +335,37 @@ func (s *InvoiceService) GetByID(
 // BEGIN
 //
 //	lock invoice row (FOR UPDATE) and verify it belongs to organisationID
-//	apply the in-memory Draft -> Sent guard (Invoice.MarkSent)
-//	persist status + sent_at together (InvoiceRepository.MarkSent)
+//	if not Draft: return ErrInvoiceAlreadySent immediately — nothing below
+//	  this line ever runs for a repeat Send (Milestone 7 Part 2): no
+//	  Organisation/Customer/Address/Settings read, no snapshot rebuilt
+//	load Organisation(organisationID), Customer(organisationID, invoice's
+//	  CustomerID), the customer's billing Address (optional), and
+//	  Settings(organisationID) — all through this same transaction
+//	construct and validate the immutable InvoicePartySnapshot
+//	apply the in-memory Draft -> Sent guard + snapshot (Invoice.MarkSent)
+//	persist status + sent_at + every snapshot column together
+//	  (InvoiceRepository.MarkSentWithSnapshot)
 //
 // # COMMIT
 //
-// The row is locked before the domain guard runs and held until
+// The row is locked before any of this runs and held until
 // commit/rollback, exactly like CreatePayment's own GetForUpdate usage —
 // that's what makes two concurrent Send calls against the same invoice
 // safe: the second call blocks at the lock-acquisition step until the
 // first transaction finishes, then observes the now-Sent status and
-// returns ErrInvoiceAlreadySent rather than double-transitioning or
-// corrupting state. A rejected transition (already Sent, or Paid) never
-// reaches the repository write at all — MarkSent's guard fails first, so
-// nothing is persisted and the transaction rolls back having made no
-// change.
+// returns ErrInvoiceAlreadySent rather than double-transitioning,
+// recapturing the snapshot, or corrupting state. A rejected transition
+// (already Sent, or Paid) never reaches any snapshot-building step or the
+// repository write — both guards (the early status check here, and
+// MarkSent's own) fail before either one, so nothing is persisted and the
+// transaction rolls back having made no change.
+//
+// organisationID is the caller's trusted tenant identity (ultimately
+// AuthenticatedUser.OrganisationID) and is the sole value used to scope
+// every one of these reads — never a value read off the invoice row
+// itself or any loaded record. A cross-tenant Send fails at the very
+// first GetForUpdate call, before any of the snapshot-building code
+// below is ever reached.
 func (s *InvoiceService) Send(
 	ctx context.Context,
 	organisationID uuid.UUID,
@@ -341,13 +384,22 @@ func (s *InvoiceService) Send(
 		return nil, err
 	}
 
-	sentAt := time.Now().UTC()
+	if inv.Status != InvoiceStatusDraft {
+		return nil, ErrInvoiceAlreadySent
+	}
 
-	if err := inv.MarkSent(sentAt); err != nil {
+	snapshot, err := s.buildPartySnapshot(ctx, tx, organisationID, inv.CustomerID)
+	if err != nil {
 		return nil, err
 	}
 
-	if err := txRepository.MarkSent(ctx, organisationID, invoiceID, sentAt); err != nil {
+	sentAt := time.Now().UTC()
+
+	if err := inv.MarkSent(sentAt, snapshot); err != nil {
+		return nil, err
+	}
+
+	if err := txRepository.MarkSentWithSnapshot(ctx, organisationID, invoiceID, inv); err != nil {
 		return nil, err
 	}
 
@@ -356,6 +408,85 @@ func (s *InvoiceService) Send(
 	}
 
 	return inv, nil
+}
+
+// buildPartySnapshot loads everything Send needs to construct an
+// InvoicePartySnapshot — the organisation, the invoice's customer, the
+// customer's billing address (if one exists), and the organisation's
+// configured currency — all through tx, so they're read within the same
+// transaction that already holds the invoice row's FOR UPDATE lock.
+//
+// A missing billing address is not an error: customer.ErrBillingAddressNotFound
+// is the one expected, harmless outcome here (Milestone 7 Part 1 never
+// required every customer to have one), and simply leaves every
+// CustomerAddress/City/State/PostalCode/Country field nil on the
+// resulting snapshot. Any other failure loading the organisation or
+// customer is wrapped as ErrInvoiceSnapshotDataUnavailable; a missing
+// settings row is reported as ErrInvoiceSettingsNotFound, the same
+// sentinel Create already uses for the identical "no settings row"
+// situation.
+func (s *InvoiceService) buildPartySnapshot(
+	ctx context.Context,
+	tx pgx.Tx,
+	organisationID uuid.UUID,
+	customerID uuid.UUID,
+) (InvoicePartySnapshot, error) {
+	organisation, err := s.organisationRepository.WithTx(tx).GetByID(ctx, organisationID)
+	if err != nil {
+		return InvoicePartySnapshot{}, fmt.Errorf("%w: look up organisation: %v", ErrInvoiceSnapshotDataUnavailable, err)
+	}
+
+	cust, err := s.customerRepository.WithTx(tx).GetByID(ctx, organisationID, customerID)
+	if err != nil {
+		return InvoicePartySnapshot{}, fmt.Errorf("%w: look up customer: %v", ErrInvoiceSnapshotDataUnavailable, err)
+	}
+
+	settings, err := s.settingsRepository.WithTx(tx).GetByOrganisationID(ctx, organisationID)
+	if err != nil {
+		if errors.Is(err, admin.ErrSettingsNotFound) {
+			return InvoicePartySnapshot{}, ErrInvoiceSettingsNotFound
+		}
+
+		return InvoicePartySnapshot{}, fmt.Errorf("%w: look up settings: %v", ErrInvoiceSnapshotDataUnavailable, err)
+	}
+
+	snapshot := InvoicePartySnapshot{
+		SellerName:       organisation.Name,
+		SellerEmail:      organisation.Email,
+		SellerPhone:      organisation.Phone,
+		SellerWebsite:    organisation.Website,
+		SellerAddress:    organisation.Address,
+		SellerCity:       organisation.City,
+		SellerState:      organisation.State,
+		SellerPostalCode: organisation.PostalCode,
+		SellerCountry:    organisation.Country,
+		SellerTaxID:      organisation.TaxID,
+
+		CustomerName:        cust.Name,
+		CustomerCompanyName: cust.CompanyName,
+		CustomerEmail:       cust.Email,
+		CustomerPhone:       cust.Phone,
+		CustomerTaxID:       cust.TaxID,
+
+		Currency: normalizeCurrency(settings.Currency),
+	}
+
+	billingAddress, err := s.addressRepository.WithTx(tx).GetBillingAddressByCustomerID(ctx, organisationID, customerID)
+	if err != nil {
+		if !errors.Is(err, customer.ErrBillingAddressNotFound) {
+			return InvoicePartySnapshot{}, fmt.Errorf("%w: look up billing address: %v", ErrInvoiceSnapshotDataUnavailable, err)
+		}
+		// No billing address yet — acceptable; the customer-address
+		// fields on snapshot simply stay nil.
+	} else {
+		snapshot.CustomerAddress = nilIfEmpty(billingAddress.Street)
+		snapshot.CustomerCity = nilIfEmpty(billingAddress.City)
+		snapshot.CustomerState = nilIfEmpty(billingAddress.State)
+		snapshot.CustomerPostalCode = nilIfEmpty(billingAddress.PostalCode)
+		snapshot.CustomerCountry = nilIfEmpty(billingAddress.Country)
+	}
+
+	return snapshot, nil
 }
 
 // CreatePaymentRequest is the caller-supplied shape for recording a

@@ -62,6 +62,8 @@ func newPaymentTestService(db *pgxpool.Pool) *InvoiceService {
 		NewPostgresInvoiceRepository(db),
 		customer.NewPostgresCustomerRepository(db),
 		product.NewPostgresProductRepository(db),
+		admin.NewPostgresOrganisationRepository(db),
+		customer.NewPostgresAddressRepository(db),
 		admin.NewPostgresSettingsRepository(db),
 		NewPostgresPaymentRepository(db),
 		db,

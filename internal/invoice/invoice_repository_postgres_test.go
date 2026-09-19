@@ -78,6 +78,11 @@ func createTestCustomer(t *testing.T, db *pgxpool.Pool, organisationID uuid.UUID
 	}
 
 	t.Cleanup(func() {
+		// addresses (Milestone 7 Part 1) has no cleanup of its own here and
+		// must be deleted before customers, or the customers delete below
+		// silently fails on the addresses_customer_id_fkey foreign key —
+		// same fix as cleanupOrganisation in internal/app/app_test.go.
+		_, _ = db.Exec(context.Background(), "DELETE FROM addresses WHERE customer_id = $1", c.ID)
 		_, _ = db.Exec(context.Background(), "DELETE FROM customers WHERE id = $1", c.ID)
 	})
 

@@ -11,20 +11,29 @@ import (
 )
 
 // PostgresAddressRepository is the PostgreSQL-backed implementation of
-// AddressRepository. It holds a connection pool rather than creating one
-// itself, so the caller decides how the pool is configured and when it is
-// closed. Unlike InvoiceRepository/PaymentRepository, it has no WithTx: a
-// billing-address upsert is already a single atomic statement, and
-// nothing in this milestone needs it to participate in a wider
-// transaction.
+// AddressRepository. It holds a dbExecutor (see
+// customer_repository_postgres.go) rather than a concrete pool, so the
+// same code runs unmodified whether it's operating directly on the pool
+// or inside a transaction WithTx provides.
 type PostgresAddressRepository struct {
-	db *pgxpool.Pool
+	db dbExecutor
 }
 
 // NewPostgresAddressRepository wires an existing pool into a repository.
 func NewPostgresAddressRepository(db *pgxpool.Pool) *PostgresAddressRepository {
 	return &PostgresAddressRepository{
 		db: db,
+	}
+}
+
+// WithTx returns a repository that runs its operations against tx instead
+// of the pool, so a customer's billing address can be read within the
+// same transaction InvoiceService.Send uses to capture its snapshot
+// (Milestone 7 Part 2). It does not begin, commit or roll back anything
+// itself.
+func (r *PostgresAddressRepository) WithTx(tx pgx.Tx) AddressRepository {
+	return &PostgresAddressRepository{
+		db: tx,
 	}
 }
 

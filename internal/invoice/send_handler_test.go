@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+
+	admin "go-invoicing/internal/administration"
 )
 
 func TestInvoiceHandler_Send_Success(t *testing.T) {
@@ -126,6 +128,54 @@ func TestInvoiceHandler_Send_Paid(t *testing.T) {
 	f := newTestFixture()
 	handler := newTestHandler(f)
 	invoiceID := f.addInvoice(10000, InvoiceStatusPaid)
+
+	request := httptest.NewRequest(http.MethodPost, "/invoices/"+invoiceID.String()+"/send", nil)
+	request.SetPathValue("id", invoiceID.String())
+	request = withAuthenticatedOrganisation(request, f.organisationID)
+	recorder := httptest.NewRecorder()
+
+	handler.Send(recorder, request)
+
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusConflict, recorder.Code, recorder.Body.String())
+	}
+}
+
+// TestInvoiceHandler_Send_MissingSellerNameReturnsConflict proves
+// Milestone 7 Part 2's business-data-incompleteness mapping: an invoice
+// that's a valid Draft but whose organisation has no resolvable seller
+// name maps to 409, not 500 — "exists but can't currently be finalised",
+// the same category as an already-Sent invoice.
+func TestInvoiceHandler_Send_MissingSellerNameReturnsConflict(t *testing.T) {
+	f := newTestFixture()
+	handler := newTestHandler(f)
+	invoiceID := f.addInvoice(10000, InvoiceStatusDraft)
+	f.organisationRepository.organisations[f.organisationID] = admin.Organisation{ID: f.organisationID, Name: ""}
+
+	request := httptest.NewRequest(http.MethodPost, "/invoices/"+invoiceID.String()+"/send", nil)
+	request.SetPathValue("id", invoiceID.String())
+	request = withAuthenticatedOrganisation(request, f.organisationID)
+	recorder := httptest.NewRecorder()
+
+	handler.Send(recorder, request)
+
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusConflict, recorder.Code, recorder.Body.String())
+	}
+}
+
+// TestInvoiceHandler_Send_MissingSettingsReturnsConflict mirrors the
+// above for a missing organisation settings row — the identical
+// "business data incomplete" category Create's own
+// ErrInvoiceSettingsNotFound already represents, mapped to 409 here
+// rather than Create's 500 since Send's own contract explicitly calls
+// for it.
+func TestInvoiceHandler_Send_MissingSettingsReturnsConflict(t *testing.T) {
+	f := newTestFixture()
+	handler := newTestHandler(f)
+	invoiceID := f.addInvoice(10000, InvoiceStatusDraft)
+	f.settingsRepository = newFakeSettingsRepository() // no settings row at all
+	f.service.settingsRepository = f.settingsRepository
 
 	request := httptest.NewRequest(http.MethodPost, "/invoices/"+invoiceID.String()+"/send", nil)
 	request.SetPathValue("id", invoiceID.String())

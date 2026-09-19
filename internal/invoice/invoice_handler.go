@@ -137,6 +137,17 @@ func (h *InvoiceHandler) Send(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Milestone 7 Part 2: the invoice exists and is a valid Draft, but
+		// required business data for its immutable snapshot (seller name,
+		// customer name, currency, or the organisation/customer/settings
+		// records themselves) is missing or incomplete — a 409, the same
+		// "exists but can't currently be finalised" category as an
+		// already-Sent invoice, never a generic 500.
+		if isSnapshotIncompleteError(err) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+
 		http.Error(w, "failed to send invoice", http.StatusInternalServerError)
 		return
 	}
@@ -252,6 +263,28 @@ func (h *InvoiceHandler) GetPayments(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+	}
+}
+
+// isSnapshotIncompleteError reports whether err is one of Send's
+// business-data-incompleteness sentinels (Milestone 7 Part 2) — an
+// invoice that exists and is a valid Draft, but cannot currently be
+// finalised because the organisation/customer/settings data its
+// immutable snapshot depends on is missing or incomplete. These all map
+// to 409, the same category as an already-Sent invoice, not a generic
+// 500 — none of them leak any database or library internals, since every
+// one is this package's own sentinel with an already-safe message.
+func isSnapshotIncompleteError(err error) bool {
+	switch {
+	case errors.Is(err, ErrInvoiceSettingsNotFound),
+		errors.Is(err, ErrInvoiceSnapshotDataUnavailable),
+		errors.Is(err, ErrInvoiceSnapshotSellerNameRequired),
+		errors.Is(err, ErrInvoiceSnapshotCustomerNameRequired),
+		errors.Is(err, ErrInvoiceSnapshotCurrencyRequired),
+		errors.Is(err, ErrInvoiceSnapshotCurrencyInvalid):
+		return true
+	default:
+		return false
 	}
 }
 

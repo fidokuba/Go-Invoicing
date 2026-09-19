@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // fakeCustomerRepository is an in-memory CustomerRepository used to test
@@ -21,6 +22,13 @@ func newFakeCustomerRepository() *fakeCustomerRepository {
 	return &fakeCustomerRepository{
 		customers: make(map[uuid.UUID]Customer),
 	}
+}
+
+// WithTx ignores its tx argument and returns the same fake — it has no
+// real transactional semantics of its own, matching every other fake
+// repository's WithTx in this project.
+func (f *fakeCustomerRepository) WithTx(tx pgx.Tx) CustomerRepository {
+	return f
 }
 
 func (f *fakeCustomerRepository) Create(ctx context.Context, c *Customer) error {
@@ -61,6 +69,13 @@ func (f *fakeAddressRepository) registerCustomer(customerID, organisationID uuid
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.customerOrganisations[customerID] = organisationID
+}
+
+// WithTx ignores its tx argument and returns the same fake — it has no
+// real transactional semantics of its own, matching every other fake
+// repository's WithTx in this project.
+func (f *fakeAddressRepository) WithTx(tx pgx.Tx) AddressRepository {
+	return f
 }
 
 func (f *fakeAddressRepository) GetBillingAddressByCustomerID(ctx context.Context, organisationID, customerID uuid.UUID) (*Address, error) {

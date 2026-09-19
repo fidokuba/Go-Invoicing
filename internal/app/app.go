@@ -137,10 +137,14 @@ func (a *App) Handler() http.Handler {
 	// each invoice's sequential number, on the payment repository for
 	// CreatePayment, and on the pool itself to begin the transaction that
 	// makes invoice/payment creation atomic (a.db satisfies
-	// invoice.TxBeginner directly).
+	// invoice.TxBeginner directly). organisationRepository and
+	// addressRepository (both already constructed above, for the
+	// organisation/customer routes) are Milestone 7 Part 2's additions:
+	// Send uses them, within its own transaction, to capture the
+	// invoice's immutable seller/customer-billing-address snapshot.
 	invoiceRepository := invoice.NewPostgresInvoiceRepository(a.db)
 	paymentRepository := invoice.NewPostgresPaymentRepository(a.db)
-	invoiceService := invoice.NewInvoiceService(invoiceRepository, customerRepository, productRepository, settingsRepository, paymentRepository, a.db)
+	invoiceService := invoice.NewInvoiceService(invoiceRepository, customerRepository, productRepository, organisationRepository, addressRepository, settingsRepository, paymentRepository, a.db)
 	invoiceHandler := invoice.NewInvoiceHandler(invoiceService)
 
 	mux.HandleFunc("POST /invoices", authMiddleware.RequireAuth(invoiceHandler.Create))

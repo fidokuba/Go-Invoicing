@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -176,6 +175,13 @@ func (r *PostgresInvoiceRepository) GetByID(
 			status,
 			sent_at,
 			notes,
+			seller_name, seller_email, seller_phone, seller_website,
+			seller_address, seller_city, seller_state, seller_postal_code,
+			seller_country, seller_tax_id,
+			customer_name, customer_company_name, customer_email, customer_phone,
+			customer_tax_id, customer_address, customer_city, customer_state,
+			customer_postal_code, customer_country,
+			currency,
 			created_at,
 			updated_at,
 			deleted_at
@@ -205,6 +211,13 @@ func (r *PostgresInvoiceRepository) GetByID(
 		&inv.Status,
 		&inv.SentAt,
 		&inv.Notes,
+		&inv.SellerName, &inv.SellerEmail, &inv.SellerPhone, &inv.SellerWebsite,
+		&inv.SellerAddress, &inv.SellerCity, &inv.SellerState, &inv.SellerPostalCode,
+		&inv.SellerCountry, &inv.SellerTaxID,
+		&inv.CustomerName, &inv.CustomerCompanyName, &inv.CustomerEmail, &inv.CustomerPhone,
+		&inv.CustomerTaxID, &inv.CustomerAddress, &inv.CustomerCity, &inv.CustomerState,
+		&inv.CustomerPostalCode, &inv.CustomerCountry,
+		&inv.Currency,
 		&inv.CreatedAt,
 		&inv.UpdatedAt,
 		&inv.DeletedAt,
@@ -248,6 +261,13 @@ func (r *PostgresInvoiceRepository) GetForUpdate(
 			status,
 			sent_at,
 			notes,
+			seller_name, seller_email, seller_phone, seller_website,
+			seller_address, seller_city, seller_state, seller_postal_code,
+			seller_country, seller_tax_id,
+			customer_name, customer_company_name, customer_email, customer_phone,
+			customer_tax_id, customer_address, customer_city, customer_state,
+			customer_postal_code, customer_country,
+			currency,
 			created_at,
 			updated_at,
 			deleted_at
@@ -278,6 +298,13 @@ func (r *PostgresInvoiceRepository) GetForUpdate(
 		&inv.Status,
 		&inv.SentAt,
 		&inv.Notes,
+		&inv.SellerName, &inv.SellerEmail, &inv.SellerPhone, &inv.SellerWebsite,
+		&inv.SellerAddress, &inv.SellerCity, &inv.SellerState, &inv.SellerPostalCode,
+		&inv.SellerCountry, &inv.SellerTaxID,
+		&inv.CustomerName, &inv.CustomerCompanyName, &inv.CustomerEmail, &inv.CustomerPhone,
+		&inv.CustomerTaxID, &inv.CustomerAddress, &inv.CustomerCity, &inv.CustomerState,
+		&inv.CustomerPostalCode, &inv.CustomerCountry,
+		&inv.Currency,
 		&inv.CreatedAt,
 		&inv.UpdatedAt,
 		&inv.DeletedAt,
@@ -330,13 +357,18 @@ func (r *PostgresInvoiceRepository) UpdateStatus(
 	return nil
 }
 
-// MarkSent persists the Draft -> Sent transition: status and sent_at are
-// set together in one UPDATE statement (Milestone 5), so the two columns
-// can never be observably out of sync with each other, even under a
-// failure — either both change, or (if this statement itself never runs,
-// e.g. the enclosing transaction rolled back) neither does. It carries
-// the same organisation_id predicate as UpdateStatus, for the same
-// defense-in-depth reason.
+// MarkSentWithSnapshot persists the Draft -> Sent transition together
+// with its immutable party snapshot: status, sent_at, and every
+// SellerXxx/CustomerXxx/Currency column are set together in one UPDATE
+// statement (Milestone 5, extended Milestone 7 Part 2), so none of them
+// can ever be observably out of sync with each other, even under a
+// failure — either every one of them changes, or (if this statement
+// itself never runs, e.g. the enclosing transaction rolled back) none of
+// them does. inv is the already-mutated Invoice a prior, successful
+// Invoice.MarkSent call produced — this writes its Status/SentAt/snapshot
+// fields exactly as they are on inv, not values re-derived here. It
+// carries the same organisation_id predicate as UpdateStatus, for the
+// same defense-in-depth reason.
 //
 // This does not also guard against a non-Draft current status in SQL:
 // InvoiceService.Send already holds this row's FOR UPDATE lock and has
@@ -346,25 +378,46 @@ func (r *PostgresInvoiceRepository) UpdateStatus(
 // adding a redundant "AND status = 'draft'" clause here would only add a
 // second, harder-to-diagnose way to reach RowsAffected() == 0 without
 // closing any gap the lock doesn't already close.
-func (r *PostgresInvoiceRepository) MarkSent(
+func (r *PostgresInvoiceRepository) MarkSentWithSnapshot(
 	ctx context.Context,
 	organisationID uuid.UUID,
 	invoiceID uuid.UUID,
-	sentAt time.Time,
+	inv *Invoice,
 ) error {
 	const query = `
 		UPDATE invoices
 		SET status = $1,
 			sent_at = $2,
+			seller_name = $3, seller_email = $4, seller_phone = $5, seller_website = $6,
+			seller_address = $7, seller_city = $8, seller_state = $9, seller_postal_code = $10,
+			seller_country = $11, seller_tax_id = $12,
+			customer_name = $13, customer_company_name = $14, customer_email = $15, customer_phone = $16,
+			customer_tax_id = $17, customer_address = $18, customer_city = $19, customer_state = $20,
+			customer_postal_code = $21, customer_country = $22,
+			currency = $23,
 			updated_at = NOW()
-		WHERE id = $3
-			AND organisation_id = $4
+		WHERE id = $24
+			AND organisation_id = $25
 			AND deleted_at IS NULL
 	`
 
-	tag, err := r.db.Exec(ctx, query, InvoiceStatusSent, sentAt, invoiceID, organisationID)
+	tag, err := r.db.Exec(
+		ctx,
+		query,
+		inv.Status,
+		inv.SentAt,
+		inv.SellerName, inv.SellerEmail, inv.SellerPhone, inv.SellerWebsite,
+		inv.SellerAddress, inv.SellerCity, inv.SellerState, inv.SellerPostalCode,
+		inv.SellerCountry, inv.SellerTaxID,
+		inv.CustomerName, inv.CustomerCompanyName, inv.CustomerEmail, inv.CustomerPhone,
+		inv.CustomerTaxID, inv.CustomerAddress, inv.CustomerCity, inv.CustomerState,
+		inv.CustomerPostalCode, inv.CustomerCountry,
+		inv.Currency,
+		invoiceID,
+		organisationID,
+	)
 	if err != nil {
-		return fmt.Errorf("mark invoice sent: %w", err)
+		return fmt.Errorf("mark invoice sent with snapshot: %w", err)
 	}
 
 	if tag.RowsAffected() == 0 {

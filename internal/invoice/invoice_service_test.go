@@ -26,11 +26,11 @@ type fakeInvoiceRepository struct {
 	invoices map[uuid.UUID]Invoice
 	lines    map[uuid.UUID][]*Line
 
-	createErr       error
-	createLinesErr  error
-	getForUpdateErr error
-	updateStatusErr error
-	markSentErr     error
+	createErr               error
+	createLinesErr          error
+	getForUpdateErr         error
+	updateStatusErr         error
+	markSentWithSnapshotErr error
 }
 
 func newFakeInvoiceRepository() *fakeInvoiceRepository {
@@ -109,21 +109,23 @@ func (f *fakeInvoiceRepository) UpdateStatus(ctx context.Context, organisationID
 	return nil
 }
 
-// MarkSent mirrors the real repository's Milestone 4 Part 6 organisation
-// check and Milestone 5's atomic status+sent_at write: an invoice that
-// exists but belongs to a different organisation is treated identically
-// to one that doesn't exist at all, and both fields are set together.
-func (f *fakeInvoiceRepository) MarkSent(ctx context.Context, organisationID, invoiceID uuid.UUID, sentAt time.Time) error {
-	if f.markSentErr != nil {
-		return f.markSentErr
+// MarkSentWithSnapshot mirrors the real repository's Milestone 4 Part 6
+// organisation check and Milestone 5/7-Part-2 atomic
+// status+sent_at+snapshot write: an invoice that exists but belongs to a
+// different organisation is treated identically to one that doesn't
+// exist at all, and every field is copied from inv (the already-mutated
+// value InvoiceService.Send's own Invoice.MarkSent call produced)
+// together.
+func (f *fakeInvoiceRepository) MarkSentWithSnapshot(ctx context.Context, organisationID, invoiceID uuid.UUID, inv *Invoice) error {
+	if f.markSentWithSnapshotErr != nil {
+		return f.markSentWithSnapshotErr
 	}
-	inv, ok := f.invoices[invoiceID]
-	if !ok || inv.OrganisationID != organisationID {
+	existing, ok := f.invoices[invoiceID]
+	if !ok || existing.OrganisationID != organisationID {
 		return ErrInvoiceNotFound
 	}
-	inv.Status = InvoiceStatusSent
-	inv.SentAt = &sentAt
-	f.invoices[invoiceID] = inv
+	updated := *inv
+	f.invoices[invoiceID] = updated
 	return nil
 }
 
@@ -209,6 +211,13 @@ func (f *fakeCustomerRepository) add(organisationID uuid.UUID) uuid.UUID {
 	return id
 }
 
+// WithTx ignores its tx argument and returns the same fake — it has no
+// real transactional semantics of its own, matching every other fake
+// repository in this file.
+func (f *fakeCustomerRepository) WithTx(tx pgx.Tx) customer.CustomerRepository {
+	return f
+}
+
 func (f *fakeCustomerRepository) Create(ctx context.Context, c *customer.Customer) error {
 	f.customers[c.ID] = *c
 	return nil
@@ -220,6 +229,86 @@ func (f *fakeCustomerRepository) GetByID(ctx context.Context, organisationID, cu
 		return nil, customer.ErrCustomerNotFound
 	}
 	return &c, nil
+}
+
+// fakeOrganisationRepository is a minimal in-memory admin.OrganisationRepository
+// used only to supply Organisation snapshot source data during Send
+// (Milestone 7 Part 2). getByIDCallCount lets tests prove a repeated Send
+// never re-reads the organisation at all (see
+// TestInvoiceService_Send_RepeatedSendNeverReloadsSnapshotSources).
+type fakeOrganisationRepository struct {
+	organisations map[uuid.UUID]admin.Organisation
+
+	getByIDCallCount int
+}
+
+func newFakeOrganisationRepository() *fakeOrganisationRepository {
+	return &fakeOrganisationRepository{organisations: make(map[uuid.UUID]admin.Organisation)}
+}
+
+func (f *fakeOrganisationRepository) WithTx(tx pgx.Tx) admin.OrganisationRepository {
+	return f
+}
+
+func (f *fakeOrganisationRepository) Create(ctx context.Context, o *admin.Organisation) error {
+	f.organisations[o.ID] = *o
+	return nil
+}
+
+func (f *fakeOrganisationRepository) GetByID(ctx context.Context, id uuid.UUID) (*admin.Organisation, error) {
+	f.getByIDCallCount++
+	o, ok := f.organisations[id]
+	if !ok {
+		return nil, admin.ErrOrganisationNotFound
+	}
+	return &o, nil
+}
+
+func (f *fakeOrganisationRepository) Update(ctx context.Context, organisationID uuid.UUID, o *admin.Organisation) error {
+	if _, ok := f.organisations[organisationID]; !ok {
+		return admin.ErrOrganisationNotFound
+	}
+	f.organisations[organisationID] = *o
+	return nil
+}
+
+// fakeAddressRepository is a minimal in-memory customer.AddressRepository
+// used only to supply a customer's billing-address snapshot source data
+// during Send (Milestone 7 Part 2). Addresses are keyed by customerID
+// directly (not customerID+organisationID) since these tests only ever
+// need one organisation's view; getCallCount lets tests prove a repeated
+// Send never re-reads the billing address at all.
+type fakeAddressRepository struct {
+	addresses map[uuid.UUID]customer.Address
+
+	getCallCount int
+}
+
+func newFakeAddressRepository() *fakeAddressRepository {
+	return &fakeAddressRepository{addresses: make(map[uuid.UUID]customer.Address)}
+}
+
+func (f *fakeAddressRepository) WithTx(tx pgx.Tx) customer.AddressRepository {
+	return f
+}
+
+func (f *fakeAddressRepository) GetBillingAddressByCustomerID(ctx context.Context, organisationID, customerID uuid.UUID) (*customer.Address, error) {
+	f.getCallCount++
+	a, ok := f.addresses[customerID]
+	if !ok {
+		return nil, customer.ErrBillingAddressNotFound
+	}
+	return &a, nil
+}
+
+func (f *fakeAddressRepository) UpsertBillingAddress(ctx context.Context, organisationID, customerID uuid.UUID, address *customer.Address) (*customer.Address, error) {
+	f.addresses[customerID] = *address
+	stored := *address
+	return &stored, nil
+}
+
+func (f *fakeAddressRepository) add(customerID uuid.UUID, address customer.Address) {
+	f.addresses[customerID] = address
 }
 
 // fakeProductRepository is a minimal in-memory product.ProductRepository
@@ -264,6 +353,8 @@ type fakeSettingsRepository struct {
 
 	getForUpdateErr        error
 	updateInvoiceNumberErr error
+
+	getByOrganisationIDCallCount int
 }
 
 func newFakeSettingsRepository() *fakeSettingsRepository {
@@ -291,6 +382,7 @@ func (f *fakeSettingsRepository) Create(ctx context.Context, settings *admin.Set
 }
 
 func (f *fakeSettingsRepository) GetByOrganisationID(ctx context.Context, organisationID uuid.UUID) (*admin.Settings, error) {
+	f.getByOrganisationIDCallCount++
 	return f.get(organisationID)
 }
 
@@ -377,20 +469,30 @@ func (f *fakePaymentRepository) GetTotalPaidByInvoiceID(ctx context.Context, org
 }
 
 // testFixture bundles a service with fakes pre-seeded with a valid
-// customer, product and settings row under one organisation, for tests
-// that need a happy-path reference to build requests around. repository,
-// paymentRepository, settingsRepository and tx are exposed so individual
-// tests can inject a persistence failure, seed an invoice directly, or
-// inspect whether Commit/Rollback was called.
+// organisation, customer, product and settings row under one
+// organisation, for tests that need a happy-path reference to build
+// requests around. The default organisation has Name set (and the
+// default customer has Name set — see fakeCustomerRepository.add), so
+// f.service.Send succeeds out of the box (Milestone 7 Part 2: a
+// successful Send needs a resolvable seller name, customer name and
+// currency); tests exercising a missing/invalid snapshot field mutate
+// organisationRepository/addressRepository/settingsRepository directly.
+// repository, paymentRepository, settingsRepository, organisationRepository,
+// addressRepository and tx are exposed so individual tests can inject a
+// persistence failure, seed an invoice directly, or inspect whether
+// Commit/Rollback was called.
 type testFixture struct {
-	service            *InvoiceService
-	repository         *fakeInvoiceRepository
-	paymentRepository  *fakePaymentRepository
-	settingsRepository *fakeSettingsRepository
-	tx                 *fakeTx
-	organisationID     uuid.UUID
-	customerID         uuid.UUID
-	productID          uuid.UUID
+	service                *InvoiceService
+	repository             *fakeInvoiceRepository
+	paymentRepository      *fakePaymentRepository
+	settingsRepository     *fakeSettingsRepository
+	organisationRepository *fakeOrganisationRepository
+	addressRepository      *fakeAddressRepository
+	customerRepository     *fakeCustomerRepository
+	tx                     *fakeTx
+	organisationID         uuid.UUID
+	customerID             uuid.UUID
+	productID              uuid.UUID
 }
 
 func newTestFixture() *testFixture {
@@ -406,20 +508,30 @@ func newTestFixture() *testFixture {
 	settingsRepository := newFakeSettingsRepository()
 	settingsRepository.add(organisationID)
 
+	organisations := newFakeOrganisationRepository()
+	organisations.organisations[organisationID] = admin.Organisation{ID: organisationID, Name: "Test Organisation"}
+
+	addresses := newFakeAddressRepository()
+	// No billing address by default — Send must succeed without one
+	// (Milestone 7 Part 2); tests that need one call addresses.add(...).
+
 	tx := &fakeTx{}
 	txBeginner := &fakeTxBeginner{tx: tx}
 
-	service := NewInvoiceService(repository, customers, products, settingsRepository, paymentRepository, txBeginner)
+	service := NewInvoiceService(repository, customers, products, organisations, addresses, settingsRepository, paymentRepository, txBeginner)
 
 	return &testFixture{
-		service:            service,
-		repository:         repository,
-		paymentRepository:  paymentRepository,
-		settingsRepository: settingsRepository,
-		tx:                 tx,
-		organisationID:     organisationID,
-		customerID:         customerID,
-		productID:          productID,
+		service:                service,
+		repository:             repository,
+		paymentRepository:      paymentRepository,
+		settingsRepository:     settingsRepository,
+		organisationRepository: organisations,
+		addressRepository:      addresses,
+		customerRepository:     customers,
+		tx:                     tx,
+		organisationID:         organisationID,
+		customerID:             customerID,
+		productID:              productID,
 	}
 }
 

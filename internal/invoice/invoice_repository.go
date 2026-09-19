@@ -2,7 +2,6 @@ package invoice
 
 import (
 	"context"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -55,13 +54,18 @@ type InvoiceRepository interface {
 	// service-level check, not a replacement for it.
 	UpdateStatus(ctx context.Context, organisationID uuid.UUID, invoiceID uuid.UUID, status string) error
 
-	// MarkSent (Milestone 5) atomically persists the Draft -> Sent
-	// transition: status and sent_at are set together in a single UPDATE
-	// statement, so the two columns can never be observably out of sync
-	// (e.g. status already "sent" while sent_at is still NULL) even if a
-	// failure occurs elsewhere in the enclosing transaction — the whole
-	// transaction simply rolls back instead. Called through the same
+	// MarkSentWithSnapshot (Milestone 5, extended Milestone 7 Part 2)
+	// atomically persists the Draft -> Sent transition together with its
+	// immutable party snapshot: status, sent_at, and every SellerXxx/
+	// CustomerXxx/Currency column are set together in a single UPDATE
+	// statement, so there is never an externally observable moment where
+	// status is "sent" but its snapshot is absent or partial — the whole
+	// transaction simply rolls back instead of persisting any of it. inv
+	// is the already-mutated in-memory Invoice returned by a successful
+	// Invoice.MarkSent call (its Status, SentAt, and every snapshot field
+	// are read from it) — this is not merely "write sentAt", the way
+	// Milestone 5's original MarkSent was. Called through the same
 	// GetForUpdate-locked transaction as UpdateStatus, and carries the
 	// same organisation_id predicate for the same defense-in-depth reason.
-	MarkSent(ctx context.Context, organisationID uuid.UUID, invoiceID uuid.UUID, sentAt time.Time) error
+	MarkSentWithSnapshot(ctx context.Context, organisationID uuid.UUID, invoiceID uuid.UUID, inv *Invoice) error
 }
