@@ -177,6 +177,7 @@ func TestApp_ProtectedRoutes_RejectRequestsWithoutAuthorization(t *testing.T) {
 		{http.MethodPost, "/invoices/" + id + "/send"},
 		{http.MethodPost, "/invoices/" + id + "/payments"},
 		{http.MethodGet, "/invoices/" + id + "/payments"},
+		{http.MethodGet, "/invoices/" + id + "/pdf"},
 	}
 
 	for _, route := range protectedRoutes {
@@ -603,6 +604,20 @@ func TestApp_RoleMatrix_BusinessDataOperationsAvailableToAllRoles(t *testing.T) 
 			if recorder := doRequest(handler, http.MethodGet, "/invoices/"+invoice.ID+"/payments", role.token, nil); recorder.Code != http.StatusOK {
 				t.Fatalf("get payments as %s: status %d (body: %s)", role.name, recorder.Code, recorder.Body.String())
 			}
+
+			// PDF generation (Milestone 7 Part 3): all three roles may
+			// download an invoice's PDF, same policy as every other
+			// invoice route.
+			pdfRecorder := doRequest(handler, http.MethodGet, "/invoices/"+invoice.ID+"/pdf", role.token, nil)
+			if pdfRecorder.Code != http.StatusOK {
+				t.Fatalf("get invoice pdf as %s: status %d (body: %s)", role.name, pdfRecorder.Code, pdfRecorder.Body.String())
+			}
+			if contentType := pdfRecorder.Header().Get("Content-Type"); contentType != "application/pdf" {
+				t.Errorf("expected Content-Type application/pdf as %s, got %q", role.name, contentType)
+			}
+			if !bytes.HasPrefix(pdfRecorder.Body.Bytes(), []byte("%PDF-")) {
+				t.Errorf("expected pdf body to start with %%PDF- as %s", role.name)
+			}
 		})
 	}
 }
@@ -904,6 +919,7 @@ func TestApp_CrossTenantIsolation_TwoOrganisations(t *testing.T) {
 		{"put tenant B customer's billing address", http.MethodPut, "/customers/" + customerB.ID + "/billing-address", `{"street":"Attacker St","city":"X","postalCode":"00000","country":"XX"}`},
 		{"get tenant B product", http.MethodGet, "/products/" + productB.ID, ""},
 		{"get tenant B invoice", http.MethodGet, "/invoices/" + invoiceB.ID, ""},
+		{"get tenant B invoice pdf", http.MethodGet, "/invoices/" + invoiceB.ID + "/pdf", ""},
 		{"send tenant B invoice", http.MethodPost, "/invoices/" + invoiceB.ID + "/send", ""},
 		{"create payment against tenant B invoice", http.MethodPost, "/invoices/" + invoiceB.ID + "/payments", `{"amount":100,"paymentMethod":"cash","paymentDate":"2026-01-15"}`},
 		{"list payments for tenant B invoice", http.MethodGet, "/invoices/" + invoiceB.ID + "/payments", ""},

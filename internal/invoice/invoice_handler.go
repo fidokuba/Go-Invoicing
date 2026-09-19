@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,14 +25,17 @@ import (
 // invoice lookup (and, for CreatePayment, its row lock) uses to establish
 // that the invoice belongs to the caller before anything else happens.
 type InvoiceHandler struct {
-	service *InvoiceService
+	service    *InvoiceService
+	pdfService *InvoicePDFService
 }
 
 func NewInvoiceHandler(
 	service *InvoiceService,
+	pdfService *InvoicePDFService,
 ) *InvoiceHandler {
 	return &InvoiceHandler{
-		service: service,
+		service:    service,
+		pdfService: pdfService,
 	}
 }
 
@@ -263,6 +267,73 @@ func (h *InvoiceHandler) GetPayments(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+	}
+}
+
+// GetPDF handles GET /invoices/{id}/pdf — synchronously generates and
+// returns the invoice's PDF document (Milestone 7 Part 3). Tenant
+// identity comes exclusively from the authenticated caller, exactly like
+// every other invoice route; there is no organisationId query/body input
+// anywhere in this handler for a client to influence.
+func (h *InvoiceHandler) GetPDF(w http.ResponseWriter, r *http.Request) {
+	identity, ok := admin.RequireAuthenticatedUser(w, r)
+	if !ok {
+		return
+	}
+
+	invoiceID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "invalid invoice ID", http.StatusBadRequest)
+		return
+	}
+
+	pdfBytes, invoiceNumber, err := h.pdfService.Generate(r.Context(), identity.OrganisationID, invoiceID)
+	if err != nil {
+		if errors.Is(err, ErrInvoiceNotFound) {
+			http.Error(w, "invoice not found", http.StatusNotFound)
+			return
+		}
+
+		// Milestone 7 Part 3 section 6: an issued invoice missing a
+		// required snapshot field, or a Draft invoice missing required
+		// live seller/customer/currency data, both mean "this invoice
+		// exists but cannot currently produce a historically reliable
+		// document" — the same 409 category Send already uses for
+		// business-data incompleteness, never a generic 500.
+		if isPDFDataIncompleteError(err) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+
+		// Renderer failures and any other unexpected repository error
+		// are both genuine server-side problems — mapped to a single
+		// generic message so no gopdf error, SQL detail, or filesystem
+		// path is ever exposed to the client.
+		http.Error(w, "failed to generate invoice pdf", http.StatusInternalServerError)
+		return
+	}
+
+	filename := "invoice-" + SanitizeFilenameComponent(invoiceNumber) + ".pdf"
+
+	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+	w.Header().Set("Content-Length", strconv.Itoa(len(pdfBytes)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(pdfBytes)
+}
+
+// isPDFDataIncompleteError reports whether err is one of
+// InvoicePDFService's business-data-incompleteness sentinels.
+func isPDFDataIncompleteError(err error) bool {
+	switch {
+	case errors.Is(err, ErrInvoicePDFSellerNameMissing),
+		errors.Is(err, ErrInvoicePDFCustomerNameMissing),
+		errors.Is(err, ErrInvoicePDFCurrencyMissing),
+		errors.Is(err, ErrInvoicePDFCurrencyInvalid),
+		errors.Is(err, ErrInvoicePDFDataUnavailable):
+		return true
+	default:
+		return false
 	}
 }
 

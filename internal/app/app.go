@@ -145,7 +145,15 @@ func (a *App) Handler() http.Handler {
 	invoiceRepository := invoice.NewPostgresInvoiceRepository(a.db)
 	paymentRepository := invoice.NewPostgresPaymentRepository(a.db)
 	invoiceService := invoice.NewInvoiceService(invoiceRepository, customerRepository, productRepository, organisationRepository, addressRepository, settingsRepository, paymentRepository, a.db)
-	invoiceHandler := invoice.NewInvoiceHandler(invoiceService)
+
+	// InvoicePDFService (Milestone 7 Part 3) reuses the exact same
+	// tenant-scoped repositories as InvoiceService — no PDF-specific
+	// repository or query exists. InvoicePDFRenderer is stateless (only
+	// holds the embedded font bytes) and safe to share across requests.
+	invoicePDFRenderer := invoice.NewInvoicePDFRenderer()
+	invoicePDFService := invoice.NewInvoicePDFService(invoiceRepository, paymentRepository, organisationRepository, customerRepository, addressRepository, settingsRepository, invoicePDFRenderer)
+
+	invoiceHandler := invoice.NewInvoiceHandler(invoiceService, invoicePDFService)
 
 	mux.HandleFunc("POST /invoices", authMiddleware.RequireAuth(invoiceHandler.Create))
 	mux.HandleFunc("GET /invoices/{id}", authMiddleware.RequireAuth(invoiceHandler.GetByID))
@@ -155,6 +163,10 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /invoices/{id}/send", authMiddleware.RequireAuth(invoiceHandler.Send))
 	mux.HandleFunc("POST /invoices/{id}/payments", authMiddleware.RequireAuth(invoiceHandler.CreatePayment))
 	mux.HandleFunc("GET /invoices/{id}/payments", authMiddleware.RequireAuth(invoiceHandler.GetPayments))
+	// GET /invoices/{id}/pdf (Milestone 7 Part 3): synchronous PDF
+	// generation, same open-to-all-authenticated-roles policy as every
+	// other invoice route.
+	mux.HandleFunc("GET /invoices/{id}/pdf", authMiddleware.RequireAuth(invoiceHandler.GetPDF))
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {

@@ -14,7 +14,7 @@ import (
 )
 
 func newTestHandler(f *testFixture) *InvoiceHandler {
-	return NewInvoiceHandler(f.service)
+	return NewInvoiceHandler(f.service, f.pdfService())
 }
 
 // withAuthenticatedOrganisation attaches an AuthenticatedUser identity

@@ -28,9 +28,11 @@ type fakeInvoiceRepository struct {
 
 	createErr               error
 	createLinesErr          error
+	getByIDErr              error
 	getForUpdateErr         error
 	updateStatusErr         error
 	markSentWithSnapshotErr error
+	getLinesErr             error
 }
 
 func newFakeInvoiceRepository() *fakeInvoiceRepository {
@@ -63,6 +65,9 @@ func (f *fakeInvoiceRepository) CreateLines(ctx context.Context, lines []*Line) 
 }
 
 func (f *fakeInvoiceRepository) GetByID(ctx context.Context, organisationID, invoiceID uuid.UUID) (*Invoice, error) {
+	if f.getByIDErr != nil {
+		return nil, f.getByIDErr
+	}
 	inv, ok := f.invoices[invoiceID]
 	if !ok || inv.OrganisationID != organisationID {
 		return nil, ErrInvoiceNotFound
@@ -75,6 +80,9 @@ func (f *fakeInvoiceRepository) GetByID(ctx context.Context, organisationID, inv
 // yields an empty slice, exactly as GetByID's own not-found translation
 // keeps cross-tenant lookups indistinguishable from "no lines."
 func (f *fakeInvoiceRepository) GetLinesByInvoiceID(ctx context.Context, organisationID, invoiceID uuid.UUID) ([]*Line, error) {
+	if f.getLinesErr != nil {
+		return nil, f.getLinesErr
+	}
 	inv, ok := f.invoices[invoiceID]
 	if !ok || inv.OrganisationID != organisationID {
 		return nil, nil
@@ -197,8 +205,12 @@ func (f *fakeTxBeginner) Begin(ctx context.Context) (pgx.Tx, error) {
 // fakeCustomerRepository is a minimal in-memory customer.CustomerRepository
 // used only to check organisation-scoped existence, mirroring
 // PostgresCustomerRepository.GetByID's scoping behaviour.
+// getByIDCallCount lets PDF service tests (Milestone 7 Part 3) prove an
+// issued invoice's PDF never re-reads the live customer record.
 type fakeCustomerRepository struct {
 	customers map[uuid.UUID]customer.Customer
+
+	getByIDCallCount int
 }
 
 func newFakeCustomerRepository() *fakeCustomerRepository {
@@ -224,6 +236,7 @@ func (f *fakeCustomerRepository) Create(ctx context.Context, c *customer.Custome
 }
 
 func (f *fakeCustomerRepository) GetByID(ctx context.Context, organisationID, customerID uuid.UUID) (*customer.Customer, error) {
+	f.getByIDCallCount++
 	c, ok := f.customers[customerID]
 	if !ok || c.OrganisationID != organisationID {
 		return nil, customer.ErrCustomerNotFound
@@ -557,6 +570,62 @@ func (f *testFixture) addInvoice(total int64, status string) uuid.UUID {
 	f.repository.invoices[inv.ID] = inv
 	return inv.ID
 }
+
+// pdfService builds an InvoicePDFService wired against this fixture's
+// same fakes — reusing them, rather than a separate set, is what lets
+// PDF tests (Milestone 7 Part 3) directly inspect e.g.
+// f.organisationRepository.getByIDCallCount to prove an issued invoice's
+// PDF never re-reads live data.
+func (f *testFixture) pdfService() *InvoicePDFService {
+	return NewInvoicePDFService(
+		f.repository,
+		f.paymentRepository,
+		f.organisationRepository,
+		f.customerRepository,
+		f.addressRepository,
+		f.settingsRepository,
+		NewInvoicePDFRenderer(),
+	)
+}
+
+// addIssuedInvoiceWithSnapshot seeds a Sent (or Paid) invoice directly
+// with a fully-populated party snapshot, exactly as InvoiceService.Send
+// would have captured one (Milestone 7 Part 2) — for PDF tests that need
+// an issued invoice without going through the whole Send flow.
+func (f *testFixture) addIssuedInvoiceWithSnapshot(total int64, status string, dueDate time.Time) uuid.UUID {
+	inv := Invoice{
+		ID:             uuid.New(),
+		OrganisationID: f.organisationID,
+		CustomerID:     f.customerID,
+		InvoiceNumber:  "INV-TEST-" + uuid.New().String(),
+		Total:          total,
+		Status:         status,
+		DueDate:        dueDate,
+		SentAt:         timePtr(time.Now().UTC()),
+
+		SellerName:    strPtr("Snapshot Seller Ltd"),
+		SellerEmail:   strPtr("snapshot-seller@example.test"),
+		SellerAddress: strPtr("1 Snapshot Way"),
+		SellerCity:    strPtr("London"),
+		SellerCountry: strPtr("GB"),
+
+		CustomerName:       strPtr("Snapshot Customer"),
+		CustomerEmail:      strPtr("snapshot-customer@example.test"),
+		CustomerAddress:    strPtr("2 Snapshot Street"),
+		CustomerCity:       strPtr("Manchester"),
+		CustomerPostalCode: strPtr("M1 1AE"),
+		CustomerCountry:    strPtr("GB"),
+
+		Currency: strPtr("GBP"),
+	}
+	f.repository.invoices[inv.ID] = inv
+	f.repository.lines[inv.ID] = []*Line{
+		{ID: uuid.New(), InvoiceID: inv.ID, Description: "Snapshot line", Quantity: 1, UnitPrice: total, VATRate: 0, VATAmount: 0, Total: total},
+	}
+	return inv.ID
+}
+
+func timePtr(t time.Time) *time.Time { return &t }
 
 func validLineRequest() CreateInvoiceLineRequest {
 	return CreateInvoiceLineRequest{
