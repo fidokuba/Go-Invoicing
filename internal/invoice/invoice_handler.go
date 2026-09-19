@@ -214,13 +214,14 @@ func (h *InvoiceHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	responses := make([]InvoiceResponse, 0, len(items))
+	// Each row uses the dedicated InvoiceListItemResponse, not
+	// InvoiceResponse — a list row never fetches its own line items (see
+	// InvoiceService.List's own comment), and InvoiceListItemResponse has
+	// no "lines" field at all to be ambiguously empty. GET /invoices/{id}
+	// remains the way to see full line detail for one invoice.
+	responses := make([]InvoiceListItemResponse, 0, len(items))
 	for _, item := range items {
-		// A list row never fetches its own line items — see
-		// InvoiceService.List's own comment — so Lines is always empty
-		// here; GET /invoices/{id} remains the way to see full line
-		// detail for one invoice.
-		responses = append(responses, toInvoiceResponse(item.Invoice, nil, item.AmountPaid, item.Currency, now))
+		responses = append(responses, toInvoiceListItemResponse(item, now))
 	}
 
 	httpx.WriteJSON(w, http.StatusOK, httpx.NewListResponse(responses, limit, offset, total))

@@ -95,6 +95,72 @@ type InvoiceResponse struct {
 	UpdatedAt         string                `json:"updatedAt"`
 }
 
+// InvoiceListItemResponse is the shape of one row in GET /invoices'
+// "items" array (Milestone 8 Part 3 amendment) — deliberately a smaller,
+// dedicated type rather than InvoiceResponse with an empty Lines: an
+// empty array there would mean "this invoice has zero lines", not "lines
+// weren't loaded for this representation", which is genuinely ambiguous
+// on the wire. This type has no Lines field at all, so that ambiguity
+// cannot arise — a client sees no "lines" key in a list row, ever.
+//
+// It carries every invoice-level field already available without
+// fetching line items — the same fields InvoiceResponse has minus Lines,
+// Notes and OrganisationID (organisationId isn't included here for the
+// same reason it never appears on any other tenant-scoped response: the
+// caller already knows its own organisation from having authenticated as
+// it, and there is no genuine client need to see it echoed back). Do not
+// add joined display fields (e.g. a customer name) speculatively — a
+// future frontend can resolve those from its own customer data.
+type InvoiceListItemResponse struct {
+	ID                string  `json:"id"`
+	InvoiceNumber     string  `json:"invoiceNumber"`
+	CustomerID        string  `json:"customerId"`
+	IssueDate         string  `json:"issueDate"`
+	DueDate           string  `json:"dueDate"`
+	Status            string  `json:"status"`
+	Currency          string  `json:"currency"`
+	Subtotal          int64   `json:"subtotal"`
+	VATTotal          int64   `json:"vatTotal"`
+	Total             int64   `json:"total"`
+	AmountPaid        int64   `json:"amountPaid"`
+	AmountOutstanding int64   `json:"amountOutstanding"`
+	SentAt            *string `json:"sentAt,omitempty"`
+	CreatedAt         string  `json:"createdAt"`
+	UpdatedAt         string  `json:"updatedAt"`
+}
+
+// toInvoiceListItemResponse maps one InvoiceService.List result row onto
+// the list-item wire shape — the same pure-function contract as
+// toInvoiceResponse (no repository access; now and item.Currency are
+// both already resolved by the caller/service before this runs).
+func toInvoiceListItemResponse(item InvoiceListItem, now time.Time) InvoiceListItemResponse {
+	inv := item.Invoice
+
+	var sentAt *string
+	if inv.SentAt != nil {
+		s := inv.SentAt.UTC().Format(time.RFC3339)
+		sentAt = &s
+	}
+
+	return InvoiceListItemResponse{
+		ID:                inv.ID.String(),
+		InvoiceNumber:     inv.InvoiceNumber,
+		CustomerID:        inv.CustomerID.String(),
+		IssueDate:         inv.IssueDate.Format(dateLayout),
+		DueDate:           inv.DueDate.Format(dateLayout),
+		Status:            inv.EffectiveStatus(now),
+		Currency:          item.Currency,
+		Subtotal:          inv.Subtotal,
+		VATTotal:          inv.VATTotal,
+		Total:             inv.Total,
+		AmountPaid:        item.AmountPaid,
+		AmountOutstanding: inv.Total - item.AmountPaid,
+		SentAt:            sentAt,
+		CreatedAt:         inv.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:         inv.UpdatedAt.UTC().Format(time.RFC3339),
+	}
+}
+
 // toInvoiceResponse maps the internal domain model onto the API's response
 // shape. It performs no database calls: amountPaid is supplied by the
 // caller rather than fetched here, and amountOutstanding is simply

@@ -1027,6 +1027,73 @@ func TestApp_MidSessionSoftDeletion_TokenStopsWorking(t *testing.T) {
 	}
 }
 
+// TestApp_InvoicesList_SummaryRepresentation_EndToEnd is the Milestone 8
+// Part 3 amendment's end-to-end proof, through the real HTTP/service/
+// repository/PostgreSQL stack: GET /api/v1/invoices rows must have no
+// "lines" key at all (not merely an empty array), while
+// GET /api/v1/invoices/{id} for the exact same invoice must still return
+// its lines in full.
+func TestApp_InvoicesList_SummaryRepresentation_EndToEnd(t *testing.T) {
+	handler, db := newTestApp(t)
+	tenant := registerTenant(t, handler, db, "List Summary Org", "list-summary-admin@example.com")
+
+	customerRecorder := doRequest(handler, http.MethodPost, "/api/v1/customers", tenant.token, bytes.NewBufferString(`{"name":"Summary Customer"}`))
+	var customer struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(customerRecorder.Body).Decode(&customer)
+
+	invoiceBody := `{
+		"customerId": "` + customer.ID + `",
+		"issueDate": "2026-01-01",
+		"dueDate": "2026-01-31",
+		"lines": [{"description": "Service", "quantity": 1, "unitPrice": 1000, "vatRate": 0}]
+	}`
+	createRecorder := doRequest(handler, http.MethodPost, "/api/v1/invoices", tenant.token, bytes.NewBufferString(invoiceBody))
+	if createRecorder.Code != http.StatusCreated {
+		t.Fatalf("create invoice: status %d (body: %s)", createRecorder.Code, createRecorder.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(createRecorder.Body).Decode(&created)
+
+	listRecorder := doRequest(handler, http.MethodGet, "/api/v1/invoices", tenant.token, nil)
+	if listRecorder.Code != http.StatusOK {
+		t.Fatalf("list invoices: status %d (body: %s)", listRecorder.Code, listRecorder.Body.String())
+	}
+
+	var listResponse struct {
+		Items []map[string]json.RawMessage `json:"items"`
+	}
+	if err := json.NewDecoder(listRecorder.Body).Decode(&listResponse); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(listResponse.Items) != 1 {
+		t.Fatalf("expected exactly 1 item, got %d", len(listResponse.Items))
+	}
+	if _, hasLines := listResponse.Items[0]["lines"]; hasLines {
+		t.Error(`expected the list item to have no "lines" key at all`)
+	}
+	if _, hasID := listResponse.Items[0]["id"]; !hasID {
+		t.Error("expected the list item to still contain summary fields such as id")
+	}
+
+	getRecorder := doRequest(handler, http.MethodGet, "/api/v1/invoices/"+created.ID, tenant.token, nil)
+	if getRecorder.Code != http.StatusOK {
+		t.Fatalf("get invoice: status %d (body: %s)", getRecorder.Code, getRecorder.Body.String())
+	}
+	var full struct {
+		Lines []json.RawMessage `json:"lines"`
+	}
+	if err := json.NewDecoder(getRecorder.Body).Decode(&full); err != nil {
+		t.Fatalf("decode full invoice response: %v", err)
+	}
+	if len(full.Lines) != 1 {
+		t.Fatalf("expected GET /invoices/{id} to still return 1 line, got %d", len(full.Lines))
+	}
+}
+
 // TestApp_InvoiceLifecycle_DraftSentPaid is the Milestone 5 end-to-end
 // happy path: Create (Draft) -> payment rejected -> Send (Sent) ->
 // repeated Send rejected -> partial payment (still Sent) -> final
