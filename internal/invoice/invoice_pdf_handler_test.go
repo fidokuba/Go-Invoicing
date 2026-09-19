@@ -159,6 +159,39 @@ func TestInvoiceHandler_GetPDF_IgnoresOrganisationIdQueryParameter(t *testing.T)
 	}
 }
 
+// TestInvoiceHandler_GetPDF_RendererFailureReturnsGenericServerError
+// proves a renderer failure maps to a generic 500 with no gopdf-internal
+// detail leaked — see InvoicePDFRenderer_CorruptFontDataReturnsError's
+// own comment for why this white-box technique (setting the unexported
+// renderer field directly, same package) was chosen over introducing an
+// InvoicePDFRenderer interface solely for this one test.
+func TestInvoiceHandler_GetPDF_RendererFailureReturnsGenericServerError(t *testing.T) {
+	f := newTestFixture()
+	invoiceID := f.addInvoice(1000, InvoiceStatusDraft)
+
+	pdfService := f.pdfService()
+	pdfService.renderer = &InvoicePDFRenderer{fontData: []byte("not a valid ttf font")}
+	handler := NewInvoiceHandler(f.service, pdfService)
+
+	request := httptest.NewRequest(http.MethodGet, "/invoices/"+invoiceID.String()+"/pdf", nil)
+	request.SetPathValue("id", invoiceID.String())
+	request = withAuthenticatedOrganisation(request, f.organisationID)
+	recorder := httptest.NewRecorder()
+
+	handler.GetPDF(recorder, request)
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusInternalServerError, recorder.Code, recorder.Body.String())
+	}
+
+	body := recorder.Body.String()
+	for _, leaked := range []string{"gopdf", "font", "ttf", "Unrecognized"} {
+		if strings.Contains(body, leaked) {
+			t.Errorf("expected the generic 500 body not to leak renderer-internal detail, but it contained %q: %s", leaked, body)
+		}
+	}
+}
+
 func TestInvoiceHandler_GetPDF_SnapshotIncompleteReturnsConflict(t *testing.T) {
 	f := newTestFixture()
 	handler := newTestHandler(f)
@@ -174,5 +207,36 @@ func TestInvoiceHandler_GetPDF_SnapshotIncompleteReturnsConflict(t *testing.T) {
 
 	if recorder.Code != http.StatusConflict {
 		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusConflict, recorder.Code, recorder.Body.String())
+	}
+}
+
+// TestInvoiceHandler_GetPDF_OrganisationLookupFailureReturnsGenericServerError
+// is a Milestone 7 hardening-pass regression test, mirroring
+// TestInvoiceHandler_Send_OrganisationLookupFailureReturnsGenericServerError:
+// a genuine organisation-lookup failure (ErrInvoicePDFDataUnavailable)
+// must map to a generic 500, never a 409 with the underlying error text
+// exposed.
+func TestInvoiceHandler_GetPDF_OrganisationLookupFailureReturnsGenericServerError(t *testing.T) {
+	f := newTestFixture()
+	handler := newTestHandler(f)
+	invoiceID := f.addInvoice(1000, InvoiceStatusDraft)
+	delete(f.organisationRepository.organisations, f.organisationID)
+
+	request := httptest.NewRequest(http.MethodGet, "/invoices/"+invoiceID.String()+"/pdf", nil)
+	request.SetPathValue("id", invoiceID.String())
+	request = withAuthenticatedOrganisation(request, f.organisationID)
+	recorder := httptest.NewRecorder()
+
+	handler.GetPDF(recorder, request)
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusInternalServerError, recorder.Code, recorder.Body.String())
+	}
+
+	body := recorder.Body.String()
+	for _, leaked := range []string{"organisation not found", "ErrOrganisationNotFound", "look up organisation", "unavailable"} {
+		if strings.Contains(body, leaked) {
+			t.Errorf("expected the generic 500 body not to leak internal detail, but it contained %q: %s", leaked, body)
+		}
 	}
 }

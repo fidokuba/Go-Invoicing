@@ -57,6 +57,28 @@ func fullPDFData() InvoicePDFData {
 	}
 }
 
+// TestInvoicePDFRenderer_CorruptFontDataReturnsError is the Milestone 7
+// hardening-pass answer to "how is a renderer failure actually tested":
+// no InvoicePDFRenderer interface was introduced solely to allow
+// injecting a failure (Part 3 deliberately avoided that, since there is
+// still only one implementation) — instead, this white-box test builds
+// an InvoicePDFRenderer directly with its unexported fontData field set
+// to garbage, from within the same package, which is a normal Go
+// testing technique requiring no interface, no mock, and no production
+// code change. It proves gopdf.AddTTFFontData fails with an ordinary
+// error (not a panic) for unparseable font data, and that this project's
+// own wrapping ("load pdf font: %w") surfaces it correctly to callers —
+// see TestInvoiceHandler_GetPDF_RendererFailureReturnsGenericServerError
+// for proof this maps to a generic 500 at the HTTP layer.
+func TestInvoicePDFRenderer_CorruptFontDataReturnsError(t *testing.T) {
+	renderer := &InvoicePDFRenderer{fontData: []byte("this is not a valid ttf font file")}
+
+	_, err := renderer.Render(minimalPDFData())
+	if err == nil {
+		t.Fatal("expected an error for corrupt font data, got nil")
+	}
+}
+
 func TestInvoicePDFRenderer_MinimalInvoiceProducesValidPDF(t *testing.T) {
 	renderer := NewInvoicePDFRenderer()
 
@@ -305,6 +327,99 @@ func TestInvoicePDFRenderer_MultiPageManyLines(t *testing.T) {
 	}
 }
 
+// TestInvoicePDFRenderer_ZeroLinesDoesNotPanic proves the renderer stays
+// robust even for an empty line-items table — normal invoice creation
+// rejects zero lines (ErrInvoiceNoLines) so production data can never
+// actually reach this, but the renderer itself makes no assumption that
+// len(Lines) > 0, and shouldn't panic if that invariant were ever
+// violated upstream.
+func TestInvoicePDFRenderer_ZeroLinesDoesNotPanic(t *testing.T) {
+	renderer := NewInvoicePDFRenderer()
+	data := minimalPDFData()
+	data.Lines = nil
+
+	pdfBytes, err := renderer.Render(data)
+	if err != nil {
+		t.Fatalf("expected no error for zero lines, got %v", err)
+	}
+
+	requireValidPDFHeader(t, pdfBytes)
+}
+
+// TestInvoicePDFRenderer_FiveHundredLines is the upper-bound pagination
+// stress test (Milestone 7 hardening pass): proves a genuinely large
+// invoice still renders correctly, with every line present and the
+// table header repeated across every page it spans.
+func TestInvoicePDFRenderer_FiveHundredLines(t *testing.T) {
+	renderer := NewInvoicePDFRenderer()
+	data := minimalPDFData()
+
+	const lineCount = 500
+	lines := make([]InvoicePDFLine, 0, lineCount)
+	for i := 1; i <= lineCount; i++ {
+		lines = append(lines, InvoicePDFLine{
+			Description: fmt.Sprintf("Line item number %d", i),
+			Quantity:    "1", UnitPrice: "£10.00", VATRate: "20%", VATAmount: "£2.00", Total: "£12.00",
+		})
+	}
+	data.Lines = lines
+
+	pdfBytes, err := renderer.Render(data)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+
+	pageCount := countPDFPages(t, pdfBytes)
+	t.Logf("%d lines produced %d pages, %d bytes", lineCount, pageCount, len(pdfBytes))
+	if pageCount < 10 {
+		t.Errorf("expected a %d-line invoice to span many pages, got %d", lineCount, pageCount)
+	}
+
+	text := extractPDFText(t, pdfBytes)
+	if !strings.Contains(text, "Line item number 1") {
+		t.Error("expected first line to be present")
+	}
+	if !strings.Contains(text, fmt.Sprintf("Line item number %d", lineCount)) {
+		t.Errorf("expected last line (%d) to be present", lineCount)
+	}
+	if !strings.Contains(text, "Total") {
+		t.Error("expected totals block to still be present after 500 lines")
+	}
+}
+
+// TestInvoicePDFRenderer_LongNotesNearPageBoundary proves notes that
+// start close to the bottom margin push cleanly onto a new page rather
+// than overlapping the previous content or getting clipped.
+func TestInvoicePDFRenderer_LongNotesNearPageBoundary(t *testing.T) {
+	renderer := NewInvoicePDFRenderer()
+	data := minimalPDFData()
+
+	// Enough lines to push the cursor close to the bottom margin before
+	// Notes begins, without quite forcing a page break on its own.
+	lines := make([]InvoicePDFLine, 0, 45)
+	for i := 1; i <= 45; i++ {
+		lines = append(lines, InvoicePDFLine{
+			Description: fmt.Sprintf("Item %d", i),
+			Quantity:    "1", UnitPrice: "£10.00", VATRate: "20%", VATAmount: "£2.00", Total: "£12.00",
+		})
+	}
+	data.Lines = lines
+	data.Notes = strings.Repeat("This is a long note that should wrap across several lines without overlapping the totals block or running off the page. ", 8)
+
+	pdfBytes, err := renderer.Render(data)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+
+	text := extractPDFText(t, pdfBytes)
+	if !strings.Contains(text, "Notes") {
+		t.Error("expected a Notes heading to be present")
+	}
+	if !strings.Contains(strings.ReplaceAll(text, "\n", " "), "should wrap across several lines") {
+		t.Error("expected the long note's content to be present and intact")
+	}
+}
+
 // TestInvoicePDFRenderer_TwentyLinesFitsReasonably is a mid-sized sanity
 // check between the 1-line and 100+-line extremes.
 func TestInvoicePDFRenderer_TwentyLines(t *testing.T) {
@@ -334,6 +449,60 @@ func TestInvoicePDFRenderer_TwentyLines(t *testing.T) {
 	text := extractPDFText(t, pdfBytes)
 	if !strings.Contains(text, "Item 1") || !strings.Contains(text, "Item 20") {
 		t.Error("expected first and last of 20 lines to be present")
+	}
+}
+
+// TestInvoicePDFRenderer_EuropeanUnicodeCharacters proves the embedded
+// Liberation Serif font correctly renders ordinary European names and
+// addresses a real customer/seller could plausibly have — accented
+// Latin characters (French, German, Spanish) and Polish characters
+// outside the basic Latin-1 range (Ł, ó, ź) — rather than assuming
+// Unicode support without checking. This does NOT claim universal
+// Unicode coverage — see
+// TestInvoicePDFRenderer_UnsupportedScriptDoesNotPanic for the
+// documented limitation.
+func TestInvoicePDFRenderer_EuropeanUnicodeCharacters(t *testing.T) {
+	renderer := NewInvoicePDFRenderer()
+	data := minimalPDFData()
+	data.Seller.Name = "José Álvarez"
+	data.Seller.AddressLines = []string{"Müller GmbH", "Łódź", "Kraków"}
+	data.Customer.DisplayName = "François Dupont"
+
+	pdfBytes, err := renderer.Render(data)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+
+	text := extractPDFText(t, pdfBytes)
+	for _, want := range []string{"José Álvarez", "Müller GmbH", "Łódź", "Kraków", "François Dupont"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("expected extracted text to contain %q, got:\n%s", want, text)
+		}
+	}
+}
+
+// TestInvoicePDFRenderer_UnsupportedScriptDoesNotPanic documents the
+// actual, honest limitation: a character outside Liberation Serif's
+// coverage (e.g. CJK) is silently dropped rather than rendered — gopdf's
+// default glyph-not-found handling substitutes nothing rather than
+// crashing. This is not "support" for non-Latin scripts, just proof that
+// an unsupported character degrades gracefully instead of panicking or
+// corrupting the rest of the document.
+func TestInvoicePDFRenderer_UnsupportedScriptDoesNotPanic(t *testing.T) {
+	renderer := NewInvoicePDFRenderer()
+	data := minimalPDFData()
+	data.Notes = "Unsupported glyph follows: 日 (end of note)"
+
+	pdfBytes, err := renderer.Render(data)
+	if err != nil {
+		t.Fatalf("expected no error even with an unsupported glyph, got %v", err)
+	}
+
+	requireValidPDFHeader(t, pdfBytes)
+
+	text := extractPDFText(t, pdfBytes)
+	if !strings.Contains(text, "Unsupported glyph follows") || !strings.Contains(text, "end of note") {
+		t.Error("expected the surrounding, supported text to render correctly around the unsupported glyph")
 	}
 }
 

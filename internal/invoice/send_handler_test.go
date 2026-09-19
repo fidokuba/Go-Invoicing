@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -186,6 +187,40 @@ func TestInvoiceHandler_Send_MissingSettingsReturnsConflict(t *testing.T) {
 
 	if recorder.Code != http.StatusConflict {
 		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusConflict, recorder.Code, recorder.Body.String())
+	}
+}
+
+// TestInvoiceHandler_Send_OrganisationLookupFailureReturnsGenericServerError
+// is a Milestone 7 hardening-pass regression test: a genuine failure
+// loading the organisation (as opposed to a resolvable-but-blank field)
+// must map to a generic 500 — never a 409 with the underlying error's
+// text exposed. Deleting the organisation from the fake's map makes
+// organisationRepository.GetByID return admin.ErrOrganisationNotFound,
+// which InvoiceService.Send wraps as ErrInvoiceSnapshotDataUnavailable;
+// this proves that sentinel is excluded from isSnapshotIncompleteError's
+// 409 set and that no internal detail reaches the response body.
+func TestInvoiceHandler_Send_OrganisationLookupFailureReturnsGenericServerError(t *testing.T) {
+	f := newTestFixture()
+	handler := newTestHandler(f)
+	invoiceID := f.addInvoice(10000, InvoiceStatusDraft)
+	delete(f.organisationRepository.organisations, f.organisationID)
+
+	request := httptest.NewRequest(http.MethodPost, "/invoices/"+invoiceID.String()+"/send", nil)
+	request.SetPathValue("id", invoiceID.String())
+	request = withAuthenticatedOrganisation(request, f.organisationID)
+	recorder := httptest.NewRecorder()
+
+	handler.Send(recorder, request)
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusInternalServerError, recorder.Code, recorder.Body.String())
+	}
+
+	body := recorder.Body.String()
+	for _, leaked := range []string{"organisation not found", "ErrOrganisationNotFound", "look up organisation", "unavailable"} {
+		if strings.Contains(body, leaked) {
+			t.Errorf("expected the generic 500 body not to leak internal detail, but it contained %q: %s", leaked, body)
+		}
 	}
 }
 

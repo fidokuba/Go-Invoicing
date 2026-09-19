@@ -28,14 +28,18 @@ var currencySymbols = map[string]string{
 //
 // This never converts minorUnits to a float — major/minor units are
 // computed with plain integer division and modulo, so there is no
-// floating-point rounding risk at any amount.
+// floating-point rounding risk at any amount. The absolute value is
+// computed via absUint64 rather than a naive "if n < 0 { n = -n }": that
+// naive form overflows silently for math.MinInt64 (its negation isn't
+// representable as an int64 and wraps back to itself, still negative),
+// which would print a garbled, still-negative amount instead of the
+// correct magnitude. No invoice will ever realistically reach anywhere
+// near that magnitude, but the function is correct at every representable
+// int64 value regardless, not just the ones this domain currently
+// produces.
 func FormatMoney(minorUnits int64, currency string) string {
 	negative := minorUnits < 0
-
-	abs := minorUnits
-	if negative {
-		abs = -abs
-	}
+	abs := absUint64(minorUnits)
 
 	major := abs / 100
 	minor := abs % 100
@@ -52,6 +56,22 @@ func FormatMoney(minorUnits int64, currency string) string {
 	}
 
 	return sign + amount + " " + code
+}
+
+// absUint64 returns the absolute value of n as a uint64, correct for
+// every int64 value including math.MinInt64 — whose magnitude
+// (9223372036854775808) doesn't fit in an int64 at all, only in a
+// uint64. Negating n directly (int64(-n)) would overflow for that one
+// value; adding 1 to n before negating keeps the intermediate value
+// within int64's representable range (MinInt64+1 is exactly -MaxInt64),
+// and the "+1" is restored afterward once the result is safely in
+// uint64's much larger range.
+func absUint64(n int64) uint64 {
+	if n < 0 {
+		return uint64(-(n + 1)) + 1
+	}
+
+	return uint64(n)
 }
 
 // FormatQuantity formats a line quantity without meaningless trailing

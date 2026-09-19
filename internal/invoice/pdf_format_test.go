@@ -1,6 +1,7 @@
 package invoice
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -23,6 +24,18 @@ func TestFormatMoney(t *testing.T) {
 		{"unknown currency lowercase input", 12345, "xyz", "123.45 XYZ"},
 		{"negative unknown currency", -100, "XYZ", "-1.00 XYZ"},
 		{"lowercase known currency normalizes", 12345, "gbp", "£123.45"},
+		// Minor-unit boundary cases (section 9): 99p, exactly £1.00, and
+		// just past it, to prove the major/minor split lands correctly
+		// right at the rollover point in both directions.
+		{"99 minor units", 99, "GBP", "£0.99"},
+		{"exactly 100 minor units", 100, "GBP", "£1.00"},
+		{"101 minor units", 101, "GBP", "£1.01"},
+		// math.MinInt64: naively negating this (int64(-n)) overflows and
+		// silently wraps back to the same negative value, which would
+		// print a garbled, still-negative amount. absUint64 handles this
+		// correctly — see its own doc comment for why.
+		{"MinInt64 GBP", math.MinInt64, "GBP", "-£92233720368547758.08"},
+		{"MaxInt64 USD", math.MaxInt64, "USD", "$92233720368547758.07"},
 	}
 
 	for _, tt := range tests {

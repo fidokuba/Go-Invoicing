@@ -142,11 +142,14 @@ func (h *InvoiceHandler) Send(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Milestone 7 Part 2: the invoice exists and is a valid Draft, but
-		// required business data for its immutable snapshot (seller name,
-		// customer name, currency, or the organisation/customer/settings
-		// records themselves) is missing or incomplete — a 409, the same
-		// "exists but can't currently be finalised" category as an
-		// already-Sent invoice, never a generic 500.
+		// a required snapshot field (seller name, customer name,
+		// currency) resolved to blank, or the organisation genuinely has
+		// no settings row yet — a 409, the same "exists but can't
+		// currently be finalised" category as an already-Sent invoice.
+		// This is deliberately narrower than "any related-record lookup
+		// failed" (see isSnapshotIncompleteError's own comment for why
+		// ErrInvoiceSnapshotDataUnavailable is excluded) — only sentinels
+		// with a fixed, safe message reach this branch.
 		if isSnapshotIncompleteError(err) {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
@@ -299,16 +302,22 @@ func (h *InvoiceHandler) GetPDF(w http.ResponseWriter, r *http.Request) {
 		// live seller/customer/currency data, both mean "this invoice
 		// exists but cannot currently produce a historically reliable
 		// document" — the same 409 category Send already uses for
-		// business-data incompleteness, never a generic 500.
+		// business-data incompleteness. This is deliberately narrower
+		// than "any related-record lookup failed" — see
+		// isPDFDataIncompleteError's own comment for why
+		// ErrInvoicePDFDataUnavailable is excluded and falls through to
+		// the generic 500 below instead.
 		if isPDFDataIncompleteError(err) {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
 
-		// Renderer failures and any other unexpected repository error
-		// are both genuine server-side problems — mapped to a single
-		// generic message so no gopdf error, SQL detail, or filesystem
-		// path is ever exposed to the client.
+		// Renderer failures, a genuine organisation/customer/settings
+		// lookup failure (ErrInvoicePDFDataUnavailable), and any other
+		// unexpected repository error are all genuine server-side
+		// problems — mapped to a single generic message so no gopdf
+		// error, SQL detail, or filesystem path is ever exposed to the
+		// client.
 		http.Error(w, "failed to generate invoice pdf", http.StatusInternalServerError)
 		return
 	}
@@ -323,14 +332,22 @@ func (h *InvoiceHandler) GetPDF(w http.ResponseWriter, r *http.Request) {
 }
 
 // isPDFDataIncompleteError reports whether err is one of
-// InvoicePDFService's business-data-incompleteness sentinels.
+// InvoicePDFService's business-data-incompleteness sentinels — each of
+// these carries a fixed, safe message with no wrapped underlying detail.
+// ErrInvoicePDFDataUnavailable is deliberately NOT included here (a
+// Milestone 7 hardening-pass fix): it wraps whatever the underlying
+// organisation/customer/settings repository call actually failed with
+// (via %w: ...: %v), which — unlike the sentinels below — could be a raw
+// pgx/SQL error for a genuine transient failure, not just "not found".
+// Exposing that via a 409's err.Error() would leak internal detail and
+// mischaracterise a real server-side problem as a client-fixable one, so
+// it falls through to the generic 500 branch instead.
 func isPDFDataIncompleteError(err error) bool {
 	switch {
 	case errors.Is(err, ErrInvoicePDFSellerNameMissing),
 		errors.Is(err, ErrInvoicePDFCustomerNameMissing),
 		errors.Is(err, ErrInvoicePDFCurrencyMissing),
-		errors.Is(err, ErrInvoicePDFCurrencyInvalid),
-		errors.Is(err, ErrInvoicePDFDataUnavailable):
+		errors.Is(err, ErrInvoicePDFCurrencyInvalid):
 		return true
 	default:
 		return false
@@ -339,16 +356,19 @@ func isPDFDataIncompleteError(err error) bool {
 
 // isSnapshotIncompleteError reports whether err is one of Send's
 // business-data-incompleteness sentinels (Milestone 7 Part 2) — an
-// invoice that exists and is a valid Draft, but cannot currently be
-// finalised because the organisation/customer/settings data its
-// immutable snapshot depends on is missing or incomplete. These all map
-// to 409, the same category as an already-Sent invoice, not a generic
-// 500 — none of them leak any database or library internals, since every
-// one is this package's own sentinel with an already-safe message.
+// invoice that exists and is a valid Draft, but a required snapshot
+// field resolved to blank, or the organisation has no settings row yet.
+// Every sentinel matched here carries a fixed, safe message.
+// ErrInvoiceSnapshotDataUnavailable is deliberately NOT included (a
+// Milestone 7 hardening-pass fix, mirroring isPDFDataIncompleteError's
+// identical exclusion): it wraps the underlying repository error via %v,
+// which could be a raw pgx/SQL error for a genuine transient failure —
+// exposing that through a 409 would both leak internal detail and
+// mislabel a real server-side problem, so it falls through to Send's own
+// generic 500 branch instead.
 func isSnapshotIncompleteError(err error) bool {
 	switch {
 	case errors.Is(err, ErrInvoiceSettingsNotFound),
-		errors.Is(err, ErrInvoiceSnapshotDataUnavailable),
 		errors.Is(err, ErrInvoiceSnapshotSellerNameRequired),
 		errors.Is(err, ErrInvoiceSnapshotCustomerNameRequired),
 		errors.Is(err, ErrInvoiceSnapshotCurrencyRequired),
