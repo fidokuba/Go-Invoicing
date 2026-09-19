@@ -92,6 +92,21 @@ func (s *ProductService) GetByID(
 	return s.repository.GetByID(ctx, organisationID, productID)
 }
 
+// List delegates straight to the repository, which enforces tenant
+// scoping and the Search/IsActive/Sort/Order/Limit/Offset predicates in
+// SQL. There is no product-specific business validation to apply here —
+// unlike Customer's ?status=, IsActive is already a type-safe bool by
+// the time it reaches this method, and Sort has already been validated
+// against the repository's known public field names by
+// httpx.ParseSortOrder before this is ever called.
+func (s *ProductService) List(
+	ctx context.Context,
+	organisationID uuid.UUID,
+	filter ListFilter,
+) ([]*Product, int64, error) {
+	return s.repository.List(ctx, organisationID, filter)
+}
+
 // nilIfEmpty converts a blank/whitespace-only string into a nil pointer so
 // optional fields are stored as SQL NULL rather than empty strings.
 func nilIfEmpty(value string) *string {

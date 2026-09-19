@@ -2,10 +2,46 @@ package invoice
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
+
+// InvoiceListFilter narrows GET /invoices (Milestone 8 Part 3) to a
+// specific, fixed set of query capabilities — never a generic/
+// reflection-based filter.
+//
+// Status, when non-empty, must already be one of the four public
+// InvoiceStatus* values (including InvoiceStatusOverdue, which is never
+// persisted) — validated by InvoiceService.List, not here; see
+// PostgresInvoiceRepository.List for how it's translated into an
+// explicit SQL predicate using the exact same due-date boundary
+// Invoice.EffectiveStatus uses, never "WHERE status = 'overdue'".
+//
+// Search is matched via ILIKE against invoice_number.
+//
+// IssueDateFrom/To and DueDateFrom/To are inclusive bounds; a nil
+// pointer means "no bound on this side" — InvoiceService.List rejects a
+// From strictly after its matching To before this ever reaches the
+// repository.
+//
+// Sort is a public field name already validated against a repository-
+// known allow-list (see httpx.ParseSortOrder); the repository maps it
+// onto an actual SQL column via its own explicit switch.
+type InvoiceListFilter struct {
+	Status        string
+	CustomerID    *uuid.UUID
+	Search        string
+	IssueDateFrom *time.Time
+	IssueDateTo   *time.Time
+	DueDateFrom   *time.Time
+	DueDateTo     *time.Time
+	Sort          string
+	Order         string
+	Limit         int
+	Offset        int
+}
 
 // InvoiceRepository describes how invoices and their lines are read from
 // and written to storage. GetByID is organisation-scoped: an invoice can
@@ -68,4 +104,15 @@ type InvoiceRepository interface {
 	// GetForUpdate-locked transaction as UpdateStatus, and carries the
 	// same organisation_id predicate for the same defense-in-depth reason.
 	MarkSentWithSnapshot(ctx context.Context, organisationID uuid.UUID, invoiceID uuid.UUID, inv *Invoice) error
+
+	// List returns the page of invoices matching filter, tenant-scoped
+	// to organisationID, together with the total count of invoices
+	// matching the same filters (ignoring Limit/Offset). today is the
+	// UTC calendar date (see UTCDate) InvoiceService.List computed from
+	// its own now — used only for the effective-overdue predicate when
+	// filter.Status is "sent" or "overdue" — so a repeated call within
+	// the same request always agrees with that request's own
+	// EffectiveStatus calculations, and tests can pass a fixed value for
+	// deterministic boundary testing.
+	List(ctx context.Context, organisationID uuid.UUID, filter InvoiceListFilter, today time.Time) ([]*Invoice, int64, error)
 }

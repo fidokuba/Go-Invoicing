@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -46,4 +47,16 @@ type SessionRepository interface {
 	// tenant-scoped one: sessions have no organisation_id (see Session's
 	// own doc comment), so there is no tenant predicate to apply here.
 	DeleteExpired(ctx context.Context, now time.Time, limit int) (int64, error)
+
+	// Revoke (Milestone 8 Part 3) sets revoked_at on exactly one session,
+	// identified by its own ID — never by token hash or user ID, so it
+	// can only ever revoke the single session AuthMiddleware already
+	// resolved and attached to the request context (AuthenticatedUser
+	// .SessionID), not every session belonging to that session's user.
+	// It uses the existing revocation model (see Session.IsValid) rather
+	// than deleting the row: a revoked-but-not-yet-expired session stays
+	// visible to GetByTokenHash (which returns it, revoked, exactly like
+	// an expired one) and to SessionCleanupWorker's later DeleteExpired
+	// sweep, instead of disappearing immediately.
+	Revoke(ctx context.Context, sessionID uuid.UUID) error
 }

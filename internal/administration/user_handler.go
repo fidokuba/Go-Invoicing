@@ -3,6 +3,7 @@ package admin
 import (
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/google/uuid"
 
@@ -131,4 +132,79 @@ func (h *UserHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	response := toUserResponse(user)
 
 	httpx.WriteJSON(w, http.StatusOK, response)
+}
+
+// userSortFields is the public sort-field allow-list for GET /users,
+// validated by httpx.ParseSortOrder before List ever runs — see
+// userSortColumns in user_repository_postgres.go for how each of these
+// maps onto an actual SQL column.
+var userSortFields = []string{"email", "role", "createdAt"}
+
+// List handles GET /users (Milestone 8 Part 3) — organisation user/team
+// management, so it is role-gated at the route-registration site
+// (RequireRole(UserRoleAdmin, UserRoleManager)), the same gate POST
+// /users already uses; an ordinary user reaches this handler only if
+// that gate is bypassed in a test, and RequireAuthenticatedUser below
+// still fails closed with 401 in that case. Default sort is createdAt
+// descending — newest team member first, the most useful default for a
+// team-management view.
+func (h *UserHandler) List(w http.ResponseWriter, r *http.Request) {
+	identity, ok := RequireAuthenticatedUser(w, r)
+	if !ok {
+		return
+	}
+
+	if !httpx.RejectUnknownQueryParams(w, r, "limit", "offset", "role", "active", "sort", "order") {
+		return
+	}
+
+	limit, offset, ok := httpx.ParseLimitOffset(w, r)
+	if !ok {
+		return
+	}
+
+	sort, order, ok := httpx.ParseSortOrder(w, r, userSortFields, "createdAt", "desc")
+	if !ok {
+		return
+	}
+
+	query := r.URL.Query()
+	role, _ := httpx.OptionalQueryParam(query, "role")
+
+	var active *bool
+	if raw, present := httpx.OptionalQueryParam(query, "active"); present {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeValidationFailed, "active must be true or false")
+			return
+		}
+		active = &parsed
+	}
+
+	filter := UserListFilter{
+		Role:   role,
+		Active: active,
+		Sort:   sort,
+		Order:  order,
+		Limit:  limit,
+		Offset: offset,
+	}
+
+	users, total, err := h.service.List(r.Context(), identity.OrganisationID, filter)
+	if err != nil {
+		if errors.Is(err, ErrUserRoleFilterInvalid) {
+			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeValidationFailed, err.Error())
+			return
+		}
+
+		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to list users")
+		return
+	}
+
+	items := make([]UserResponse, 0, len(users))
+	for _, u := range users {
+		items = append(items, toUserResponse(u))
+	}
+
+	httpx.WriteJSON(w, http.StatusOK, httpx.NewListResponse(items, limit, offset, total))
 }

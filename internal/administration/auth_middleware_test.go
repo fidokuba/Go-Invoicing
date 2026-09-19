@@ -110,7 +110,7 @@ func TestAuthMiddleware_RequireAuth_ValidToken_CallsDownstreamHandler(t *testing
 func TestAuthMiddleware_RequireAuth_DownstreamHandlerReceivesCorrectIdentity(t *testing.T) {
 	f := newMiddlewareTestFixture()
 	const rawToken = "a-valid-raw-session-token"
-	user, _ := f.addUserWithSession(rawToken)
+	user, session := f.addUserWithSession(rawToken)
 
 	spy := &spyHandler{}
 	doAuthenticatedRequest(t, f.middleware, spy, "Bearer "+rawToken)
@@ -123,6 +123,7 @@ func TestAuthMiddleware_RequireAuth_DownstreamHandlerReceivesCorrectIdentity(t *
 		UserID:         user.ID,
 		OrganisationID: user.OrganisationID,
 		Role:           user.Role,
+		SessionID:      session.ID,
 	}
 
 	if spy.identity != want {

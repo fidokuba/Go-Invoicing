@@ -3,6 +3,7 @@ package product
 import (
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/google/uuid"
 
@@ -71,6 +72,72 @@ func (h *ProductHandler) Create(w http.ResponseWriter, r *http.Request) {
 	response := toProductResponse(p)
 
 	httpx.WriteJSON(w, http.StatusCreated, response)
+}
+
+// productSortFields is the public sort-field allow-list for GET
+// /products, validated by httpx.ParseSortOrder before List ever runs —
+// see productSortColumns in product_repository_postgres.go for how each
+// of these maps onto an actual SQL column.
+var productSortFields = []string{"name", "sku", "price", "createdAt"}
+
+// List handles GET /products (Milestone 8 Part 3) — available to every
+// authenticated role, same policy as every other product route. Default
+// sort is name ascending, for the same "a catalogue is browsed
+// alphabetically by default" reasoning as GET /customers.
+func (h *ProductHandler) List(w http.ResponseWriter, r *http.Request) {
+	identity, ok := admin.RequireAuthenticatedUser(w, r)
+	if !ok {
+		return
+	}
+
+	if !httpx.RejectUnknownQueryParams(w, r, "limit", "offset", "search", "isActive", "sort", "order") {
+		return
+	}
+
+	limit, offset, ok := httpx.ParseLimitOffset(w, r)
+	if !ok {
+		return
+	}
+
+	sort, order, ok := httpx.ParseSortOrder(w, r, productSortFields, "name", "asc")
+	if !ok {
+		return
+	}
+
+	query := r.URL.Query()
+	search, _ := httpx.OptionalQueryParam(query, "search")
+
+	var isActive *bool
+	if raw, present := httpx.OptionalQueryParam(query, "isActive"); present {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeValidationFailed, "isActive must be true or false")
+			return
+		}
+		isActive = &parsed
+	}
+
+	filter := ListFilter{
+		Search:   search,
+		IsActive: isActive,
+		Sort:     sort,
+		Order:    order,
+		Limit:    limit,
+		Offset:   offset,
+	}
+
+	products, total, err := h.service.List(r.Context(), identity.OrganisationID, filter)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to list products")
+		return
+	}
+
+	items := make([]ProductResponse, 0, len(products))
+	for _, p := range products {
+		items = append(items, toProductResponse(p))
+	}
+
+	httpx.WriteJSON(w, http.StatusOK, httpx.NewListResponse(items, limit, offset, total))
 }
 
 // GetByID handles GET /products/{id}.

@@ -3,6 +3,7 @@ package invoice
 import (
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -106,6 +107,142 @@ func (h *InvoiceHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	response := toInvoiceResponse(inv, lines, amountPaid, currency, time.Now().UTC())
 
 	httpx.WriteJSON(w, http.StatusOK, response)
+}
+
+// invoiceSortFields is the public sort-field allow-list for GET
+// /invoices, validated by httpx.ParseSortOrder before List ever runs —
+// see invoiceSortColumns in invoice_repository_postgres.go for how each
+// of these maps onto an actual SQL column.
+var invoiceSortFields = []string{"invoiceNumber", "issueDate", "dueDate", "total", "createdAt"}
+
+// List handles GET /invoices (Milestone 8 Part 3) — available to every
+// authenticated role, same policy as every other invoice route. Default
+// sort is issueDate descending: an invoice dashboard is most usefully
+// browsed newest-issued-first by default.
+//
+// now is captured exactly once, here, and threaded through both
+// InvoiceService.List's effective-status filtering and every row's own
+// EffectiveStatus/currency resolution — see InvoiceService.List's own
+// comment for why a single shared value matters.
+func (h *InvoiceHandler) List(w http.ResponseWriter, r *http.Request) {
+	identity, ok := admin.RequireAuthenticatedUser(w, r)
+	if !ok {
+		return
+	}
+
+	if !httpx.RejectUnknownQueryParams(
+		w, r,
+		"limit", "offset", "status", "customerId", "search",
+		"issueDateFrom", "issueDateTo", "dueDateFrom", "dueDateTo",
+		"sort", "order",
+	) {
+		return
+	}
+
+	limit, offset, ok := httpx.ParseLimitOffset(w, r)
+	if !ok {
+		return
+	}
+
+	sort, order, ok := httpx.ParseSortOrder(w, r, invoiceSortFields, "issueDate", "desc")
+	if !ok {
+		return
+	}
+
+	query := r.URL.Query()
+	status, _ := httpx.OptionalQueryParam(query, "status")
+	search, _ := httpx.OptionalQueryParam(query, "search")
+
+	var customerID *uuid.UUID
+	if raw, present := httpx.OptionalQueryParam(query, "customerId"); present {
+		parsed, err := uuid.Parse(raw)
+		if err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, "invalid customerId")
+			return
+		}
+		customerID = &parsed
+	}
+
+	issueDateFrom, ok := parseOptionalListDate(w, query, "issueDateFrom")
+	if !ok {
+		return
+	}
+	issueDateTo, ok := parseOptionalListDate(w, query, "issueDateTo")
+	if !ok {
+		return
+	}
+	dueDateFrom, ok := parseOptionalListDate(w, query, "dueDateFrom")
+	if !ok {
+		return
+	}
+	dueDateTo, ok := parseOptionalListDate(w, query, "dueDateTo")
+	if !ok {
+		return
+	}
+
+	filter := InvoiceListFilter{
+		Status:        status,
+		CustomerID:    customerID,
+		Search:        search,
+		IssueDateFrom: issueDateFrom,
+		IssueDateTo:   issueDateTo,
+		DueDateFrom:   dueDateFrom,
+		DueDateTo:     dueDateTo,
+		Sort:          sort,
+		Order:         order,
+		Limit:         limit,
+		Offset:        offset,
+	}
+
+	now := time.Now().UTC()
+
+	items, total, err := h.service.List(r.Context(), identity.OrganisationID, filter, now)
+	if err != nil {
+		if errors.Is(err, ErrInvoiceListStatusInvalid) ||
+			errors.Is(err, ErrInvoiceListIssueDateRangeInvalid) ||
+			errors.Is(err, ErrInvoiceListDueDateRangeInvalid) {
+			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeValidationFailed, err.Error())
+			return
+		}
+
+		if errors.Is(err, ErrInvoiceCurrencyUnavailable) {
+			httpx.WriteError(w, http.StatusConflict, httpx.CodeConflict, err.Error())
+			return
+		}
+
+		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to list invoices")
+		return
+	}
+
+	responses := make([]InvoiceResponse, 0, len(items))
+	for _, item := range items {
+		// A list row never fetches its own line items — see
+		// InvoiceService.List's own comment — so Lines is always empty
+		// here; GET /invoices/{id} remains the way to see full line
+		// detail for one invoice.
+		responses = append(responses, toInvoiceResponse(item.Invoice, nil, item.AmountPaid, item.Currency, now))
+	}
+
+	httpx.WriteJSON(w, http.StatusOK, httpx.NewListResponse(responses, limit, offset, total))
+}
+
+// parseOptionalListDate reads key from query as an optional "YYYY-MM-DD"
+// date, returning ok=false (after writing a 400) if it's present but
+// malformed. A missing/blank value returns a nil pointer with ok=true —
+// "no bound on this side of the range".
+func parseOptionalListDate(w http.ResponseWriter, query url.Values, key string) (*time.Time, bool) {
+	raw, present := httpx.OptionalQueryParam(query, key)
+	if !present {
+		return nil, true
+	}
+
+	parsed, err := time.Parse(dateLayout, raw)
+	if err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, key+" must be a YYYY-MM-DD date")
+		return nil, false
+	}
+
+	return &parsed, true
 }
 
 // Send handles POST /invoices/{id}/send — a lifecycle finalisation

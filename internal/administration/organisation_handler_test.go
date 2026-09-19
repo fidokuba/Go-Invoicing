@@ -136,6 +136,27 @@ func (f *fakeSettingsRepository) UpdateInvoiceNumber(ctx context.Context, organi
 	return nil
 }
 
+// Update persists InvoicePrefix/Currency/PaymentTerms only — mirroring
+// PostgresSettingsRepository.Update's own contract, including never
+// touching InvoiceNumber.
+func (f *fakeSettingsRepository) Update(ctx context.Context, organisationID uuid.UUID, settings *Settings) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	s, ok := f.settings[organisationID]
+	if !ok {
+		return ErrSettingsNotFound
+	}
+
+	s.InvoicePrefix = settings.InvoicePrefix
+	s.Currency = settings.Currency
+	s.PaymentTerms = settings.PaymentTerms
+	f.settings[organisationID] = s
+
+	settings.UpdatedAt = s.UpdatedAt
+	return nil
+}
+
 func newTestHandler() *OrganisationHandler {
 	repository := newFakeOrganisationRepository()
 	service := NewOrganisationService(repository, newFakeSettingsRepository())

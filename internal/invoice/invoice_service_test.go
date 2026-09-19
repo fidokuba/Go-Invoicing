@@ -3,6 +3,8 @@ package invoice
 import (
 	"context"
 	"errors"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -137,6 +139,124 @@ func (f *fakeInvoiceRepository) MarkSentWithSnapshot(ctx context.Context, organi
 	return nil
 }
 
+// List is a simple in-memory re-implementation of the same filter/sort/
+// paginate contract PostgresInvoiceRepository.List implements in SQL,
+// including the effective-overdue boundary (status = sent AND due_date
+// < today) — good enough for service/handler-level tests; the real SQL
+// predicates, and their agreement with Invoice.EffectiveStatus, are
+// proven separately by invoice_repository_postgres_test.go against real
+// Postgres.
+func (f *fakeInvoiceRepository) List(ctx context.Context, organisationID uuid.UUID, filter InvoiceListFilter, today time.Time) ([]*Invoice, int64, error) {
+	var matched []*Invoice
+
+	for i := range f.invoices {
+		inv := f.invoices[i]
+		if inv.OrganisationID != organisationID {
+			continue
+		}
+
+		switch filter.Status {
+		case InvoiceStatusDraft:
+			if inv.Status != InvoiceStatusDraft {
+				continue
+			}
+		case InvoiceStatusPaid:
+			if inv.Status != InvoiceStatusPaid {
+				continue
+			}
+		case InvoiceStatusSent:
+			if inv.Status != InvoiceStatusSent || inv.DueDate.Before(today) {
+				continue
+			}
+		case InvoiceStatusOverdue:
+			if inv.Status != InvoiceStatusSent || !inv.DueDate.Before(today) {
+				continue
+			}
+		}
+
+		if filter.CustomerID != nil && inv.CustomerID != *filter.CustomerID {
+			continue
+		}
+		if filter.Search != "" && !strings.Contains(strings.ToLower(inv.InvoiceNumber), strings.ToLower(filter.Search)) {
+			continue
+		}
+		if filter.IssueDateFrom != nil && inv.IssueDate.Before(*filter.IssueDateFrom) {
+			continue
+		}
+		if filter.IssueDateTo != nil && inv.IssueDate.After(*filter.IssueDateTo) {
+			continue
+		}
+		if filter.DueDateFrom != nil && inv.DueDate.Before(*filter.DueDateFrom) {
+			continue
+		}
+		if filter.DueDateTo != nil && inv.DueDate.After(*filter.DueDateTo) {
+			continue
+		}
+
+		invCopy := inv
+		matched = append(matched, &invCopy)
+	}
+
+	desc := !strings.EqualFold(filter.Order, "asc")
+
+	sort.Slice(matched, func(i, j int) bool {
+		a, b := matched[i], matched[j]
+
+		switch filter.Sort {
+		case "invoiceNumber":
+			if a.InvoiceNumber != b.InvoiceNumber {
+				if desc {
+					return a.InvoiceNumber > b.InvoiceNumber
+				}
+				return a.InvoiceNumber < b.InvoiceNumber
+			}
+		case "dueDate":
+			if !a.DueDate.Equal(b.DueDate) {
+				if desc {
+					return a.DueDate.After(b.DueDate)
+				}
+				return a.DueDate.Before(b.DueDate)
+			}
+		case "total":
+			if a.Total != b.Total {
+				if desc {
+					return a.Total > b.Total
+				}
+				return a.Total < b.Total
+			}
+		case "createdAt":
+			if !a.CreatedAt.Equal(b.CreatedAt) {
+				if desc {
+					return a.CreatedAt.After(b.CreatedAt)
+				}
+				return a.CreatedAt.Before(b.CreatedAt)
+			}
+		default: // issueDate
+			if !a.IssueDate.Equal(b.IssueDate) {
+				if desc {
+					return a.IssueDate.After(b.IssueDate)
+				}
+				return a.IssueDate.Before(b.IssueDate)
+			}
+		}
+
+		return a.ID.String() < b.ID.String()
+	})
+
+	total := int64(len(matched))
+
+	start := filter.Offset
+	if start > len(matched) {
+		start = len(matched)
+	}
+	end := start + filter.Limit
+	if end > len(matched) {
+		end = len(matched)
+	}
+
+	return matched[start:end], total, nil
+}
+
 // fakeTx is a minimal stand-in for a pgx.Tx. Only Commit and Rollback are
 // ever exercised in this package's tests — fakeInvoiceRepository.WithTx
 // ignores the tx value it's given rather than issuing queries through it —
@@ -242,6 +362,14 @@ func (f *fakeCustomerRepository) GetByID(ctx context.Context, organisationID, cu
 		return nil, customer.ErrCustomerNotFound
 	}
 	return &c, nil
+}
+
+// List is never called by InvoiceService — this stub exists solely to
+// satisfy customer.CustomerRepository, which gained a List method in
+// Milestone 8 Part 3 for GET /customers, a route this package's tests
+// have no reason to exercise.
+func (f *fakeCustomerRepository) List(ctx context.Context, organisationID uuid.UUID, filter customer.ListFilter) ([]*customer.Customer, int64, error) {
+	panic("fakeCustomerRepository.List should never be called by InvoiceService")
 }
 
 // fakeOrganisationRepository is a minimal in-memory admin.OrganisationRepository
@@ -354,6 +482,14 @@ func (f *fakeProductRepository) GetByID(ctx context.Context, organisationID, pro
 	return &p, nil
 }
 
+// List is never called by InvoiceService — this stub exists solely to
+// satisfy product.ProductRepository, which gained a List method in
+// Milestone 8 Part 3 for GET /products, a route this package's tests
+// have no reason to exercise.
+func (f *fakeProductRepository) List(ctx context.Context, organisationID uuid.UUID, filter product.ListFilter) ([]*product.Product, int64, error) {
+	panic("fakeProductRepository.List should never be called by InvoiceService")
+}
+
 // fakeSettingsRepository is a minimal in-memory admin.SettingsRepository
 // used to test the service's invoice-number-allocation orchestration
 // without touching PostgreSQL. Like fakeInvoiceRepository, WithTx ignores
@@ -427,6 +563,14 @@ func (f *fakeSettingsRepository) UpdateInvoiceNumber(ctx context.Context, organi
 	return nil
 }
 
+// Update is never called by InvoiceService — this stub exists solely to
+// satisfy admin.SettingsRepository, which gained an Update method in
+// Milestone 8 Part 3 for PATCH /organisation/settings, a route this
+// package's tests have no reason to exercise.
+func (f *fakeSettingsRepository) Update(ctx context.Context, organisationID uuid.UUID, settings *admin.Settings) error {
+	panic("fakeSettingsRepository.Update should never be called by InvoiceService")
+}
+
 // fakePaymentRepository is a minimal in-memory PaymentRepository used to
 // test the service's payment orchestration without touching PostgreSQL.
 // Like fakeInvoiceRepository, WithTx ignores its tx argument and returns
@@ -437,6 +581,8 @@ type fakePaymentRepository struct {
 
 	createErr       error
 	getTotalPaidErr error
+
+	getTotalPaidByInvoiceIDsCallCount int
 }
 
 func newFakePaymentRepository() *fakePaymentRepository {
@@ -479,6 +625,31 @@ func (f *fakePaymentRepository) GetTotalPaidByInvoiceID(ctx context.Context, org
 		total += p.Amount
 	}
 	return total, nil
+}
+
+// GetTotalPaidByInvoiceIDs is the batch counterpart, also used to prove
+// (via getTotalPaidByInvoiceIDsCallCount) that InvoiceService.List calls
+// this exactly once per List call, never once per invoice — see
+// TestInvoiceService_List_NoNPlusOnePaymentQueries.
+func (f *fakePaymentRepository) GetTotalPaidByInvoiceIDs(ctx context.Context, organisationID uuid.UUID, invoiceIDs []uuid.UUID) (map[uuid.UUID]int64, error) {
+	f.getTotalPaidByInvoiceIDsCallCount++
+
+	if f.getTotalPaidErr != nil {
+		return nil, f.getTotalPaidErr
+	}
+
+	totals := make(map[uuid.UUID]int64, len(invoiceIDs))
+	for _, id := range invoiceIDs {
+		var total int64
+		for _, p := range f.payments[id] {
+			total += p.Amount
+		}
+		if total > 0 {
+			totals[id] = total
+		}
+	}
+
+	return totals, nil
 }
 
 // testFixture bundles a service with fakes pre-seeded with a valid

@@ -171,3 +171,13 @@ func (s *AuthService) Login(ctx context.Context, email, password string) (*Login
 		User:    user,
 	}, nil
 }
+
+// Logout (Milestone 8 Part 3) revokes exactly one session, by its ID —
+// never by re-deriving identity from a token or user ID, so it can only
+// ever revoke the single session AuthMiddleware already resolved for
+// this request (AuthenticatedUser.SessionID), not every session
+// belonging to that user. No transaction is needed: this is a single
+// UPDATE with no other write to keep in step with it.
+func (s *AuthService) Logout(ctx context.Context, sessionID uuid.UUID) error {
+	return s.sessionRepository.Revoke(ctx, sessionID)
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -252,4 +253,105 @@ func (r *PostgresUserRepository) scanOne(ctx context.Context, query string, args
 	}
 
 	return &u, nil
+}
+
+// userSortColumns maps List's public, httpx.ParseSortOrder-validated
+// sort field names onto actual SQL columns — the one place a client-
+// controlled value is allowed to influence an ORDER BY, and only via
+// this fixed, explicit lookup, never by interpolating the field name
+// itself.
+var userSortColumns = map[string]string{
+	"email":     "email",
+	"role":      "role",
+	"createdAt": "created_at",
+}
+
+// List returns the page of users matching filter, tenant-scoped to
+// organisationID, together with the total count of users matching the
+// same filters. The WHERE clause is built once and reused for both the
+// item query and the COUNT(*) query, so the two can never drift apart.
+func (r *PostgresUserRepository) List(
+	ctx context.Context,
+	organisationID uuid.UUID,
+	filter UserListFilter,
+) ([]*User, int64, error) {
+	conditions := []string{"organisation_id = $1", "deleted_at IS NULL"}
+	args := []any{organisationID}
+
+	if filter.Role != "" {
+		args = append(args, filter.Role)
+		conditions = append(conditions, fmt.Sprintf("role = $%d", len(args)))
+	}
+
+	if filter.Active != nil {
+		args = append(args, *filter.Active)
+		conditions = append(conditions, fmt.Sprintf("is_active = $%d", len(args)))
+	}
+
+	whereClause := "WHERE " + strings.Join(conditions, " AND ")
+
+	sortColumn, ok := userSortColumns[filter.Sort]
+	if !ok {
+		sortColumn = "created_at"
+	}
+
+	direction := "ASC"
+	if strings.EqualFold(filter.Order, "desc") {
+		direction = "DESC"
+	}
+
+	var total int64
+	countQuery := "SELECT COUNT(*) FROM users " + whereClause
+	if err := r.db.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count users: %w", err)
+	}
+
+	// id ASC is a stable secondary key — email is globally unique but not
+	// per-organisation-ordering-relevant here, role and created_at are
+	// both non-unique.
+	itemQuery := fmt.Sprintf(
+		`SELECT
+			id, organisation_id, name, email, password_hash, role,
+			is_active, last_login, created_at, updated_at
+		FROM users
+		%s
+		ORDER BY %s %s, id ASC
+		LIMIT $%d OFFSET $%d`,
+		whereClause, sortColumn, direction, len(args)+1, len(args)+2,
+	)
+
+	rows, err := r.db.Query(ctx, itemQuery, append(args, filter.Limit, filter.Offset)...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list users: %w", err)
+	}
+	defer rows.Close()
+
+	var users []*User
+
+	for rows.Next() {
+		var u User
+
+		if err := rows.Scan(
+			&u.ID,
+			&u.OrganisationID,
+			&u.Name,
+			&u.Email,
+			&u.PasswordHash,
+			&u.Role,
+			&u.IsActive,
+			&u.LastLogin,
+			&u.CreatedAt,
+			&u.UpdatedAt,
+		); err != nil {
+			return nil, 0, fmt.Errorf("scan user: %w", err)
+		}
+
+		users = append(users, &u)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("read users: %w", err)
+	}
+
+	return users, total, nil
 }

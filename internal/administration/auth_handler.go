@@ -57,3 +57,28 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 	httpx.WriteJSON(w, http.StatusOK, response)
 }
+
+// Logout handles POST /auth/logout (Milestone 8 Part 3) — authentication
+// required. It revokes exactly the session the presented bearer token
+// resolved to (identity.SessionID, attached by AuthMiddleware.RequireAuth
+// — never re-derived from request data, and never accepted as a body
+// field), so the current token stops working immediately while every
+// other active session for the same user is left untouched.
+//
+// 204 No Content: a successful logout has no resource to return — there
+// is nothing about "you are now logged out" worth serializing, unlike
+// every other mutating endpoint in this API, which returns the
+// resource it just created or changed.
+func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
+	identity, ok := RequireAuthenticatedUser(w, r)
+	if !ok {
+		return
+	}
+
+	if err := h.service.Logout(r.Context(), identity.SessionID); err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to log out")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}

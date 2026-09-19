@@ -70,6 +70,15 @@ var (
 	// a default or with the organisation's current Settings.Currency for
 	// an issued invoice — see resolveInvoiceCurrency's own comment.
 	ErrInvoiceCurrencyUnavailable = errors.New("invoice currency is unavailable")
+
+	// List filter validation (Milestone 8 Part 3). ErrInvoiceListStatusInvalid
+	// covers an unrecognised ?status= value; the four legitimate ones
+	// (draft/sent/overdue/paid) are handled entirely explicitly in
+	// InvoiceService.List and PostgresInvoiceRepository.List — see
+	// section 9's own design note on why "overdue" is never persisted.
+	ErrInvoiceListStatusInvalid         = errors.New("invoice status filter is not valid")
+	ErrInvoiceListIssueDateRangeInvalid = errors.New("issueDateFrom must not be after issueDateTo")
+	ErrInvoiceListDueDateRangeInvalid   = errors.New("dueDateFrom must not be after dueDateTo")
 )
 
 // TxBeginner starts a new transaction. *pgxpool.Pool satisfies this
@@ -364,22 +373,16 @@ func (s *InvoiceService) GetByID(
 // the relevant settings row inside its own transaction — see Create's
 // own comment). A persisted Draft invoice has no snapshot yet, so its
 // currency is read live; any other status uses ONLY the immutable
-// Invoice.Currency snapshot. An invoice sent before that column existed
-// has Currency == nil despite not being Draft — that is deliberately
-// reported as ErrInvoiceCurrencyUnavailable rather than silently shown
-// using the organisation's current currency, which could misrepresent a
-// legacy invoice's actual historical currency.
+// Invoice.Currency snapshot — see resolveCurrencyFromSettings for the
+// pure rule itself, shared with List below so both call sites can never
+// silently drift apart on what "resolve this invoice's currency" means.
 func (s *InvoiceService) resolveInvoiceCurrency(
 	ctx context.Context,
 	organisationID uuid.UUID,
 	inv *Invoice,
 ) (string, error) {
 	if inv.Status != InvoiceStatusDraft {
-		if inv.Currency == nil || strings.TrimSpace(*inv.Currency) == "" {
-			return "", ErrInvoiceCurrencyUnavailable
-		}
-
-		return normalizeCurrency(*inv.Currency), nil
+		return resolveCurrencyFromSettings(inv, nil)
 	}
 
 	settings, err := s.settingsRepository.GetByOrganisationID(ctx, organisationID)
@@ -391,7 +394,151 @@ func (s *InvoiceService) resolveInvoiceCurrency(
 		return "", fmt.Errorf("look up organisation settings for invoice currency: %w", err)
 	}
 
+	return resolveCurrencyFromSettings(inv, settings)
+}
+
+// resolveCurrencyFromSettings is the pure currency-resolution rule,
+// factored out of resolveInvoiceCurrency so InvoiceService.List can reuse
+// it without a settings lookup per row (see List's own comment for why
+// settings is fetched at most once per page, not once per invoice).
+// settings may be nil — that's only ever valid for a non-Draft inv,
+// where it's never consulted at all; a nil settings for a Draft inv (no
+// settings row exists for the organisation) is exactly
+// ErrInvoiceCurrencyUnavailable, the same as a Draft's live lookup
+// failing.
+//
+// An invoice sent before the Currency column existed has Currency == nil
+// despite not being Draft — that is deliberately reported as
+// ErrInvoiceCurrencyUnavailable rather than silently shown using the
+// organisation's current currency, which could misrepresent a legacy
+// invoice's actual historical currency.
+func resolveCurrencyFromSettings(inv *Invoice, settings *admin.Settings) (string, error) {
+	if inv.Status != InvoiceStatusDraft {
+		if inv.Currency == nil || strings.TrimSpace(*inv.Currency) == "" {
+			return "", ErrInvoiceCurrencyUnavailable
+		}
+
+		return normalizeCurrency(*inv.Currency), nil
+	}
+
+	if settings == nil {
+		return "", ErrInvoiceCurrencyUnavailable
+	}
+
 	return normalizeCurrency(settings.Currency), nil
+}
+
+// InvoiceListItem is one row of InvoiceService.List's result: the
+// invoice itself, plus the two values toInvoiceResponse needs but that
+// aren't columns on the invoice row — AmountPaid (from the batched
+// payment-total query) and Currency (resolved per the same binary rule
+// GetByID uses). List never fetches per-invoice line items — see List's
+// own comment for why a list row's Lines is always empty.
+type InvoiceListItem struct {
+	Invoice    *Invoice
+	AmountPaid int64
+	Currency   string
+}
+
+// List validates filter.Status and any supplied date-range ordering,
+// then delegates the actual row selection to the repository — which
+// enforces tenant scoping and every other predicate in SQL — before
+// assembling each row's AmountPaid and Currency without either becoming
+// an N+1 query pattern (Milestone 8 Part 3 sections 10-11):
+//
+//   - Settings.Currency is fetched at most ONCE per call (not once per
+//     Draft row) — every Draft row in the page shares the same
+//     organisation, so one lookup covers all of them.
+//   - Payment totals are fetched in a single batched, grouped query
+//     keyed by every invoice ID on the page (GetTotalPaidByInvoiceIDs),
+//     never one query per invoice.
+//
+// now flows through unchanged from the HTTP handler (see GetByID's own
+// reasoning for why this stays a parameter rather than a time.Now()
+// call here) and is truncated to a UTC calendar date once
+// (invoice.UTCDate) for the repository's effective-overdue predicate —
+// the same "today" every row's own EffectiveStatus(now) call in
+// toInvoiceResponse will independently arrive at, so a row selected as
+// "overdue" can never come back displaying "sent" or vice versa.
+//
+// A legacy issued invoice missing its currency snapshot fails the whole
+// request (ErrInvoiceCurrencyUnavailable) rather than silently omitting
+// that one row or fabricating a currency for it — the same
+// fail-safely-rather-than-lie choice GetByID already makes for a single
+// invoice, applied consistently to a list containing one.
+func (s *InvoiceService) List(
+	ctx context.Context,
+	organisationID uuid.UUID,
+	filter InvoiceListFilter,
+	now time.Time,
+) ([]InvoiceListItem, int64, error) {
+	switch filter.Status {
+	case "", InvoiceStatusDraft, InvoiceStatusSent, InvoiceStatusOverdue, InvoiceStatusPaid:
+	default:
+		return nil, 0, ErrInvoiceListStatusInvalid
+	}
+
+	if filter.IssueDateFrom != nil && filter.IssueDateTo != nil && filter.IssueDateFrom.After(*filter.IssueDateTo) {
+		return nil, 0, ErrInvoiceListIssueDateRangeInvalid
+	}
+	if filter.DueDateFrom != nil && filter.DueDateTo != nil && filter.DueDateFrom.After(*filter.DueDateTo) {
+		return nil, 0, ErrInvoiceListDueDateRangeInvalid
+	}
+
+	today := UTCDate(now)
+
+	invoices, total, err := s.repository.List(ctx, organisationID, filter, today)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	if len(invoices) == 0 {
+		return []InvoiceListItem{}, total, nil
+	}
+
+	// Fetch Settings.Currency at most once, only if the page actually
+	// contains a Draft row that needs it.
+	var settings *admin.Settings
+	for _, inv := range invoices {
+		if inv.Status == InvoiceStatusDraft {
+			settings, err = s.settingsRepository.GetByOrganisationID(ctx, organisationID)
+			if err != nil {
+				if errors.Is(err, admin.ErrSettingsNotFound) {
+					return nil, 0, ErrInvoiceCurrencyUnavailable
+				}
+
+				return nil, 0, fmt.Errorf("look up organisation settings for invoice list currency: %w", err)
+			}
+
+			break
+		}
+	}
+
+	ids := make([]uuid.UUID, len(invoices))
+	for i, inv := range invoices {
+		ids[i] = inv.ID
+	}
+
+	amountPaidByID, err := s.paymentRepository.GetTotalPaidByInvoiceIDs(ctx, organisationID, ids)
+	if err != nil {
+		return nil, 0, fmt.Errorf("get total paid for invoice list: %w", err)
+	}
+
+	items := make([]InvoiceListItem, 0, len(invoices))
+	for _, inv := range invoices {
+		currency, err := resolveCurrencyFromSettings(inv, settings)
+		if err != nil {
+			return nil, 0, err
+		}
+
+		items = append(items, InvoiceListItem{
+			Invoice:    inv,
+			AmountPaid: amountPaidByID[inv.ID],
+			Currency:   currency,
+		})
+	}
+
+	return items, total, nil
 }
 
 // Send finalises a Draft invoice into the Sent lifecycle state — this is

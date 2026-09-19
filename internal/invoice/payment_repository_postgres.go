@@ -199,3 +199,54 @@ func (r *PostgresPaymentRepository) GetTotalPaidByInvoiceID(
 
 	return total, nil
 }
+
+// GetTotalPaidByInvoiceIDs sums payments per invoice in one grouped
+// query, tenant-scoped the same way GetTotalPaidByInvoiceID is (joined
+// through invoices, never trusting invoiceIDs alone). An empty
+// invoiceIDs skips the query entirely and returns an empty map — an
+// empty page of invoices needs no payment totals at all.
+func (r *PostgresPaymentRepository) GetTotalPaidByInvoiceIDs(
+	ctx context.Context,
+	organisationID uuid.UUID,
+	invoiceIDs []uuid.UUID,
+) (map[uuid.UUID]int64, error) {
+	totals := make(map[uuid.UUID]int64, len(invoiceIDs))
+
+	if len(invoiceIDs) == 0 {
+		return totals, nil
+	}
+
+	const query = `
+		SELECT p.invoice_id, SUM(p.amount)
+		FROM payments p
+		JOIN invoices i ON i.id = p.invoice_id
+		WHERE i.organisation_id = $1
+			AND p.invoice_id = ANY($2)
+		GROUP BY p.invoice_id
+	`
+
+	rows, err := r.db.Query(ctx, query, organisationID, invoiceIDs)
+	if err != nil {
+		return nil, fmt.Errorf("get total paid for invoice list: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			invoiceID uuid.UUID
+			total     int64
+		)
+
+		if err := rows.Scan(&invoiceID, &total); err != nil {
+			return nil, fmt.Errorf("scan invoice payment total: %w", err)
+		}
+
+		totals[invoiceID] = total
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read invoice payment totals: %w", err)
+	}
+
+	return totals, nil
+}

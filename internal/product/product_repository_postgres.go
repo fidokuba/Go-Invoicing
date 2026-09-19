@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -152,4 +153,112 @@ func (r *PostgresProductRepository) GetByID(
 	}
 
 	return &p, nil
+}
+
+// productSortColumns maps List's public, httpx.ParseSortOrder-validated
+// sort field names onto actual SQL columns — the one place a client-
+// controlled value is allowed to influence an ORDER BY, and only via
+// this fixed, explicit lookup, never by interpolating the field name
+// itself.
+var productSortColumns = map[string]string{
+	"name":      "name",
+	"sku":       "sku",
+	"price":     "price",
+	"createdAt": "created_at",
+}
+
+// List returns the page of products matching filter, tenant-scoped to
+// organisationID, together with the total count of products matching the
+// same filters. The WHERE clause is built once and reused for both the
+// item query and the COUNT(*) query, so the two can never drift apart.
+//
+// Search is bound as a single "%term%" parameter — never string-
+// concatenated into the query — matched via ILIKE against name and sku.
+// '%' and '_' typed into the search term itself remain live ILIKE
+// wildcards; this is standard, expected behaviour and is not escaped.
+func (r *PostgresProductRepository) List(
+	ctx context.Context,
+	organisationID uuid.UUID,
+	filter ListFilter,
+) ([]*Product, int64, error) {
+	conditions := []string{"organisation_id = $1", "deleted_at IS NULL"}
+	args := []any{organisationID}
+
+	if filter.IsActive != nil {
+		args = append(args, *filter.IsActive)
+		conditions = append(conditions, fmt.Sprintf("is_active = $%d", len(args)))
+	}
+
+	if filter.Search != "" {
+		args = append(args, "%"+filter.Search+"%")
+		placeholder := len(args)
+		conditions = append(conditions, fmt.Sprintf("(name ILIKE $%d OR sku ILIKE $%d)", placeholder, placeholder))
+	}
+
+	whereClause := "WHERE " + strings.Join(conditions, " AND ")
+
+	sortColumn, ok := productSortColumns[filter.Sort]
+	if !ok {
+		sortColumn = "name"
+	}
+
+	direction := "ASC"
+	if strings.EqualFold(filter.Order, "desc") {
+		direction = "DESC"
+	}
+
+	var total int64
+	countQuery := "SELECT COUNT(*) FROM products " + whereClause
+	if err := r.db.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count products: %w", err)
+	}
+
+	// id ASC is a stable secondary key for name/price/created_at, none of
+	// which is guaranteed unique — sku already is (per organisation), but
+	// the secondary key is applied uniformly for simplicity.
+	itemQuery := fmt.Sprintf(
+		`SELECT
+			id, organisation_id, name, description, sku, price, category,
+			is_active, created_at, updated_at
+		FROM products
+		%s
+		ORDER BY %s %s, id ASC
+		LIMIT $%d OFFSET $%d`,
+		whereClause, sortColumn, direction, len(args)+1, len(args)+2,
+	)
+
+	rows, err := r.db.Query(ctx, itemQuery, append(args, filter.Limit, filter.Offset)...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list products: %w", err)
+	}
+	defer rows.Close()
+
+	var products []*Product
+
+	for rows.Next() {
+		var p Product
+
+		if err := rows.Scan(
+			&p.ID,
+			&p.OrganisationID,
+			&p.Name,
+			&p.Description,
+			&p.SKU,
+			&p.Price,
+			&p.Category,
+			&p.IsActive,
+			&p.CreatedAt,
+			&p.UpdatedAt,
+		); err != nil {
+			return nil, 0, fmt.Errorf("scan product: %w", err)
+		}
+
+		products = append(products, &p)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("read products: %w", err)
+	}
+
+	return products, total, nil
 }

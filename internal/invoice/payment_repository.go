@@ -34,4 +34,14 @@ type PaymentRepository interface {
 	Create(ctx context.Context, organisationID uuid.UUID, payment *Payment) error
 	GetByInvoiceID(ctx context.Context, organisationID uuid.UUID, invoiceID uuid.UUID) ([]*Payment, error)
 	GetTotalPaidByInvoiceID(ctx context.Context, organisationID uuid.UUID, invoiceID uuid.UUID) (int64, error)
+
+	// GetTotalPaidByInvoiceIDs (Milestone 8 Part 3) is GetTotalPaidByInvoiceID's
+	// batch counterpart, purpose-built for GET /invoices: one grouped
+	// aggregate query for an entire page of invoices, instead of one
+	// query per invoice (the N+1 pattern the list endpoint must avoid).
+	// The returned map has an entry only for invoice IDs with at least
+	// one payment — an ID absent from the map has paid nothing, which
+	// Go's zero value for int64 already represents correctly when the
+	// caller indexes the map for an ID that isn't there.
+	GetTotalPaidByInvoiceIDs(ctx context.Context, organisationID uuid.UUID, invoiceIDs []uuid.UUID) (map[uuid.UUID]int64, error)
 }

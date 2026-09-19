@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -109,6 +110,74 @@ func (f *fakeUserRepository) UpdateLastLogin(ctx context.Context, userID uuid.UU
 	f.usersByID[userID] = u
 	f.usersByEmail[u.Email] = u
 	return nil
+}
+
+// List is a simple in-memory re-implementation of the same filter/sort/
+// paginate contract PostgresUserRepository.List implements in SQL — good
+// enough for handler-level tests; the real SQL predicates are proven
+// separately by user_repository_postgres_test.go against real Postgres.
+func (f *fakeUserRepository) List(ctx context.Context, organisationID uuid.UUID, filter UserListFilter) ([]*User, int64, error) {
+	var matched []*User
+
+	for i := range f.usersByID {
+		u := f.usersByID[i]
+		if u.OrganisationID != organisationID {
+			continue
+		}
+		if filter.Role != "" && u.Role != filter.Role {
+			continue
+		}
+		if filter.Active != nil && u.IsActive != *filter.Active {
+			continue
+		}
+		uCopy := u
+		matched = append(matched, &uCopy)
+	}
+
+	desc := strings.EqualFold(filter.Order, "desc")
+
+	sort.Slice(matched, func(i, j int) bool {
+		a, b := matched[i], matched[j]
+
+		switch filter.Sort {
+		case "email":
+			if a.Email != b.Email {
+				if desc {
+					return a.Email > b.Email
+				}
+				return a.Email < b.Email
+			}
+		case "role":
+			if a.Role != b.Role {
+				if desc {
+					return a.Role > b.Role
+				}
+				return a.Role < b.Role
+			}
+		default:
+			if !a.CreatedAt.Equal(b.CreatedAt) {
+				if desc {
+					return a.CreatedAt.After(b.CreatedAt)
+				}
+				return a.CreatedAt.Before(b.CreatedAt)
+			}
+		}
+
+		return a.ID.String() < b.ID.String()
+	})
+
+	total := int64(len(matched))
+
+	start := filter.Offset
+	if start > len(matched) {
+		start = len(matched)
+	}
+	end := start + filter.Limit
+	if end > len(matched) {
+		end = len(matched)
+	}
+
+	return matched[start:end], total, nil
 }
 
 // userTestFixture bundles a UserService with fakes, pre-seeded with a

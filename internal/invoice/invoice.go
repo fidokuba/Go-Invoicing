@@ -227,13 +227,21 @@ func (i *Invoice) EffectiveStatus(now time.Time) string {
 }
 
 // isPastDueDate reports whether now's calendar date (in UTC) is strictly
-// after dueDate's calendar date. now is truncated to UTC midnight before
-// comparing — regardless of what time of day the check happens to run,
-// only which calendar day now falls on matters, and dueDate (from a DATE
-// column) is always already UTC midnight.
+// after dueDate's calendar date. dueDate (from a DATE column) is always
+// already UTC midnight; see UTCDate for how now is truncated to the same
+// form before comparing.
 func isPastDueDate(now, dueDate time.Time) bool {
-	nowUTC := now.UTC()
-	today := time.Date(nowUTC.Year(), nowUTC.Month(), nowUTC.Day(), 0, 0, 0, 0, time.UTC)
+	return UTCDate(now).After(dueDate)
+}
 
-	return today.After(dueDate)
+// UTCDate truncates now to its UTC calendar date at midnight — the exact
+// "today" boundary isPastDueDate (and therefore EffectiveStatus) uses to
+// decide whether a persisted Sent invoice is effectively Overdue.
+// Exported (Milestone 8 Part 3) so InvoiceService.List can compute the
+// same boundary once and pass it into both its SQL predicate and every
+// row's EffectiveStatus call — one definition of "today" shared by SQL
+// and Go, rather than two that could quietly drift apart.
+func UTCDate(now time.Time) time.Time {
+	nowUTC := now.UTC()
+	return time.Date(nowUTC.Year(), nowUTC.Month(), nowUTC.Day(), 0, 0, 0, 0, time.UTC)
 }

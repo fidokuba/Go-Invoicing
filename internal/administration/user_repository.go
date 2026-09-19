@@ -8,6 +8,25 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// UserListFilter narrows GET /users (Milestone 8 Part 3) to a specific,
+// fixed set of query capabilities. Role, when non-empty, must already be
+// one of the UserRole* constants — validated by UserService.List, not
+// here. Active, when non-nil, filters on the users.is_active column
+// exactly.
+//
+// Sort is a public field name already validated against a repository-
+// known allow-list (see httpx.ParseSortOrder); the repository maps it
+// onto an actual SQL column via its own explicit switch. Order is "asc"
+// or "desc".
+type UserListFilter struct {
+	Role   string
+	Active *bool
+	Sort   string
+	Order  string
+	Limit  int
+	Offset int
+}
+
 // UserRepository describes how users are read from and written to
 // storage.
 //
@@ -48,4 +67,9 @@ type UserRepository interface {
 	// authenticated. Called through AuthService.Login's transaction,
 	// alongside the new session's creation.
 	UpdateLastLogin(ctx context.Context, userID uuid.UUID, at time.Time) error
+
+	// List returns the page of users matching filter, tenant-scoped to
+	// organisationID, together with the total count of users matching
+	// the same filters (ignoring Limit/Offset).
+	List(ctx context.Context, organisationID uuid.UUID, filter UserListFilter) ([]*User, int64, error)
 }

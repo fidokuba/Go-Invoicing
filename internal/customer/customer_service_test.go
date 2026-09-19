@@ -3,6 +3,8 @@ package customer
 import (
 	"context"
 	"errors"
+	"sort"
+	"strings"
 	"sync"
 	"testing"
 
@@ -43,6 +45,98 @@ func (f *fakeCustomerRepository) GetByID(ctx context.Context, organisationID, cu
 	}
 
 	return &c, nil
+}
+
+// List is a simple in-memory re-implementation of the same filter/sort/
+// paginate contract PostgresCustomerRepository.List implements in SQL —
+// good enough for handler-level tests to exercise query parsing and
+// error mapping; the real SQL predicates (ILIKE, ORDER BY, tenant
+// scoping) are proven separately by customer_repository_postgres_test.go
+// against real Postgres.
+func (f *fakeCustomerRepository) List(ctx context.Context, organisationID uuid.UUID, filter ListFilter) ([]*Customer, int64, error) {
+	var matched []*Customer
+
+	for i := range f.customers {
+		c := f.customers[i]
+		if c.OrganisationID != organisationID {
+			continue
+		}
+		if filter.Status != "" && c.Status != filter.Status {
+			continue
+		}
+		if filter.Search != "" {
+			needle := strings.ToLower(filter.Search)
+			name := strings.ToLower(c.Name)
+			company := ""
+			if c.CompanyName != nil {
+				company = strings.ToLower(*c.CompanyName)
+			}
+			email := ""
+			if c.Email != nil {
+				email = strings.ToLower(*c.Email)
+			}
+			if !strings.Contains(name, needle) && !strings.Contains(company, needle) && !strings.Contains(email, needle) {
+				continue
+			}
+		}
+		cCopy := c
+		matched = append(matched, &cCopy)
+	}
+
+	desc := strings.EqualFold(filter.Order, "desc")
+
+	sort.Slice(matched, func(i, j int) bool {
+		a, b := matched[i], matched[j]
+
+		switch filter.Sort {
+		case "companyName":
+			ca, cb := "", ""
+			if a.CompanyName != nil {
+				ca = *a.CompanyName
+			}
+			if b.CompanyName != nil {
+				cb = *b.CompanyName
+			}
+			if ca != cb {
+				if desc {
+					return ca > cb
+				}
+				return ca < cb
+			}
+		case "createdAt":
+			if !a.CreatedAt.Equal(b.CreatedAt) {
+				if desc {
+					return a.CreatedAt.After(b.CreatedAt)
+				}
+				return a.CreatedAt.Before(b.CreatedAt)
+			}
+		default:
+			if a.Name != b.Name {
+				if desc {
+					return a.Name > b.Name
+				}
+				return a.Name < b.Name
+			}
+		}
+
+		// Tie on the primary field: id ascending is the stable secondary
+		// key, matching PostgresCustomerRepository.List's "ORDER BY ...,
+		// id ASC" regardless of the primary field's own direction.
+		return a.ID.String() < b.ID.String()
+	})
+
+	total := int64(len(matched))
+
+	start := filter.Offset
+	if start > len(matched) {
+		start = len(matched)
+	}
+	end := start + filter.Limit
+	if end > len(matched) {
+		end = len(matched)
+	}
+
+	return matched[start:end], total, nil
 }
 
 // fakeAddressRepository is an in-memory AddressRepository used to test

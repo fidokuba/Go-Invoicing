@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -501,4 +503,163 @@ func (r *PostgresInvoiceRepository) GetLinesByInvoiceID(
 	}
 
 	return lines, nil
+}
+
+// invoiceSortColumns maps List's public, httpx.ParseSortOrder-validated
+// sort field names onto actual SQL columns — the one place a client-
+// controlled value is allowed to influence an ORDER BY, and only via
+// this fixed, explicit lookup, never by interpolating the field name
+// itself.
+var invoiceSortColumns = map[string]string{
+	"invoiceNumber": "invoice_number",
+	"issueDate":     "issue_date",
+	"dueDate":       "due_date",
+	"total":         "total",
+	"createdAt":     "created_at",
+}
+
+// List returns the page of invoices matching filter, tenant-scoped to
+// organisationID, together with the total count of invoices matching the
+// same filters. The WHERE clause is built once and reused for both the
+// item query and the COUNT(*) query, so the two can never drift apart.
+//
+// Effective-status filtering (Milestone 8 Part 3 section 9) is the one
+// subtle piece here: "sent" and "overdue" are never persisted as such
+// for the "overdue" half — a persisted Sent invoice is filtered by
+// comparing due_date against today, the exact same boundary
+// Invoice.EffectiveStatus uses (today's calendar date strictly after
+// due_date means overdue; on or after today means still "sent"). status
+// = 'draft' and status = 'paid' are the two genuinely persisted, 1:1
+// filters — no date comparison needed for either.
+//
+// Search is bound as a single "%term%" parameter matched via ILIKE
+// against invoice_number; '%'/'_' in the term itself remain live
+// wildcards, matching every other List in this project.
+func (r *PostgresInvoiceRepository) List(
+	ctx context.Context,
+	organisationID uuid.UUID,
+	filter InvoiceListFilter,
+	today time.Time,
+) ([]*Invoice, int64, error) {
+	conditions := []string{"organisation_id = $1", "deleted_at IS NULL"}
+	args := []any{organisationID}
+
+	switch filter.Status {
+	case InvoiceStatusDraft:
+		conditions = append(conditions, "status = 'draft'")
+	case InvoiceStatusPaid:
+		conditions = append(conditions, "status = 'paid'")
+	case InvoiceStatusSent:
+		args = append(args, today)
+		conditions = append(conditions, fmt.Sprintf("status = 'sent' AND due_date >= $%d", len(args)))
+	case InvoiceStatusOverdue:
+		args = append(args, today)
+		conditions = append(conditions, fmt.Sprintf("status = 'sent' AND due_date < $%d", len(args)))
+	}
+
+	if filter.CustomerID != nil {
+		args = append(args, *filter.CustomerID)
+		conditions = append(conditions, fmt.Sprintf("customer_id = $%d", len(args)))
+	}
+
+	if filter.Search != "" {
+		args = append(args, "%"+filter.Search+"%")
+		conditions = append(conditions, fmt.Sprintf("invoice_number ILIKE $%d", len(args)))
+	}
+
+	if filter.IssueDateFrom != nil {
+		args = append(args, *filter.IssueDateFrom)
+		conditions = append(conditions, fmt.Sprintf("issue_date >= $%d", len(args)))
+	}
+	if filter.IssueDateTo != nil {
+		args = append(args, *filter.IssueDateTo)
+		conditions = append(conditions, fmt.Sprintf("issue_date <= $%d", len(args)))
+	}
+	if filter.DueDateFrom != nil {
+		args = append(args, *filter.DueDateFrom)
+		conditions = append(conditions, fmt.Sprintf("due_date >= $%d", len(args)))
+	}
+	if filter.DueDateTo != nil {
+		args = append(args, *filter.DueDateTo)
+		conditions = append(conditions, fmt.Sprintf("due_date <= $%d", len(args)))
+	}
+
+	whereClause := "WHERE " + strings.Join(conditions, " AND ")
+
+	sortColumn, ok := invoiceSortColumns[filter.Sort]
+	if !ok {
+		sortColumn = "issue_date"
+	}
+
+	direction := "DESC"
+	if strings.EqualFold(filter.Order, "asc") {
+		direction = "ASC"
+	}
+
+	var total int64
+	countQuery := "SELECT COUNT(*) FROM invoices " + whereClause
+	if err := r.db.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count invoices: %w", err)
+	}
+
+	// id ASC is a stable secondary key for every sort column — even
+	// invoice_number, which is unique per organisation but not globally,
+	// applied uniformly for simplicity. This query intentionally selects
+	// only the invoice-level columns a list row needs to build an
+	// InvoiceResponse with an empty Lines slice (see InvoiceService.List
+	// for why list rows never fetch per-invoice line detail) — the full
+	// seller/customer snapshot columns aren't needed either, since list
+	// responses don't expose them, matching GetByID's own column set
+	// being a superset used only where actually read.
+	itemQuery := fmt.Sprintf(
+		`SELECT
+			id, organisation_id, customer_id, invoice_number, issue_date,
+			due_date, subtotal, vat_total, total, status, sent_at, notes,
+			currency, created_at, updated_at
+		FROM invoices
+		%s
+		ORDER BY %s %s, id ASC
+		LIMIT $%d OFFSET $%d`,
+		whereClause, sortColumn, direction, len(args)+1, len(args)+2,
+	)
+
+	rows, err := r.db.Query(ctx, itemQuery, append(args, filter.Limit, filter.Offset)...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list invoices: %w", err)
+	}
+	defer rows.Close()
+
+	var invoices []*Invoice
+
+	for rows.Next() {
+		var inv Invoice
+
+		if err := rows.Scan(
+			&inv.ID,
+			&inv.OrganisationID,
+			&inv.CustomerID,
+			&inv.InvoiceNumber,
+			&inv.IssueDate,
+			&inv.DueDate,
+			&inv.Subtotal,
+			&inv.VATTotal,
+			&inv.Total,
+			&inv.Status,
+			&inv.SentAt,
+			&inv.Notes,
+			&inv.Currency,
+			&inv.CreatedAt,
+			&inv.UpdatedAt,
+		); err != nil {
+			return nil, 0, fmt.Errorf("scan invoice: %w", err)
+		}
+
+		invoices = append(invoices, &inv)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("read invoices: %w", err)
+	}
+
+	return invoices, total, nil
 }

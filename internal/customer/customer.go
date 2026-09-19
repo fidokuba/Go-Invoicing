@@ -6,6 +6,18 @@ import (
 	"github.com/google/uuid"
 )
 
+// Customer status values (Milestone 8 Part 3). Named constants rather
+// than scattered string literals, matching this project's existing
+// convention for status-like fields (see invoice.InvoiceStatus*) — the
+// customers.status column has no CHECK constraint, but the application
+// layer (Create, and now the list endpoint's ?status= filter) should
+// still only ever produce or accept one of these three values.
+const (
+	CustomerStatusActive   = "active"
+	CustomerStatusInactive = "inactive"
+	CustomerStatusArchived = "archived"
+)
+
 // Email, Phone, CompanyName and TaxID are pointers because those columns
 // are nullable in the customers table; ID, OrganisationID, Name and Status
 // are NOT NULL. DeletedAt is a pointer and stays nil until the customer is

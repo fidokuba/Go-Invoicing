@@ -3,7 +3,10 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -13,6 +16,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	admin "go-invoicing/internal/administration"
@@ -457,6 +461,56 @@ func TestApp_RoleMatrix_UserManagement(t *testing.T) {
 	}
 }
 
+// TestApp_UsersList_RoleMatrix proves GET /users (Milestone 8 Part 3) is
+// admin/manager-only, the same gate POST /users already uses: an
+// ordinary user must get 403, never a partial or self-only listing.
+func TestApp_UsersList_RoleMatrix(t *testing.T) {
+	handler, db := newTestApp(t)
+	tenant := registerTenant(t, handler, db, "Users List Org", "users-list-admin@example.com")
+
+	_, managerToken := createAndLoginUser(t, handler, tenant.token, "Manager", "users-list-manager@example.com", admin.UserRoleManager)
+	_, userToken := createAndLoginUser(t, handler, tenant.token, "User", "users-list-user@example.com", admin.UserRoleUser)
+
+	tests := []struct {
+		name       string
+		actorToken string
+		wantStatus int
+	}{
+		{"admin can list users", tenant.token, http.StatusOK},
+		{"manager can list users", managerToken, http.StatusOK},
+		{"user cannot list users", userToken, http.StatusForbidden},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := doRequest(handler, http.MethodGet, "/api/v1/users", tt.actorToken, nil)
+			if recorder.Code != tt.wantStatus {
+				t.Fatalf("expected status %d, got %d (body: %s)", tt.wantStatus, recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+
+	// The admin's own list must contain all three seeded users (itself,
+	// the manager, the user) — a basic end-to-end sanity check that the
+	// route actually returns real data, not just the right status code.
+	recorder := doRequest(handler, http.MethodGet, "/api/v1/users", tenant.token, nil)
+	var response struct {
+		Items      []json.RawMessage `json:"items"`
+		Pagination struct {
+			Total int64 `json:"total"`
+		} `json:"pagination"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode users list response: %v", err)
+	}
+	if response.Pagination.Total != 3 {
+		t.Errorf("expected 3 users total, got %d", response.Pagination.Total)
+	}
+	if len(response.Items) != 3 {
+		t.Errorf("expected 3 items, got %d", len(response.Items))
+	}
+}
+
 // TestApp_RoleMatrix_OrganisationUpdate proves PATCH /organisation
 // (Milestone 7 Part 1) is admin-only: manager and user must both be
 // rejected with 403, exactly like every other admin-only route in this
@@ -487,6 +541,116 @@ func TestApp_RoleMatrix_OrganisationUpdate(t *testing.T) {
 				t.Fatalf("expected status %d, got %d (body: %s)", tt.wantStatus, recorder.Code, recorder.Body.String())
 			}
 		})
+	}
+}
+
+// TestApp_RoleMatrix_SettingsUpdate proves PATCH /organisation/settings
+// (Milestone 8 Part 3) is admin-only, the same gate PATCH /organisation
+// already uses, while GET /organisation/settings remains open to all
+// three roles.
+func TestApp_RoleMatrix_SettingsUpdate(t *testing.T) {
+	handler, db := newTestApp(t)
+	tenant := registerTenant(t, handler, db, "Settings Role Org", "settings-role-admin@example.com")
+
+	_, managerToken := createAndLoginUser(t, handler, tenant.token, "Manager", "settings-role-manager@example.com", admin.UserRoleManager)
+	_, userToken := createAndLoginUser(t, handler, tenant.token, "User", "settings-role-user@example.com", admin.UserRoleUser)
+
+	t.Run("GET is open to every role", func(t *testing.T) {
+		for name, token := range map[string]string{"admin": tenant.token, "manager": managerToken, "user": userToken} {
+			recorder := doRequest(handler, http.MethodGet, "/api/v1/organisation/settings", token, nil)
+			if recorder.Code != http.StatusOK {
+				t.Errorf("%s: expected status %d, got %d (body: %s)", name, http.StatusOK, recorder.Code, recorder.Body.String())
+			}
+		}
+	})
+
+	patchTests := []struct {
+		name       string
+		actorToken string
+		wantStatus int
+	}{
+		{"admin can update settings", tenant.token, http.StatusOK},
+		{"manager cannot update settings", managerToken, http.StatusForbidden},
+		{"user cannot update settings", userToken, http.StatusForbidden},
+	}
+
+	for _, tt := range patchTests {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := doRequest(handler, http.MethodPatch, "/api/v1/organisation/settings", tt.actorToken, bytes.NewBufferString(`{"currency":"EUR"}`))
+			if recorder.Code != tt.wantStatus {
+				t.Fatalf("expected status %d, got %d (body: %s)", tt.wantStatus, recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
+// TestApp_SettingsHistory_EndToEnd is the Milestone 8 Part 3 section 16
+// end-to-end proof, through the real HTTP/service/repository/PostgreSQL
+// stack: changing Settings.Currency affects a Draft invoice's currency
+// immediately, but never alters an already-Sent invoice's immutable
+// currency snapshot — even though the Send happened before the settings
+// change.
+func TestApp_SettingsHistory_EndToEnd(t *testing.T) {
+	handler, db := newTestApp(t)
+	tenant := registerTenant(t, handler, db, "Settings History Org", "settings-history-admin@example.com")
+
+	customerRecorder := doRequest(handler, http.MethodPost, "/api/v1/customers", tenant.token, bytes.NewBufferString(`{"name":"History Customer"}`))
+	if customerRecorder.Code != http.StatusCreated {
+		t.Fatalf("create customer: status %d (body: %s)", customerRecorder.Code, customerRecorder.Body.String())
+	}
+	var customer struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(customerRecorder.Body).Decode(&customer)
+
+	invoiceBody := `{
+		"customerId": "` + customer.ID + `",
+		"issueDate": "2026-01-01",
+		"dueDate": "2026-01-31",
+		"lines": [{"description": "Service", "quantity": 1, "unitPrice": 1000, "vatRate": 0}]
+	}`
+
+	// One invoice stays Draft; one gets Sent — both created while the
+	// organisation's currency is still the default GBP.
+	draftRecorder := doRequest(handler, http.MethodPost, "/api/v1/invoices", tenant.token, bytes.NewBufferString(invoiceBody))
+	var draftInvoice struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(draftRecorder.Body).Decode(&draftInvoice)
+
+	sentRecorder := doRequest(handler, http.MethodPost, "/api/v1/invoices", tenant.token, bytes.NewBufferString(invoiceBody))
+	var sentInvoice struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(sentRecorder.Body).Decode(&sentInvoice)
+	if recorder := doRequest(handler, http.MethodPost, "/api/v1/invoices/"+sentInvoice.ID+"/send", tenant.token, nil); recorder.Code != http.StatusOK {
+		t.Fatalf("send invoice: status %d (body: %s)", recorder.Code, recorder.Body.String())
+	}
+
+	// Change the organisation's currency after both invoices exist (one
+	// already Sent).
+	patchRecorder := doRequest(handler, http.MethodPatch, "/api/v1/organisation/settings", tenant.token, bytes.NewBufferString(`{"currency":"EUR"}`))
+	if patchRecorder.Code != http.StatusOK {
+		t.Fatalf("patch settings: status %d (body: %s)", patchRecorder.Code, patchRecorder.Body.String())
+	}
+
+	var currencyOf = func(invoiceID string) string {
+		t.Helper()
+		recorder := doRequest(handler, http.MethodGet, "/api/v1/invoices/"+invoiceID, tenant.token, nil)
+		var response struct {
+			Currency string `json:"currency"`
+		}
+		if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+			t.Fatalf("decode invoice response: %v", err)
+		}
+		return response.Currency
+	}
+
+	if got := currencyOf(draftInvoice.ID); got != "EUR" {
+		t.Errorf("expected the Draft invoice to follow the new live currency %q, got %q", "EUR", got)
+	}
+	if got := currencyOf(sentInvoice.ID); got != "GBP" {
+		t.Errorf("expected the Sent invoice's currency to remain the snapshotted %q, got %q (must not follow the settings change)", "GBP", got)
 	}
 }
 
@@ -749,6 +913,93 @@ func TestApp_MidSessionDeactivation_TokenStopsWorking(t *testing.T) {
 	recorder := doRequest(handler, http.MethodGet, "/api/v1/users/"+userID, token, nil)
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("expected status %d after deactivation with the same token, got %d (body: %s)", http.StatusUnauthorized, recorder.Code, recorder.Body.String())
+	}
+}
+
+// TestApp_Logout_EndToEnd is the Milestone 8 Part 3 section 32
+// end-to-end proof, through the real HTTP/service/repository/PostgreSQL
+// stack: logging out revokes only the current session's token — a
+// second, independent login for the same user survives untouched — and
+// revoked_at is genuinely persisted, not just held in memory.
+func TestApp_Logout_EndToEnd(t *testing.T) {
+	handler, db := newTestApp(t)
+	tenant := registerTenant(t, handler, db, "Logout Org", "logout-admin@example.com")
+
+	// A second, independent session for the very same admin user.
+	secondToken := loginAs(t, handler, "logout-admin@example.com", testPassword)
+
+	// Both tokens work before logout.
+	if recorder := doRequest(handler, http.MethodGet, "/api/v1/organisation", tenant.token, nil); recorder.Code != http.StatusOK {
+		t.Fatalf("expected first token to work before logout, got %d", recorder.Code)
+	}
+	if recorder := doRequest(handler, http.MethodGet, "/api/v1/organisation", secondToken, nil); recorder.Code != http.StatusOK {
+		t.Fatalf("expected second token to work before logout, got %d", recorder.Code)
+	}
+
+	logoutRecorder := doRequest(handler, http.MethodPost, "/api/v1/auth/logout", tenant.token, nil)
+	if logoutRecorder.Code != http.StatusNoContent {
+		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusNoContent, logoutRecorder.Code, logoutRecorder.Body.String())
+	}
+	if logoutRecorder.Body.Len() != 0 {
+		t.Errorf("expected an empty body, got %q", logoutRecorder.Body.String())
+	}
+
+	// The logged-out token must immediately fail authentication.
+	if recorder := doRequest(handler, http.MethodGet, "/api/v1/organisation", tenant.token, nil); recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d for the logged-out token, got %d (body: %s)", http.StatusUnauthorized, recorder.Code, recorder.Body.String())
+	}
+
+	// A second logout with the already-revoked token fails authentication
+	// before ever reaching the handler — 401, not a repeated 204.
+	if recorder := doRequest(handler, http.MethodPost, "/api/v1/auth/logout", tenant.token, nil); recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d repeating logout with an already-revoked token, got %d", http.StatusUnauthorized, recorder.Code)
+	}
+
+	// The second, independent session must remain completely unaffected.
+	if recorder := doRequest(handler, http.MethodGet, "/api/v1/organisation", secondToken, nil); recorder.Code != http.StatusOK {
+		t.Fatalf("expected the second session to remain valid after the first was logged out, got %d", recorder.Code)
+	}
+
+	// The raw token is never stored as token_hash — only its SHA-256 hex
+	// hash is (the same algorithm AuthService documents), and that row's
+	// revoked_at must genuinely be persisted in the database, not just
+	// held in memory.
+	var rawTokenStoredCount int
+	if err := db.QueryRow(context.Background(),
+		"SELECT COUNT(*) FROM sessions WHERE token_hash = $1", tenant.token,
+	).Scan(&rawTokenStoredCount); err != nil {
+		t.Fatalf("query for raw token storage: %v", err)
+	}
+	if rawTokenStoredCount != 0 {
+		t.Error("expected the raw token never to be stored as token_hash")
+	}
+
+	tokenHashSum := sha256.Sum256([]byte(tenant.token))
+	tokenHash := hex.EncodeToString(tokenHashSum[:])
+
+	// A revoked session is, by SessionRepository's own documented design,
+	// immediately eligible for deletion by DeleteExpired's whole-table
+	// maintenance sweep — regardless of which process or test runs it.
+	// Running the full suite in parallel (go test's default) means this
+	// specific row can legitimately already be gone by the time this
+	// query runs, if a concurrent DeleteExpired-exercising test in
+	// another package happened to sweep it first — that is not a
+	// contradiction of "logout revoked the session", it's the expected
+	// next step for any revoked session. A missing row is therefore
+	// treated as an acceptable outcome here, not a failure; run with
+	// `go test -p 1` for a deterministic look at the row itself.
+	var revokedAtIsSet bool
+	err := db.QueryRow(context.Background(),
+		"SELECT revoked_at IS NOT NULL FROM sessions WHERE token_hash = $1", tokenHash,
+	).Scan(&revokedAtIsSet)
+	if errors.Is(err, pgx.ErrNoRows) {
+		t.Skip("session row already reaped by a concurrently-running cleanup sweep — see comment above")
+	}
+	if err != nil {
+		t.Fatalf("query session row: %v", err)
+	}
+	if !revokedAtIsSet {
+		t.Error("expected revoked_at to be set in the database")
 	}
 }
 

@@ -227,3 +227,32 @@ func (s *UserService) GetByID(
 ) (*User, error) {
 	return s.repository.GetByID(ctx, organisationID, userID)
 }
+
+// ErrUserRoleFilterInvalid is returned when List's ?role= filter isn't
+// one of the UserRole* constants — business-domain validation, so it
+// lives here rather than in the handler.
+var ErrUserRoleFilterInvalid = errors.New("user role filter is not valid")
+
+// List validates filter.Role (if supplied) against the known UserRole*
+// values and delegates to the repository, which enforces tenant scoping
+// and the Role/Active/Sort/Order/Limit/Offset predicates in SQL.
+// Authorization (admin/manager only) is enforced at the route-
+// registration site (RequireRole), the same gate POST /users already
+// uses — there is no additional per-call actor check here, unlike
+// Create's privilege-escalation rule, because listing carries no
+// analogous "assign a role above your own" risk.
+func (s *UserService) List(
+	ctx context.Context,
+	organisationID uuid.UUID,
+	filter UserListFilter,
+) ([]*User, int64, error) {
+	if filter.Role != "" {
+		switch filter.Role {
+		case UserRoleAdmin, UserRoleManager, UserRoleUser:
+		default:
+			return nil, 0, ErrUserRoleFilterInvalid
+		}
+	}
+
+	return s.repository.List(ctx, organisationID, filter)
+}

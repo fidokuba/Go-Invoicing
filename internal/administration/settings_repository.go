@@ -30,4 +30,13 @@ type SettingsRepository interface {
 	GetByOrganisationID(ctx context.Context, organisationID uuid.UUID) (*Settings, error)
 	GetForUpdate(ctx context.Context, organisationID uuid.UUID) (*Settings, error)
 	UpdateInvoiceNumber(ctx context.Context, organisationID uuid.UUID, invoiceNumber int) error
+
+	// Update persists InvoicePrefix, Currency and PaymentTerms — the
+	// three fields PATCH /organisation/settings (Milestone 8 Part 3) may
+	// change — tenant-scoped by organisationID. It deliberately never
+	// touches InvoiceNumber: that field is owned exclusively by the
+	// locked allocate-and-increment sequence in
+	// InvoiceService.Create/SettingsRepository.UpdateInvoiceNumber, and
+	// must never be reset or overwritten by an unrelated settings edit.
+	Update(ctx context.Context, organisationID uuid.UUID, settings *Settings) error
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -145,4 +146,32 @@ func (r *PostgresSessionRepository) DeleteExpired(
 	}
 
 	return tag.RowsAffected(), nil
+}
+
+// Revoke sets revoked_at on exactly one session, by ID. It's idempotent
+// (revoking an already-revoked session is a harmless no-op update) and
+// deliberately does not treat "0 rows affected" as success silently
+// swallowed: sessionID always comes from a request context that
+// AuthMiddleware already populated from a just-validated session, so a
+// missing row here means something unexpected happened between
+// authentication and this call, not a normal "already logged out" case
+// (repeated logout with the same token never reaches this far — the
+// token itself fails authentication first).
+func (r *PostgresSessionRepository) Revoke(ctx context.Context, sessionID uuid.UUID) error {
+	const query = `
+		UPDATE sessions
+		SET revoked_at = NOW()
+		WHERE id = $1
+	`
+
+	tag, err := r.db.Exec(ctx, query, sessionID)
+	if err != nil {
+		return fmt.Errorf("revoke session: %w", err)
+	}
+
+	if tag.RowsAffected() == 0 {
+		return ErrSessionNotFound
+	}
+
+	return nil
 }

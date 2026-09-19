@@ -12,6 +12,12 @@ import (
 // (or whitespace-only) name.
 var ErrCustomerNameRequired = errors.New("customer name is required")
 
+// ErrCustomerStatusInvalid is returned when List's ?status= filter isn't
+// one of the CustomerStatus* constants — this is business-domain
+// validation (which values the customers.status column may actually
+// mean), so it lives here rather than in the handler.
+var ErrCustomerStatusInvalid = errors.New("customer status is not valid")
+
 // Billing address field-required errors (Milestone 7 Part 1). State is
 // deliberately not in this list — not every country uses one, and the
 // schema/DTO already treat it as optional.
@@ -67,7 +73,7 @@ func (s *CustomerService) Create(
 		Phone:          nilIfEmpty(phone),
 		CompanyName:    nilIfEmpty(companyName),
 		TaxID:          nilIfEmpty(taxID),
-		Status:         "active",
+		Status:         CustomerStatusActive,
 	}
 
 	if err := s.repository.Create(ctx, c); err != nil {
@@ -75,6 +81,28 @@ func (s *CustomerService) Create(
 	}
 
 	return c, nil
+}
+
+// List validates filter.Status (if supplied) against the known
+// CustomerStatus* values and delegates to the repository, which enforces
+// tenant scoping and the Search/Sort/Order/Limit/Offset predicates in
+// SQL. Sort/Order themselves are not re-validated here — by the time a
+// handler calls List, httpx.ParseSortOrder has already confirmed Sort is
+// one of the repository's known public field names.
+func (s *CustomerService) List(
+	ctx context.Context,
+	organisationID uuid.UUID,
+	filter ListFilter,
+) ([]*Customer, int64, error) {
+	if filter.Status != "" {
+		switch filter.Status {
+		case CustomerStatusActive, CustomerStatusInactive, CustomerStatusArchived:
+		default:
+			return nil, 0, ErrCustomerStatusInvalid
+		}
+	}
+
+	return s.repository.List(ctx, organisationID, filter)
 }
 
 // GetByID delegates straight to the repository; the organisation scoping

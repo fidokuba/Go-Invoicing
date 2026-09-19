@@ -96,6 +96,7 @@ func (m *AuthMiddleware) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 			UserID:         user.ID,
 			OrganisationID: user.OrganisationID,
 			Role:           user.Role,
+			SessionID:      session.ID,
 		}
 
 		next(w, r.WithContext(WithAuthenticatedUser(r.Context(), identity)))

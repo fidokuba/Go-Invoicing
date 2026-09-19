@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -23,6 +24,7 @@ var ErrCustomerNotFound = errors.New("customer not found")
 // administration.dbExecutor.
 type dbExecutor interface {
 	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
@@ -153,4 +155,117 @@ func (r *PostgresCustomerRepository) GetByID(
 	}
 
 	return &c, nil
+}
+
+// customerSortColumns maps List's public, httpx.ParseSortOrder-validated
+// sort field names onto actual SQL columns — the one place a client-
+// controlled value is allowed to influence an ORDER BY, and only via
+// this fixed, explicit lookup, never by interpolating the field name
+// itself.
+var customerSortColumns = map[string]string{
+	"name":        "name",
+	"companyName": "company_name",
+	"createdAt":   "created_at",
+}
+
+// List returns the page of customers matching filter, tenant-scoped to
+// organisationID, together with the total count of customers matching
+// the same filters. The WHERE clause is built once (whereClause/args) and
+// reused for both the item query and the COUNT(*) query, so the two can
+// never drift apart — see CustomerService.List for how Filter.Status is
+// validated and Filter.Sort/Order are resolved before ever reaching here.
+//
+// Search is bound as a single "%term%" parameter — never string-
+// concatenated into the query — matched via ILIKE against name,
+// company_name and email. '%' and '_' typed into the search term itself
+// remain live ILIKE wildcards (e.g. searching "50%" matches literally
+// anything after "50"); this is standard, expected ILIKE behaviour and
+// is not escaped.
+func (r *PostgresCustomerRepository) List(
+	ctx context.Context,
+	organisationID uuid.UUID,
+	filter ListFilter,
+) ([]*Customer, int64, error) {
+	conditions := []string{"organisation_id = $1", "deleted_at IS NULL"}
+	args := []any{organisationID}
+
+	if filter.Status != "" {
+		args = append(args, filter.Status)
+		conditions = append(conditions, fmt.Sprintf("status = $%d", len(args)))
+	}
+
+	if filter.Search != "" {
+		args = append(args, "%"+filter.Search+"%")
+		placeholder := len(args)
+		conditions = append(conditions, fmt.Sprintf(
+			"(name ILIKE $%d OR company_name ILIKE $%d OR email ILIKE $%d)",
+			placeholder, placeholder, placeholder,
+		))
+	}
+
+	whereClause := "WHERE " + strings.Join(conditions, " AND ")
+
+	sortColumn, ok := customerSortColumns[filter.Sort]
+	if !ok {
+		sortColumn = "name"
+	}
+
+	direction := "ASC"
+	if strings.EqualFold(filter.Order, "desc") {
+		direction = "DESC"
+	}
+
+	var total int64
+	countQuery := "SELECT COUNT(*) FROM customers " + whereClause
+	if err := r.db.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count customers: %w", err)
+	}
+
+	// id ASC is a stable secondary key for every sort column above, none
+	// of which is guaranteed unique (unlike, say, products.sku).
+	itemQuery := fmt.Sprintf(
+		`SELECT
+			id, organisation_id, name, email, phone, company_name, tax_id,
+			status, created_at, updated_at
+		FROM customers
+		%s
+		ORDER BY %s %s, id ASC
+		LIMIT $%d OFFSET $%d`,
+		whereClause, sortColumn, direction, len(args)+1, len(args)+2,
+	)
+
+	rows, err := r.db.Query(ctx, itemQuery, append(args, filter.Limit, filter.Offset)...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list customers: %w", err)
+	}
+	defer rows.Close()
+
+	var customers []*Customer
+
+	for rows.Next() {
+		var c Customer
+
+		if err := rows.Scan(
+			&c.ID,
+			&c.OrganisationID,
+			&c.Name,
+			&c.Email,
+			&c.Phone,
+			&c.CompanyName,
+			&c.TaxID,
+			&c.Status,
+			&c.CreatedAt,
+			&c.UpdatedAt,
+		); err != nil {
+			return nil, 0, fmt.Errorf("scan customer: %w", err)
+		}
+
+		customers = append(customers, &c)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("read customers: %w", err)
+	}
+
+	return customers, total, nil
 }

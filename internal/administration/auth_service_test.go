@@ -81,6 +81,22 @@ func (f *fakeSessionRepository) DeleteExpired(ctx context.Context, now time.Time
 	return 0, nil
 }
 
+// Revoke sets RevokedAt on the one matching session — mirroring
+// PostgresSessionRepository.Revoke's own contract, including returning
+// ErrSessionNotFound rather than silently succeeding for an unknown ID.
+func (f *fakeSessionRepository) Revoke(ctx context.Context, sessionID uuid.UUID) error {
+	s, ok := f.sessions[sessionID]
+	if !ok {
+		return ErrSessionNotFound
+	}
+
+	revokedAt := time.Now().UTC()
+	s.RevokedAt = &revokedAt
+	f.sessions[sessionID] = s
+
+	return nil
+}
+
 // fakeTx is a minimal stand-in for a pgx.Tx. Only Commit and Rollback are
 // ever exercised by AuthService — it never issues a query directly
 // through tx, always via a WithTx-bound repository — so every other

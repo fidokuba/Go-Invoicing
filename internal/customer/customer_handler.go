@@ -66,6 +66,69 @@ func (h *CustomerHandler) Create(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusCreated, response)
 }
 
+// customerSortFields is the public sort-field allow-list for GET
+// /customers, validated by httpx.ParseSortOrder before List ever runs —
+// see customerSortColumns in customer_repository_postgres.go for how
+// each of these maps onto an actual SQL column.
+var customerSortFields = []string{"name", "companyName", "createdAt"}
+
+// List handles GET /customers (Milestone 8 Part 3) — available to every
+// authenticated role, same policy as every other customer route.
+// Default sort is name ascending: a customer list is most usefully
+// browsed alphabetically by default, unlike an invoice dashboard (which
+// defaults to newest-first).
+func (h *CustomerHandler) List(w http.ResponseWriter, r *http.Request) {
+	identity, ok := admin.RequireAuthenticatedUser(w, r)
+	if !ok {
+		return
+	}
+
+	if !httpx.RejectUnknownQueryParams(w, r, "limit", "offset", "search", "status", "sort", "order") {
+		return
+	}
+
+	limit, offset, ok := httpx.ParseLimitOffset(w, r)
+	if !ok {
+		return
+	}
+
+	sort, order, ok := httpx.ParseSortOrder(w, r, customerSortFields, "name", "asc")
+	if !ok {
+		return
+	}
+
+	query := r.URL.Query()
+	search, _ := httpx.OptionalQueryParam(query, "search")
+	status, _ := httpx.OptionalQueryParam(query, "status")
+
+	filter := ListFilter{
+		Search: search,
+		Status: status,
+		Sort:   sort,
+		Order:  order,
+		Limit:  limit,
+		Offset: offset,
+	}
+
+	customers, total, err := h.service.List(r.Context(), identity.OrganisationID, filter)
+	if err != nil {
+		if errors.Is(err, ErrCustomerStatusInvalid) {
+			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeValidationFailed, err.Error())
+			return
+		}
+
+		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to list customers")
+		return
+	}
+
+	items := make([]CustomerResponse, 0, len(customers))
+	for _, c := range customers {
+		items = append(items, toCustomerResponse(c))
+	}
+
+	httpx.WriteJSON(w, http.StatusOK, httpx.NewListResponse(items, limit, offset, total))
+}
+
 // GetByID handles GET /customers/{id}.
 func (h *CustomerHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	identity, ok := admin.RequireAuthenticatedUser(w, r)

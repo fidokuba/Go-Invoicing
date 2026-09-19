@@ -70,6 +70,11 @@ func (a *App) Handler() http.Handler {
 	authMiddleware := admin.NewAuthMiddleware(sessionRepository, userRepository)
 
 	mux.HandleFunc("POST "+apiV1Prefix+"/auth/login", authHandler.Login)
+	// POST /auth/logout (Milestone 8 Part 3): revokes only the current
+	// session (see AuthHandler.Logout) — authentication required, so it
+	// must go through the same RequireAuth every other protected route
+	// does, not a bespoke check.
+	mux.HandleFunc("POST "+apiV1Prefix+"/auth/logout", authMiddleware.RequireAuth(authHandler.Logout))
 
 	// Wire the registration dependency chain: pool -> repositories ->
 	// service -> handler. POST /register (Milestone 4 Part 5) is now the
@@ -97,6 +102,13 @@ func (a *App) Handler() http.Handler {
 		"POST "+apiV1Prefix+"/users",
 		authMiddleware.RequireAuth(admin.RequireRole(admin.UserRoleAdmin, admin.UserRoleManager)(userHandler.Create)),
 	)
+	// GET /users (Milestone 8 Part 3): organisation user/team management —
+	// admin/manager only, the same gate POST /users already uses. An
+	// ordinary user must get 403, never a partial/self-only listing.
+	mux.HandleFunc(
+		"GET "+apiV1Prefix+"/users",
+		authMiddleware.RequireAuth(admin.RequireRole(admin.UserRoleAdmin, admin.UserRoleManager)(userHandler.List)),
+	)
 	mux.HandleFunc("GET "+apiV1Prefix+"/users/{id}", authMiddleware.RequireAuth(userHandler.GetByID))
 
 	// GET /organisation (Milestone 4 Part 4) is a self-resource route: it
@@ -117,6 +129,22 @@ func (a *App) Handler() http.Handler {
 		authMiddleware.RequireAuth(admin.RequireRole(admin.UserRoleAdmin)(organisationHandler.Update)),
 	)
 
+	// Wire the settings dependency chain: pool -> repository -> service ->
+	// handler. settingsRepository is already constructed above (used for
+	// invoice numbering) — Settings' own service/handler are new
+	// (Milestone 8 Part 3).
+	settingsHandler := admin.NewSettingsHandler(admin.NewSettingsService(settingsRepository))
+
+	// GET /organisation/settings: every authenticated role may read the
+	// organisation's current invoice-numbering currency/prefix/terms.
+	mux.HandleFunc("GET "+apiV1Prefix+"/organisation/settings", authMiddleware.RequireAuth(settingsHandler.GetCurrent))
+	// PATCH /organisation/settings: admin-only, same gate as PATCH
+	// /organisation — these settings affect every future invoice.
+	mux.HandleFunc(
+		"PATCH "+apiV1Prefix+"/organisation/settings",
+		authMiddleware.RequireAuth(admin.RequireRole(admin.UserRoleAdmin)(settingsHandler.Update)),
+	)
+
 	// Wire the customer dependency chain: pool -> repository -> service -> handler.
 	// AddressRepository (Milestone 7 Part 1) is a second, small dependency
 	// of CustomerService, for a customer's billing address — see
@@ -128,6 +156,9 @@ func (a *App) Handler() http.Handler {
 	customerHandler := customer.NewCustomerHandler(customerService)
 
 	mux.HandleFunc("POST "+apiV1Prefix+"/customers", authMiddleware.RequireAuth(customerHandler.Create))
+	// GET /customers (Milestone 8 Part 3): open to every authenticated
+	// role, same policy as every other customer route.
+	mux.HandleFunc("GET "+apiV1Prefix+"/customers", authMiddleware.RequireAuth(customerHandler.List))
 	mux.HandleFunc("GET "+apiV1Prefix+"/customers/{id}", authMiddleware.RequireAuth(customerHandler.GetByID))
 
 	// Billing address (Milestone 7 Part 1): available to every authenticated
@@ -142,6 +173,8 @@ func (a *App) Handler() http.Handler {
 	productHandler := product.NewProductHandler(productService)
 
 	mux.HandleFunc("POST "+apiV1Prefix+"/products", authMiddleware.RequireAuth(productHandler.Create))
+	// GET /products (Milestone 8 Part 3): open to every authenticated role.
+	mux.HandleFunc("GET "+apiV1Prefix+"/products", authMiddleware.RequireAuth(productHandler.List))
 	mux.HandleFunc("GET "+apiV1Prefix+"/products/{id}", authMiddleware.RequireAuth(productHandler.GetByID))
 
 	// Wire the invoice dependency chain: pool -> repository -> service -> handler.
@@ -171,6 +204,9 @@ func (a *App) Handler() http.Handler {
 	invoiceHandler := invoice.NewInvoiceHandler(invoiceService, invoicePDFService)
 
 	mux.HandleFunc("POST "+apiV1Prefix+"/invoices", authMiddleware.RequireAuth(invoiceHandler.Create))
+	// GET /invoices (Milestone 8 Part 3): open to every authenticated
+	// role, same policy as every other invoice route.
+	mux.HandleFunc("GET "+apiV1Prefix+"/invoices", authMiddleware.RequireAuth(invoiceHandler.List))
 	mux.HandleFunc("GET "+apiV1Prefix+"/invoices/{id}", authMiddleware.RequireAuth(invoiceHandler.GetByID))
 	// POST /invoices/{id}/send (Milestone 5) is a lifecycle finalisation
 	// operation only — no PDF, no email — available to every authenticated

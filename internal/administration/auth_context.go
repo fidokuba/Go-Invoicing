@@ -21,10 +21,18 @@ import (
 // protected endpoint (Milestone 4 Part 4, via RequireAuthenticatedUser
 // below) — client-supplied organisationId query parameters are no longer
 // read on any protected route.
+//
+// SessionID (Milestone 8 Part 3) identifies the exact session the
+// presented bearer token resolved to — added solely so
+// AuthHandler.Logout can revoke that one session without reparsing or
+// re-hashing the raw token, and without accepting a session identifier
+// as client input. It is never serialized into any JSON response; see
+// AuthMiddleware.RequireAuth for where it's populated.
 type AuthenticatedUser struct {
 	UserID         uuid.UUID
 	OrganisationID uuid.UUID
 	Role           string
+	SessionID      uuid.UUID
 }
 
 // authContextKey is an unexported type so no other package's

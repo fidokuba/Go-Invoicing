@@ -23,6 +23,7 @@ var ErrSettingsNotFound = errors.New("settings not found")
 // care which. Same pattern as invoice.dbExecutor.
 type dbExecutor interface {
 	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
@@ -179,6 +180,48 @@ func (r *PostgresSettingsRepository) scanOne(
 	}
 
 	return &s, nil
+}
+
+// Update persists InvoicePrefix, Currency and PaymentTerms in one
+// statement, tenant-scoped by organisationID, and scans the resulting
+// updated_at back onto settings via RETURNING — matching every other
+// Update in this project (see OrganisationRepository.Update). It
+// deliberately never touches invoice_number — see SettingsRepository
+// .Update's own comment for why that column belongs solely to the
+// locked allocate-and-increment sequence.
+func (r *PostgresSettingsRepository) Update(
+	ctx context.Context,
+	organisationID uuid.UUID,
+	settings *Settings,
+) error {
+	const query = `
+		UPDATE settings
+		SET invoice_prefix = $1,
+			currency        = $2,
+			payment_terms   = $3,
+			updated_at      = NOW()
+		WHERE organisation_id = $4
+			AND deleted_at IS NULL
+		RETURNING updated_at
+	`
+
+	err := r.db.QueryRow(
+		ctx,
+		query,
+		settings.InvoicePrefix,
+		settings.Currency,
+		settings.PaymentTerms,
+		organisationID,
+	).Scan(&settings.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrSettingsNotFound
+		}
+
+		return fmt.Errorf("update settings: %w", err)
+	}
+
+	return nil
 }
 
 // UpdateInvoiceNumber persists a new invoice_number for the organisation.

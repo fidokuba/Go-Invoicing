@@ -239,3 +239,96 @@ func TestPostgresSettingsRepository_GetForUpdate_LocksRow(t *testing.T) {
 	// before the test returns, so nothing outlives this test.
 	<-done
 }
+
+// TestPostgresSettingsRepository_Update_PersistsFieldsAndPopulatesUpdatedAt
+// proves Update actually writes InvoicePrefix/Currency/PaymentTerms to
+// PostgreSQL (read back through a fresh GetByOrganisationID, not the
+// in-memory struct), scans a real, later UpdatedAt back onto its caller
+// (the Milestone 8 Part 2 timestamp-fix pattern applied here too), and
+// never touches InvoiceNumber.
+func TestPostgresSettingsRepository_Update_PersistsFieldsAndPopulatesUpdatedAt(t *testing.T) {
+	db := newTestPool(t)
+	ctx := context.Background()
+
+	organisationID := createTestOrganisation(t, db)
+	settings := createTestSettings(t, db, organisationID)
+	repository := NewPostgresSettingsRepository(db)
+
+	time.Sleep(10 * time.Millisecond)
+
+	updated := &Settings{
+		InvoicePrefix: "ACME-",
+		Currency:      "EUR",
+		PaymentTerms:  14,
+		// InvoiceNumber deliberately left at the zero value — Update must
+		// never write it regardless of what this struct carries.
+	}
+	if err := repository.Update(ctx, organisationID, updated); err != nil {
+		t.Fatalf("update settings: %v", err)
+	}
+
+	if updated.UpdatedAt.IsZero() {
+		t.Fatal("expected Update to populate UpdatedAt, got the zero value")
+	}
+	if !updated.UpdatedAt.After(settings.CreatedAt) {
+		t.Errorf("expected UpdatedAt (%v) to be after CreatedAt (%v)", updated.UpdatedAt, settings.CreatedAt)
+	}
+
+	fetched, err := repository.GetByOrganisationID(ctx, organisationID)
+	if err != nil {
+		t.Fatalf("get settings: %v", err)
+	}
+
+	if fetched.InvoicePrefix != "ACME-" || fetched.Currency != "EUR" || fetched.PaymentTerms != 14 {
+		t.Errorf("expected updated fields to persist, got %+v", fetched)
+	}
+	if fetched.InvoiceNumber != 0 {
+		t.Errorf("expected InvoiceNumber to remain untouched at 0, got %d", fetched.InvoiceNumber)
+	}
+	if !updated.UpdatedAt.Equal(fetched.UpdatedAt) {
+		t.Errorf("expected Update's returned UpdatedAt %v to match the persisted value %v", updated.UpdatedAt, fetched.UpdatedAt)
+	}
+}
+
+// TestPostgresSettingsRepository_Update_OnlyAffectsOwnOrganisation
+// proves Update's WHERE organisation_id = $organisationID clause scopes
+// the write to exactly one row — a second, untouched organisation's
+// settings must be completely unaffected.
+func TestPostgresSettingsRepository_Update_OnlyAffectsOwnOrganisation(t *testing.T) {
+	db := newTestPool(t)
+	ctx := context.Background()
+
+	orgA := createTestOrganisation(t, db)
+	orgB := createTestOrganisation(t, db)
+	createTestSettings(t, db, orgA)
+	createTestSettings(t, db, orgB)
+
+	repository := NewPostgresSettingsRepository(db)
+
+	if err := repository.Update(ctx, orgA, &Settings{InvoicePrefix: "A-ONLY-", Currency: "USD", PaymentTerms: 7}); err != nil {
+		t.Fatalf("update org A: %v", err)
+	}
+
+	fetchedB, err := repository.GetByOrganisationID(ctx, orgB)
+	if err != nil {
+		t.Fatalf("get org B settings: %v", err)
+	}
+	if fetchedB.Currency != "GBP" || fetchedB.InvoicePrefix != "INV-" || fetchedB.PaymentTerms != 30 {
+		t.Errorf("expected org B's settings to remain the untouched default, got %+v", fetchedB)
+	}
+}
+
+// TestPostgresSettingsRepository_Update_NotFound proves Update against
+// an organisation with no settings row returns ErrSettingsNotFound
+// rather than silently succeeding.
+func TestPostgresSettingsRepository_Update_NotFound(t *testing.T) {
+	db := newTestPool(t)
+	ctx := context.Background()
+
+	repository := NewPostgresSettingsRepository(db)
+
+	err := repository.Update(ctx, uuid.New(), &Settings{InvoicePrefix: "X-", Currency: "GBP", PaymentTerms: 30})
+	if !errors.Is(err, ErrSettingsNotFound) {
+		t.Fatalf("expected ErrSettingsNotFound, got %v", err)
+	}
+}
