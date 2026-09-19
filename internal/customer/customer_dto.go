@@ -41,8 +41,8 @@ func toCustomerResponse(c *Customer) CustomerResponse {
 		CompanyName:    c.CompanyName,
 		TaxID:          c.TaxID,
 		Status:         c.Status,
-		CreatedAt:      c.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:      c.UpdatedAt.Format(time.RFC3339),
+		CreatedAt:      c.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:      c.UpdatedAt.UTC().Format(time.RFC3339),
 	}
 }
 
@@ -88,7 +88,7 @@ func toAddressResponse(a *Address) AddressResponse {
 		State:      a.State,
 		PostalCode: a.PostalCode,
 		Country:    a.Country,
-		CreatedAt:  a.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:  a.UpdatedAt.Format(time.RFC3339),
+		CreatedAt:  a.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:  a.UpdatedAt.UTC().Format(time.RFC3339),
 	}
 }

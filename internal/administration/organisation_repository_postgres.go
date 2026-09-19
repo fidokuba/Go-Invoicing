@@ -42,9 +42,15 @@ func (r *PostgresOrganisationRepository) WithTx(tx pgx.Tx) OrganisationRepositor
 	}
 }
 
-// Create inserts a new organisation row. created_at and updated_at are left
-// to PostgreSQL's DEFAULT NOW(), and deleted_at stays NULL until the
-// organisation is soft-deleted.
+// Create inserts a new organisation row. created_at and updated_at are
+// left to PostgreSQL's DEFAULT NOW(), and deleted_at stays NULL until the
+// organisation is soft-deleted — but the two DB-generated values are
+// scanned straight back onto organisation via RETURNING, rather than
+// left at their Go zero value, so the struct this method mutates
+// accurately reflects the row now persisted. A caller that builds an API
+// response directly from this same *Organisation (as
+// RegistrationService.Register and OrganisationService.Create both do)
+// gets real timestamps without a second SELECT.
 func (r *PostgresOrganisationRepository) Create(
 	ctx context.Context,
 	organisation *Organisation,
@@ -67,9 +73,10 @@ func (r *PostgresOrganisationRepository) Create(
 		VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
 		)
+		RETURNING created_at, updated_at
 	`
 
-	_, err := r.db.Exec(
+	err := r.db.QueryRow(
 		ctx,
 		query,
 		organisation.ID,
@@ -84,7 +91,7 @@ func (r *PostgresOrganisationRepository) Create(
 		organisation.PostalCode,
 		organisation.Country,
 		organisation.TaxID,
-	)
+	).Scan(&organisation.CreatedAt, &organisation.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("create organisation: %w", err)
 	}
@@ -157,7 +164,10 @@ func (r *PostgresOrganisationRepository) GetByID(
 // Logo is intentionally absent from the SET list, so it is never touched
 // here — see OrganisationRepository.Update's own comment. updated_at is
 // bumped explicitly (Create leaves it to the column default, but this is
-// a genuine change, not an initial insert).
+// a genuine change, not an initial insert) and scanned back onto
+// organisation via RETURNING, so the value OrganisationService.Update
+// returns to its caller reflects this write, not the stale value it read
+// before applying the patch.
 func (r *PostgresOrganisationRepository) Update(
 	ctx context.Context,
 	organisationID uuid.UUID,
@@ -179,9 +189,10 @@ func (r *PostgresOrganisationRepository) Update(
 			updated_at  = NOW()
 		WHERE id = $11
 			AND deleted_at IS NULL
+		RETURNING updated_at
 	`
 
-	tag, err := r.db.Exec(
+	err := r.db.QueryRow(
 		ctx,
 		query,
 		organisation.Name,
@@ -195,13 +206,13 @@ func (r *PostgresOrganisationRepository) Update(
 		organisation.Country,
 		organisation.TaxID,
 		organisationID,
-	)
+	).Scan(&organisation.UpdatedAt)
 	if err != nil {
-		return fmt.Errorf("update organisation: %w", err)
-	}
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrOrganisationNotFound
+		}
 
-	if tag.RowsAffected() == 0 {
-		return ErrOrganisationNotFound
+		return fmt.Errorf("update organisation: %w", err)
 	}
 
 	return nil

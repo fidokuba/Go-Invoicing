@@ -41,7 +41,10 @@ func NewPostgresProductRepository(db *pgxpool.Pool) *PostgresProductRepository {
 
 // Create inserts a new product row. created_at and updated_at are left to
 // PostgreSQL's DEFAULT NOW(), and deleted_at stays NULL until the product
-// is soft-deleted.
+// is soft-deleted — the two DB-generated values are scanned straight
+// back onto product via RETURNING, so a caller building an API response
+// directly from this same *Product gets real timestamps without a
+// second SELECT.
 //
 // SKU uniqueness within an organisation is enforced by the
 // products_organisation_sku_unique database constraint, not by a
@@ -66,9 +69,10 @@ func (r *PostgresProductRepository) Create(
 		VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8
 		)
+		RETURNING created_at, updated_at
 	`
 
-	_, err := r.db.Exec(
+	err := r.db.QueryRow(
 		ctx,
 		query,
 		product.ID,
@@ -79,7 +83,7 @@ func (r *PostgresProductRepository) Create(
 		product.Price,
 		product.Category,
 		product.IsActive,
-	)
+	).Scan(&product.CreatedAt, &product.UpdatedAt)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == postgresUniqueViolation {

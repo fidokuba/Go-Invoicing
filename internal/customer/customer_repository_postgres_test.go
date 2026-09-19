@@ -97,6 +97,60 @@ func TestPostgresCustomerRepository_CreateAndGetByID(t *testing.T) {
 	}
 }
 
+// TestPostgresCustomerRepository_Create_PopulatesTimestamps is the
+// Milestone 8 Part 2 regression test for the systemic Create-response
+// timestamp defect Part 1 found.
+func TestPostgresCustomerRepository_Create_PopulatesTimestamps(t *testing.T) {
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL is not set")
+	}
+
+	ctx := context.Background()
+
+	db, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("create database pool: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	organisationID := createTestOrganisation(t, db)
+	repository := NewPostgresCustomerRepository(db)
+
+	c := &Customer{
+		ID:             uuid.New(),
+		OrganisationID: organisationID,
+		Name:           "Timestamp Test Customer",
+		Status:         "active",
+	}
+
+	if err := repository.Create(ctx, c); err != nil {
+		t.Fatalf("create customer: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Exec(context.Background(), "DELETE FROM customers WHERE id = $1", c.ID)
+	})
+
+	if c.CreatedAt.IsZero() {
+		t.Error("expected CreatedAt to be populated by Create, got the zero value")
+	}
+	if c.UpdatedAt.IsZero() {
+		t.Error("expected UpdatedAt to be populated by Create, got the zero value")
+	}
+
+	fetched, err := repository.GetByID(ctx, organisationID, c.ID)
+	if err != nil {
+		t.Fatalf("get customer: %v", err)
+	}
+
+	if !c.CreatedAt.Equal(fetched.CreatedAt) {
+		t.Errorf("expected Create's returned CreatedAt %v to match the persisted value %v", c.CreatedAt, fetched.CreatedAt)
+	}
+	if !c.UpdatedAt.Equal(fetched.UpdatedAt) {
+		t.Errorf("expected Create's returned UpdatedAt %v to match the persisted value %v", c.UpdatedAt, fetched.UpdatedAt)
+	}
+}
+
 func TestPostgresCustomerRepository_GetByID_NotFound(t *testing.T) {
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {

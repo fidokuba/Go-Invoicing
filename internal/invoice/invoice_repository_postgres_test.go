@@ -300,6 +300,61 @@ func TestPostgresInvoiceRepository_CreateAndGetByID(t *testing.T) {
 	}
 }
 
+// TestPostgresInvoiceRepository_Create_PopulatesTimestamps is the
+// Milestone 8 Part 2 regression test for the systemic Create-response
+// timestamp defect Part 1 found.
+func TestPostgresInvoiceRepository_Create_PopulatesTimestamps(t *testing.T) {
+	db := newTestPool(t)
+	ctx := context.Background()
+
+	organisationID := createTestOrganisation(t, db)
+	customerID := createTestCustomer(t, db, organisationID)
+
+	repository := NewPostgresInvoiceRepository(db)
+
+	issueDate, _ := parseRequiredDate("2026-01-01", nil, nil)
+	dueDate, _ := parseRequiredDate("2026-01-31", nil, nil)
+
+	inv := &Invoice{
+		ID:             uuid.New(),
+		OrganisationID: organisationID,
+		CustomerID:     customerID,
+		InvoiceNumber:  "INV-TIMESTAMP-1",
+		IssueDate:      issueDate,
+		DueDate:        dueDate,
+		Subtotal:       1000,
+		VATTotal:       200,
+		Total:          1200,
+		Status:         InvoiceStatusDraft,
+	}
+
+	if err := repository.Create(ctx, inv); err != nil {
+		t.Fatalf("create invoice: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Exec(context.Background(), "DELETE FROM invoices WHERE id = $1", inv.ID)
+	})
+
+	if inv.CreatedAt.IsZero() {
+		t.Error("expected CreatedAt to be populated by Create, got the zero value")
+	}
+	if inv.UpdatedAt.IsZero() {
+		t.Error("expected UpdatedAt to be populated by Create, got the zero value")
+	}
+
+	fetched, err := repository.GetByID(ctx, organisationID, inv.ID)
+	if err != nil {
+		t.Fatalf("get invoice: %v", err)
+	}
+
+	if !inv.CreatedAt.Equal(fetched.CreatedAt) {
+		t.Errorf("expected Create's returned CreatedAt %v to match the persisted value %v", inv.CreatedAt, fetched.CreatedAt)
+	}
+	if !inv.UpdatedAt.Equal(fetched.UpdatedAt) {
+		t.Errorf("expected Create's returned UpdatedAt %v to match the persisted value %v", inv.UpdatedAt, fetched.UpdatedAt)
+	}
+}
+
 func TestPostgresInvoiceRepository_GetByID_NotFound(t *testing.T) {
 	db := newTestPool(t)
 	ctx := context.Background()

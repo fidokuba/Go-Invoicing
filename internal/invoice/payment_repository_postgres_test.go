@@ -108,6 +108,59 @@ func TestPostgresPaymentRepository_CreateAndGetByInvoiceID(t *testing.T) {
 	}
 }
 
+// TestPostgresPaymentRepository_Create_PopulatesTimestamps is the
+// Milestone 8 Part 2 regression test for the systemic Create-response
+// timestamp defect Part 1 found: Create's INSERT ... SELECT ...
+// RETURNING must still scan created_at/updated_at back onto the
+// caller's *Payment.
+func TestPostgresPaymentRepository_Create_PopulatesTimestamps(t *testing.T) {
+	db := newTestPool(t)
+	ctx := context.Background()
+
+	organisationID := createTestOrganisation(t, db)
+	customerID := createTestCustomer(t, db, organisationID)
+	invoiceID := createTestInvoice(t, db, organisationID, customerID)
+
+	repository := NewPostgresPaymentRepository(db)
+
+	payment := &Payment{
+		ID:            uuid.New(),
+		InvoiceID:     invoiceID,
+		Amount:        1000,
+		PaymentMethod: "cash",
+		PaymentDate:   time.Now().UTC().Truncate(24 * time.Hour),
+	}
+
+	if err := repository.Create(ctx, organisationID, payment); err != nil {
+		t.Fatalf("create payment: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Exec(context.Background(), "DELETE FROM payments WHERE id = $1", payment.ID)
+	})
+
+	if payment.CreatedAt.IsZero() {
+		t.Error("expected CreatedAt to be populated by Create, got the zero value")
+	}
+	if payment.UpdatedAt.IsZero() {
+		t.Error("expected UpdatedAt to be populated by Create, got the zero value")
+	}
+
+	payments, err := repository.GetByInvoiceID(ctx, organisationID, invoiceID)
+	if err != nil {
+		t.Fatalf("get payments: %v", err)
+	}
+	if len(payments) != 1 {
+		t.Fatalf("expected 1 payment, got %d", len(payments))
+	}
+
+	if !payment.CreatedAt.Equal(payments[0].CreatedAt) {
+		t.Errorf("expected Create's returned CreatedAt %v to match the persisted value %v", payment.CreatedAt, payments[0].CreatedAt)
+	}
+	if !payment.UpdatedAt.Equal(payments[0].UpdatedAt) {
+		t.Errorf("expected Create's returned UpdatedAt %v to match the persisted value %v", payment.UpdatedAt, payments[0].UpdatedAt)
+	}
+}
+
 func TestPostgresPaymentRepository_GetByInvoiceID_Empty(t *testing.T) {
 	db := newTestPool(t)
 	ctx := context.Background()

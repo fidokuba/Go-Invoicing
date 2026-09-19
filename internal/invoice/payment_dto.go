@@ -86,7 +86,7 @@ func toPaymentResponse(p *Payment) PaymentResponse {
 		PaymentDate:   p.PaymentDate.Format(dateLayout),
 		Reference:     p.Reference,
 		Notes:         p.Notes,
-		CreatedAt:     p.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:     p.UpdatedAt.Format(time.RFC3339),
+		CreatedAt:     p.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:     p.UpdatedAt.UTC().Format(time.RFC3339),
 	}
 }

@@ -51,9 +51,12 @@ func (r *PostgresCustomerRepository) WithTx(tx pgx.Tx) CustomerRepository {
 	}
 }
 
-// Create inserts a new customer row. created_at and updated_at are left to
-// PostgreSQL's DEFAULT NOW(), and deleted_at stays NULL until the customer
-// is soft-deleted.
+// Create inserts a new customer row. created_at and updated_at are left
+// to PostgreSQL's DEFAULT NOW(), and deleted_at stays NULL until the
+// customer is soft-deleted — the two DB-generated values are scanned
+// straight back onto customer via RETURNING, so a caller building an API
+// response directly from this same *Customer gets real timestamps
+// without a second SELECT.
 func (r *PostgresCustomerRepository) Create(
 	ctx context.Context,
 	customer *Customer,
@@ -72,9 +75,10 @@ func (r *PostgresCustomerRepository) Create(
 		VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8
 		)
+		RETURNING created_at, updated_at
 	`
 
-	_, err := r.db.Exec(
+	err := r.db.QueryRow(
 		ctx,
 		query,
 		customer.ID,
@@ -85,7 +89,7 @@ func (r *PostgresCustomerRepository) Create(
 		customer.CompanyName,
 		customer.TaxID,
 		customer.Status,
-	)
+	).Scan(&customer.CreatedAt, &customer.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("create customer: %w", err)
 	}

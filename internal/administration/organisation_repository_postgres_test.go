@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -178,6 +179,108 @@ func TestPostgresOrganisationRepository_Update_OnlyAffectsOwnOrganisation(t *tes
 	}
 	if fetchedB.Name != "Organisation B" {
 		t.Errorf("expected organisation B's name to remain %q, got %q", "Organisation B", fetchedB.Name)
+	}
+}
+
+// TestPostgresOrganisationRepository_Create_PopulatesTimestamps is the
+// Milestone 8 Part 2 regression test for the systemic Create-response
+// timestamp defect Part 1 found: Create must scan created_at/updated_at
+// straight back onto the struct it was given (via RETURNING), not leave
+// them at their Go zero value for the caller to build a response from.
+func TestPostgresOrganisationRepository_Create_PopulatesTimestamps(t *testing.T) {
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL is not set")
+	}
+
+	ctx := context.Background()
+
+	db, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("create database pool: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	repository := NewPostgresOrganisationRepository(db)
+
+	organisation := &Organisation{ID: uuid.New(), Name: "Timestamp Test Org"}
+	if err := repository.Create(ctx, organisation); err != nil {
+		t.Fatalf("create organisation: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Exec(context.Background(), "DELETE FROM organisations WHERE id = $1", organisation.ID)
+	})
+
+	if organisation.CreatedAt.IsZero() {
+		t.Error("expected CreatedAt to be populated by Create, got the zero value")
+	}
+	if organisation.UpdatedAt.IsZero() {
+		t.Error("expected UpdatedAt to be populated by Create, got the zero value")
+	}
+
+	fetched, err := repository.GetByID(ctx, organisation.ID)
+	if err != nil {
+		t.Fatalf("get organisation: %v", err)
+	}
+
+	if !organisation.CreatedAt.Equal(fetched.CreatedAt) {
+		t.Errorf("expected Create's returned CreatedAt %v to match the persisted value %v", organisation.CreatedAt, fetched.CreatedAt)
+	}
+	if !organisation.UpdatedAt.Equal(fetched.UpdatedAt) {
+		t.Errorf("expected Create's returned UpdatedAt %v to match the persisted value %v", organisation.UpdatedAt, fetched.UpdatedAt)
+	}
+}
+
+// TestPostgresOrganisationRepository_Update_PopulatesUpdatedAt proves
+// Update's own timestamp fix: the UpdatedAt this method scans back onto
+// its caller's struct must reflect this write, not the value read before
+// the patch was applied, and must be strictly after CreatedAt.
+func TestPostgresOrganisationRepository_Update_PopulatesUpdatedAt(t *testing.T) {
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL is not set")
+	}
+
+	ctx := context.Background()
+
+	db, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("create database pool: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	repository := NewPostgresOrganisationRepository(db)
+
+	organisation := &Organisation{ID: uuid.New(), Name: "Update Timestamp Org"}
+	if err := repository.Create(ctx, organisation); err != nil {
+		t.Fatalf("create organisation: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Exec(context.Background(), "DELETE FROM organisations WHERE id = $1", organisation.ID)
+	})
+
+	time.Sleep(10 * time.Millisecond) // ensure a measurably later NOW()
+
+	updated := &Organisation{Name: "Renamed Org"}
+	if err := repository.Update(ctx, organisation.ID, updated); err != nil {
+		t.Fatalf("update organisation: %v", err)
+	}
+
+	if updated.UpdatedAt.IsZero() {
+		t.Fatal("expected Update to populate UpdatedAt, got the zero value")
+	}
+
+	if !updated.UpdatedAt.After(organisation.CreatedAt) {
+		t.Errorf("expected UpdatedAt (%v) to be after the original CreatedAt (%v)", updated.UpdatedAt, organisation.CreatedAt)
+	}
+
+	fetched, err := repository.GetByID(ctx, organisation.ID)
+	if err != nil {
+		t.Fatalf("get organisation: %v", err)
+	}
+
+	if !updated.UpdatedAt.Equal(fetched.UpdatedAt) {
+		t.Errorf("expected Update's returned UpdatedAt %v to match the persisted value %v", updated.UpdatedAt, fetched.UpdatedAt)
 	}
 }
 

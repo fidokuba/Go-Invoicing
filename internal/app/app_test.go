@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +17,11 @@ import (
 
 	admin "go-invoicing/internal/administration"
 )
+
+// testLogger discards every record — these tests want a real *slog.Logger
+// (Recover's signature requires one), not test output noise from panic
+// recovery paths nothing in this suite deliberately triggers.
+var testLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 // This is intentionally the first mux/application-level integration test
 // in this project: every other package tests its handlers directly,
@@ -48,7 +55,7 @@ func newTestApp(t *testing.T) (http.Handler, *pgxpool.Pool) {
 	t.Helper()
 
 	db := newTestPool(t)
-	return New(db).Handler(), db
+	return New(db, testLogger).Handler(), db
 }
 
 func TestApp_PublicHealthRoutes_WorkWithoutAuthorization(t *testing.T) {
@@ -68,6 +75,43 @@ func TestApp_PublicHealthRoutes_WorkWithoutAuthorization(t *testing.T) {
 	}
 }
 
+// TestApp_UnversionedRoutes_NoLongerWork is the Milestone 8 Part 2
+// regression test for the /api/v1 route move (section 1): every route
+// that used to live at a bare, unversioned path must now 404 there — the
+// application only answers at its versioned path — while /health and
+// /health/db (deliberately excluded from versioning) remain reachable
+// exactly where they always were.
+func TestApp_UnversionedRoutes_NoLongerWork(t *testing.T) {
+	handler, _ := newTestApp(t)
+
+	unversionedPaths := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/auth/login"},
+		{http.MethodPost, "/register"},
+		{http.MethodGet, "/organisation"},
+		{http.MethodPost, "/users"},
+		{http.MethodPost, "/customers"},
+		{http.MethodPost, "/products"},
+		{http.MethodPost, "/invoices"},
+	}
+
+	for _, route := range unversionedPaths {
+		t.Run(route.method+" "+route.path, func(t *testing.T) {
+			request := httptest.NewRequest(route.method, route.path, bytes.NewBufferString(`{}`))
+			request.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+
+			handler.ServeHTTP(recorder, request)
+
+			if recorder.Code != http.StatusNotFound {
+				t.Fatalf("expected status %d (unversioned route must no longer exist), got %d (body: %s)", http.StatusNotFound, recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
 // TestApp_PostAuthLogin_IsNotInterceptedByMiddleware sends no Authorization
 // header at all. If this route were mistakenly wrapped by
 // AuthMiddleware, the response would be the middleware's generic 401
@@ -78,7 +122,8 @@ func TestApp_PostAuthLogin_IsNotInterceptedByMiddleware(t *testing.T) {
 	handler, _ := newTestApp(t)
 
 	body := bytes.NewBufferString(`{}`)
-	request := httptest.NewRequest(http.MethodPost, "/auth/login", body)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", body)
+	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 
 	handler.ServeHTTP(recorder, request)
@@ -98,7 +143,8 @@ func TestApp_PostRegister_IsNotInterceptedByMiddleware(t *testing.T) {
 	handler, _ := newTestApp(t)
 
 	body := bytes.NewBufferString(`{}`)
-	request := httptest.NewRequest(http.MethodPost, "/register", body)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/register", body)
+	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 
 	handler.ServeHTTP(recorder, request)
@@ -120,7 +166,8 @@ func TestApp_OrganisationsRouteRemoved(t *testing.T) {
 	handler, _ := newTestApp(t)
 
 	body := bytes.NewBufferString(`{"name":"Should Not Work"}`)
-	request := httptest.NewRequest(http.MethodPost, "/organisations", body)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/organisations", body)
+	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 
 	handler.ServeHTTP(recorder, request)
@@ -137,7 +184,8 @@ func TestApp_PostUsers_RequiresAuthentication(t *testing.T) {
 	handler, _ := newTestApp(t)
 
 	body := bytes.NewBufferString(`{"name":"Should Not Work","email":"nobody@example.com","password":"correct horse battery staple"}`)
-	request := httptest.NewRequest(http.MethodPost, "/users", body)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/users", body)
+	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 
 	handler.ServeHTTP(recorder, request)
@@ -162,22 +210,22 @@ func TestApp_ProtectedRoutes_RejectRequestsWithoutAuthorization(t *testing.T) {
 		method string
 		path   string
 	}{
-		{http.MethodGet, "/organisation"},
-		{http.MethodPatch, "/organisation"},
-		{http.MethodPost, "/users"},
-		{http.MethodGet, "/users/" + id},
-		{http.MethodPost, "/customers"},
-		{http.MethodGet, "/customers/" + id},
-		{http.MethodGet, "/customers/" + id + "/billing-address"},
-		{http.MethodPut, "/customers/" + id + "/billing-address"},
-		{http.MethodPost, "/products"},
-		{http.MethodGet, "/products/" + id},
-		{http.MethodPost, "/invoices"},
-		{http.MethodGet, "/invoices/" + id},
-		{http.MethodPost, "/invoices/" + id + "/send"},
-		{http.MethodPost, "/invoices/" + id + "/payments"},
-		{http.MethodGet, "/invoices/" + id + "/payments"},
-		{http.MethodGet, "/invoices/" + id + "/pdf"},
+		{http.MethodGet, "/api/v1/organisation"},
+		{http.MethodPatch, "/api/v1/organisation"},
+		{http.MethodPost, "/api/v1/users"},
+		{http.MethodGet, "/api/v1/users/" + id},
+		{http.MethodPost, "/api/v1/customers"},
+		{http.MethodGet, "/api/v1/customers/" + id},
+		{http.MethodGet, "/api/v1/customers/" + id + "/billing-address"},
+		{http.MethodPut, "/api/v1/customers/" + id + "/billing-address"},
+		{http.MethodPost, "/api/v1/products"},
+		{http.MethodGet, "/api/v1/products/" + id},
+		{http.MethodPost, "/api/v1/invoices"},
+		{http.MethodGet, "/api/v1/invoices/" + id},
+		{http.MethodPost, "/api/v1/invoices/" + id + "/send"},
+		{http.MethodPost, "/api/v1/invoices/" + id + "/payments"},
+		{http.MethodGet, "/api/v1/invoices/" + id + "/payments"},
+		{http.MethodGet, "/api/v1/invoices/" + id + "/pdf"},
 	}
 
 	for _, route := range protectedRoutes {
@@ -218,7 +266,7 @@ func registerTenant(t *testing.T, handler http.Handler, db *pgxpool.Pool, orgNam
 		"organisation": {"name": "` + orgName + `"},
 		"user": {"name": "` + orgName + ` Admin", "email": "` + adminEmail + `", "password": "` + testPassword + `"}
 	}`)
-	registerRecorder := doRequest(handler, http.MethodPost, "/register", "", registerBody)
+	registerRecorder := doRequest(handler, http.MethodPost, "/api/v1/register", "", registerBody)
 	if registerRecorder.Code != http.StatusCreated {
 		t.Fatalf("register %q: status %d (body: %s)", orgName, registerRecorder.Code, registerRecorder.Body.String())
 	}
@@ -251,7 +299,7 @@ func loginAs(t *testing.T, handler http.Handler, email, password string) string 
 	t.Helper()
 
 	loginBody := bytes.NewBufferString(`{"email":"` + email + `","password":"` + password + `"}`)
-	loginRecorder := doRequest(handler, http.MethodPost, "/auth/login", "", loginBody)
+	loginRecorder := doRequest(handler, http.MethodPost, "/api/v1/auth/login", "", loginBody)
 	if loginRecorder.Code != http.StatusOK {
 		t.Fatalf("login as %q: status %d (body: %s)", email, loginRecorder.Code, loginRecorder.Body.String())
 	}
@@ -271,7 +319,7 @@ func loginAs(t *testing.T, handler http.Handler, email, password string) string 
 // tests expect this to fail, e.g. privilege escalation attempts).
 func createUser(handler http.Handler, actorToken, name, email, role string) *httptest.ResponseRecorder {
 	body := bytes.NewBufferString(`{"name":"` + name + `","email":"` + email + `","password":"` + testPassword + `","role":"` + role + `"}`)
-	return doRequest(handler, http.MethodPost, "/users", actorToken, body)
+	return doRequest(handler, http.MethodPost, "/api/v1/users", actorToken, body)
 }
 
 // createAndLoginUser creates a user as actorToken (expected to succeed)
@@ -321,6 +369,10 @@ func doRequest(handler http.Handler, method, path, token string, body *bytes.Buf
 		body = &bytes.Buffer{}
 	}
 	request := httptest.NewRequest(method, path, body)
+	// Every JSON-bodied endpoint now requires this (Milestone 8 Part 2);
+	// setting it unconditionally is harmless for GET/DELETE-style calls
+	// through this same helper, which never decode a body at all.
+	request.Header.Set("Content-Type", "application/json")
 	if token != "" {
 		request.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -341,7 +393,7 @@ func TestApp_EndToEnd_RegisterLoginThenAccessProtectedRoute(t *testing.T) {
 
 	tenant := registerTenant(t, handler, db, "E2E Test Org", "e2e-admin@example.com")
 
-	orgRecorder := doRequest(handler, http.MethodGet, "/organisation", tenant.token, nil)
+	orgRecorder := doRequest(handler, http.MethodGet, "/api/v1/organisation", tenant.token, nil)
 	if orgRecorder.Code != http.StatusOK {
 		t.Fatalf("GET /organisation: status %d (body: %s)", orgRecorder.Code, orgRecorder.Body.String())
 	}
@@ -356,13 +408,13 @@ func TestApp_EndToEnd_RegisterLoginThenAccessProtectedRoute(t *testing.T) {
 		t.Errorf("expected GET /organisation to return %q, got %q", tenant.organisationID, orgResponse.ID)
 	}
 
-	customerRecorder := doRequest(handler, http.MethodPost, "/customers", tenant.token, bytes.NewBufferString(`{"name":"E2E Customer"}`))
+	customerRecorder := doRequest(handler, http.MethodPost, "/api/v1/customers", tenant.token, bytes.NewBufferString(`{"name":"E2E Customer"}`))
 	if customerRecorder.Code != http.StatusCreated {
 		t.Fatalf("create customer: status %d (body: %s)", customerRecorder.Code, customerRecorder.Body.String())
 	}
 
 	// Without the token, the same routes must reject the request.
-	if recorder := doRequest(handler, http.MethodGet, "/organisation", "", nil); recorder.Code != http.StatusUnauthorized {
+	if recorder := doRequest(handler, http.MethodGet, "/api/v1/organisation", "", nil); recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("expected status %d without a token, got %d", http.StatusUnauthorized, recorder.Code)
 	}
 }
@@ -430,7 +482,7 @@ func TestApp_RoleMatrix_OrganisationUpdate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			recorder := doRequest(handler, http.MethodPatch, "/organisation", tt.actorToken, bytes.NewBufferString(`{"city":"London"}`))
+			recorder := doRequest(handler, http.MethodPatch, "/api/v1/organisation", tt.actorToken, bytes.NewBufferString(`{"city":"London"}`))
 			if recorder.Code != tt.wantStatus {
 				t.Fatalf("expected status %d, got %d (body: %s)", tt.wantStatus, recorder.Code, recorder.Body.String())
 			}
@@ -446,17 +498,17 @@ func TestApp_OrganisationUpdate_EndToEnd(t *testing.T) {
 	handler, db := newTestApp(t)
 	tenant := registerTenant(t, handler, db, "Org Update E2E Org", "org-update-e2e-admin@example.com")
 
-	firstRecorder := doRequest(handler, http.MethodPatch, "/organisation", tenant.token, bytes.NewBufferString(`{"phone":"+44 20 7946 0958"}`))
+	firstRecorder := doRequest(handler, http.MethodPatch, "/api/v1/organisation", tenant.token, bytes.NewBufferString(`{"phone":"+44 20 7946 0958"}`))
 	if firstRecorder.Code != http.StatusOK {
 		t.Fatalf("first update: status %d (body: %s)", firstRecorder.Code, firstRecorder.Body.String())
 	}
 
-	secondRecorder := doRequest(handler, http.MethodPatch, "/organisation", tenant.token, bytes.NewBufferString(`{"email":"contact@org-update-e2e.test"}`))
+	secondRecorder := doRequest(handler, http.MethodPatch, "/api/v1/organisation", tenant.token, bytes.NewBufferString(`{"email":"contact@org-update-e2e.test"}`))
 	if secondRecorder.Code != http.StatusOK {
 		t.Fatalf("second update: status %d (body: %s)", secondRecorder.Code, secondRecorder.Body.String())
 	}
 
-	getRecorder := doRequest(handler, http.MethodGet, "/organisation", tenant.token, nil)
+	getRecorder := doRequest(handler, http.MethodGet, "/api/v1/organisation", tenant.token, nil)
 	if getRecorder.Code != http.StatusOK {
 		t.Fatalf("get organisation: status %d (body: %s)", getRecorder.Code, getRecorder.Body.String())
 	}
@@ -494,14 +546,23 @@ func TestApp_ManagerPrivilegeEscalation_EndToEnd(t *testing.T) {
 		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusForbidden, recorder.Code, recorder.Body.String())
 	}
 
-	if recorder.Body.String() != "forbidden\n" {
-		t.Errorf("expected generic body %q, got %q", "forbidden\n", recorder.Body.String())
+	var forbiddenBody struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&forbiddenBody); err != nil {
+		t.Fatalf("decode forbidden response: %v", err)
+	}
+	if forbiddenBody.Error.Code != "forbidden" || forbiddenBody.Error.Message != "forbidden" {
+		t.Errorf("expected generic {code: forbidden, message: forbidden}, got %+v", forbiddenBody.Error)
 	}
 
 	// The rejected email must not have been consumed — a genuine admin
 	// registration with the same email must still succeed elsewhere,
 	// proving nothing was partially created.
-	loginRecorder := doRequest(handler, http.MethodPost, "/auth/login", "", bytes.NewBufferString(`{"email":"escalation-sneaky-admin@example.com","password":"`+testPassword+`"}`))
+	loginRecorder := doRequest(handler, http.MethodPost, "/api/v1/auth/login", "", bytes.NewBufferString(`{"email":"escalation-sneaky-admin@example.com","password":"`+testPassword+`"}`))
 	if loginRecorder.Code != http.StatusUnauthorized {
 		t.Fatalf("expected login for the never-created user to fail with status %d, got %d", http.StatusUnauthorized, loginRecorder.Code)
 	}
@@ -530,7 +591,7 @@ func TestApp_RoleMatrix_BusinessDataOperationsAvailableToAllRoles(t *testing.T) 
 
 	for _, role := range roles {
 		t.Run(role.name, func(t *testing.T) {
-			customerRecorder := doRequest(handler, http.MethodPost, "/customers", role.token, bytes.NewBufferString(`{"name":"`+role.name+`'s Customer"}`))
+			customerRecorder := doRequest(handler, http.MethodPost, "/api/v1/customers", role.token, bytes.NewBufferString(`{"name":"`+role.name+`'s Customer"}`))
 			if customerRecorder.Code != http.StatusCreated {
 				t.Fatalf("create customer as %s: status %d (body: %s)", role.name, customerRecorder.Code, customerRecorder.Body.String())
 			}
@@ -539,7 +600,7 @@ func TestApp_RoleMatrix_BusinessDataOperationsAvailableToAllRoles(t *testing.T) 
 			}
 			_ = json.NewDecoder(customerRecorder.Body).Decode(&customer)
 
-			if recorder := doRequest(handler, http.MethodGet, "/customers/"+customer.ID, role.token, nil); recorder.Code != http.StatusOK {
+			if recorder := doRequest(handler, http.MethodGet, "/api/v1/customers/"+customer.ID, role.token, nil); recorder.Code != http.StatusOK {
 				t.Fatalf("get customer as %s: status %d (body: %s)", role.name, recorder.Code, recorder.Body.String())
 			}
 
@@ -547,16 +608,16 @@ func TestApp_RoleMatrix_BusinessDataOperationsAvailableToAllRoles(t *testing.T) 
 			// create/read a customer's billing address, same policy as
 			// every other customer/invoice business-data route.
 			billingAddressBody := bytes.NewBufferString(`{"street":"1 ` + role.name + ` Way","city":"London","postalCode":"E1 6AN","country":"GB"}`)
-			billingAddressRecorder := doRequest(handler, http.MethodPut, "/customers/"+customer.ID+"/billing-address", role.token, billingAddressBody)
+			billingAddressRecorder := doRequest(handler, http.MethodPut, "/api/v1/customers/"+customer.ID+"/billing-address", role.token, billingAddressBody)
 			if billingAddressRecorder.Code != http.StatusOK {
 				t.Fatalf("put billing address as %s: status %d (body: %s)", role.name, billingAddressRecorder.Code, billingAddressRecorder.Body.String())
 			}
 
-			if recorder := doRequest(handler, http.MethodGet, "/customers/"+customer.ID+"/billing-address", role.token, nil); recorder.Code != http.StatusOK {
+			if recorder := doRequest(handler, http.MethodGet, "/api/v1/customers/"+customer.ID+"/billing-address", role.token, nil); recorder.Code != http.StatusOK {
 				t.Fatalf("get billing address as %s: status %d (body: %s)", role.name, recorder.Code, recorder.Body.String())
 			}
 
-			productRecorder := doRequest(handler, http.MethodPost, "/products", role.token, bytes.NewBufferString(`{"name":"`+role.name+`'s Product","sku":"SKU-`+role.name+`","price":500}`))
+			productRecorder := doRequest(handler, http.MethodPost, "/api/v1/products", role.token, bytes.NewBufferString(`{"name":"`+role.name+`'s Product","sku":"SKU-`+role.name+`","price":500}`))
 			if productRecorder.Code != http.StatusCreated {
 				t.Fatalf("create product as %s: status %d (body: %s)", role.name, productRecorder.Code, productRecorder.Body.String())
 			}
@@ -565,7 +626,7 @@ func TestApp_RoleMatrix_BusinessDataOperationsAvailableToAllRoles(t *testing.T) 
 			}
 			_ = json.NewDecoder(productRecorder.Body).Decode(&product)
 
-			if recorder := doRequest(handler, http.MethodGet, "/products/"+product.ID, role.token, nil); recorder.Code != http.StatusOK {
+			if recorder := doRequest(handler, http.MethodGet, "/api/v1/products/"+product.ID, role.token, nil); recorder.Code != http.StatusOK {
 				t.Fatalf("get product as %s: status %d (body: %s)", role.name, recorder.Code, recorder.Body.String())
 			}
 
@@ -575,7 +636,7 @@ func TestApp_RoleMatrix_BusinessDataOperationsAvailableToAllRoles(t *testing.T) 
 				"dueDate": "2026-01-31",
 				"lines": [{"description": "Service", "quantity": 1, "unitPrice": 1000, "vatRate": 0}]
 			}`)
-			invoiceRecorder := doRequest(handler, http.MethodPost, "/invoices", role.token, invoiceBody)
+			invoiceRecorder := doRequest(handler, http.MethodPost, "/api/v1/invoices", role.token, invoiceBody)
 			if invoiceRecorder.Code != http.StatusCreated {
 				t.Fatalf("create invoice as %s: status %d (body: %s)", role.name, invoiceRecorder.Code, invoiceRecorder.Body.String())
 			}
@@ -584,31 +645,31 @@ func TestApp_RoleMatrix_BusinessDataOperationsAvailableToAllRoles(t *testing.T) 
 			}
 			_ = json.NewDecoder(invoiceRecorder.Body).Decode(&invoice)
 
-			if recorder := doRequest(handler, http.MethodGet, "/invoices/"+invoice.ID, role.token, nil); recorder.Code != http.StatusOK {
+			if recorder := doRequest(handler, http.MethodGet, "/api/v1/invoices/"+invoice.ID, role.token, nil); recorder.Code != http.StatusOK {
 				t.Fatalf("get invoice as %s: status %d (body: %s)", role.name, recorder.Code, recorder.Body.String())
 			}
 
 			// A newly-created invoice is Draft and cannot accept a payment
 			// (Milestone 5) — send it first. This also proves all three
 			// roles may use the new Send endpoint.
-			sendRecorder := doRequest(handler, http.MethodPost, "/invoices/"+invoice.ID+"/send", role.token, nil)
+			sendRecorder := doRequest(handler, http.MethodPost, "/api/v1/invoices/"+invoice.ID+"/send", role.token, nil)
 			if sendRecorder.Code != http.StatusOK {
 				t.Fatalf("send invoice as %s: status %d (body: %s)", role.name, sendRecorder.Code, sendRecorder.Body.String())
 			}
 
-			paymentRecorder := doRequest(handler, http.MethodPost, "/invoices/"+invoice.ID+"/payments", role.token, bytes.NewBufferString(`{"amount":100,"paymentMethod":"cash","paymentDate":"2026-01-15"}`))
+			paymentRecorder := doRequest(handler, http.MethodPost, "/api/v1/invoices/"+invoice.ID+"/payments", role.token, bytes.NewBufferString(`{"amount":100,"paymentMethod":"cash","paymentDate":"2026-01-15"}`))
 			if paymentRecorder.Code != http.StatusCreated {
 				t.Fatalf("create payment as %s: status %d (body: %s)", role.name, paymentRecorder.Code, paymentRecorder.Body.String())
 			}
 
-			if recorder := doRequest(handler, http.MethodGet, "/invoices/"+invoice.ID+"/payments", role.token, nil); recorder.Code != http.StatusOK {
+			if recorder := doRequest(handler, http.MethodGet, "/api/v1/invoices/"+invoice.ID+"/payments", role.token, nil); recorder.Code != http.StatusOK {
 				t.Fatalf("get payments as %s: status %d (body: %s)", role.name, recorder.Code, recorder.Body.String())
 			}
 
 			// PDF generation (Milestone 7 Part 3): all three roles may
 			// download an invoice's PDF, same policy as every other
 			// invoice route.
-			pdfRecorder := doRequest(handler, http.MethodGet, "/invoices/"+invoice.ID+"/pdf", role.token, nil)
+			pdfRecorder := doRequest(handler, http.MethodGet, "/api/v1/invoices/"+invoice.ID+"/pdf", role.token, nil)
 			if pdfRecorder.Code != http.StatusOK {
 				t.Fatalf("get invoice pdf as %s: status %d (body: %s)", role.name, pdfRecorder.Code, pdfRecorder.Body.String())
 			}
@@ -647,7 +708,7 @@ func TestApp_UserRetrieval_SelfVsOther(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			recorder := doRequest(handler, http.MethodGet, "/users/"+tt.targetID, tt.actorToken, nil)
+			recorder := doRequest(handler, http.MethodGet, "/api/v1/users/"+tt.targetID, tt.actorToken, nil)
 			if recorder.Code != tt.wantStatus {
 				t.Fatalf("expected status %d, got %d (body: %s)", tt.wantStatus, recorder.Code, recorder.Body.String())
 			}
@@ -677,7 +738,7 @@ func TestApp_MidSessionDeactivation_TokenStopsWorking(t *testing.T) {
 
 	userID, token := createAndLoginUser(t, handler, tenant.token, "Target", "deactivation-target@example.com", admin.UserRoleUser)
 
-	if recorder := doRequest(handler, http.MethodGet, "/users/"+userID, token, nil); recorder.Code != http.StatusOK {
+	if recorder := doRequest(handler, http.MethodGet, "/api/v1/users/"+userID, token, nil); recorder.Code != http.StatusOK {
 		t.Fatalf("expected status %d before deactivation, got %d (body: %s)", http.StatusOK, recorder.Code, recorder.Body.String())
 	}
 
@@ -685,7 +746,7 @@ func TestApp_MidSessionDeactivation_TokenStopsWorking(t *testing.T) {
 		t.Fatalf("deactivate user: %v", err)
 	}
 
-	recorder := doRequest(handler, http.MethodGet, "/users/"+userID, token, nil)
+	recorder := doRequest(handler, http.MethodGet, "/api/v1/users/"+userID, token, nil)
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("expected status %d after deactivation with the same token, got %d (body: %s)", http.StatusUnauthorized, recorder.Code, recorder.Body.String())
 	}
@@ -701,7 +762,7 @@ func TestApp_MidSessionSoftDeletion_TokenStopsWorking(t *testing.T) {
 
 	userID, token := createAndLoginUser(t, handler, tenant.token, "Target", "softdelete-target@example.com", admin.UserRoleUser)
 
-	if recorder := doRequest(handler, http.MethodGet, "/users/"+userID, token, nil); recorder.Code != http.StatusOK {
+	if recorder := doRequest(handler, http.MethodGet, "/api/v1/users/"+userID, token, nil); recorder.Code != http.StatusOK {
 		t.Fatalf("expected status %d before soft-deletion, got %d (body: %s)", http.StatusOK, recorder.Code, recorder.Body.String())
 	}
 
@@ -709,7 +770,7 @@ func TestApp_MidSessionSoftDeletion_TokenStopsWorking(t *testing.T) {
 		t.Fatalf("soft-delete user: %v", err)
 	}
 
-	recorder := doRequest(handler, http.MethodGet, "/users/"+userID, token, nil)
+	recorder := doRequest(handler, http.MethodGet, "/api/v1/users/"+userID, token, nil)
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("expected status %d after soft-deletion with the same token, got %d (body: %s)", http.StatusUnauthorized, recorder.Code, recorder.Body.String())
 	}
@@ -728,7 +789,7 @@ func TestApp_InvoiceLifecycle_DraftSentPaid(t *testing.T) {
 	handler, db := newTestApp(t)
 	tenant := registerTenant(t, handler, db, "Lifecycle Org", "lifecycle-admin@example.com")
 
-	customerRecorder := doRequest(handler, http.MethodPost, "/customers", tenant.token, bytes.NewBufferString(`{"name":"Lifecycle Customer"}`))
+	customerRecorder := doRequest(handler, http.MethodPost, "/api/v1/customers", tenant.token, bytes.NewBufferString(`{"name":"Lifecycle Customer"}`))
 	if customerRecorder.Code != http.StatusCreated {
 		t.Fatalf("create customer: status %d (body: %s)", customerRecorder.Code, customerRecorder.Body.String())
 	}
@@ -745,7 +806,7 @@ func TestApp_InvoiceLifecycle_DraftSentPaid(t *testing.T) {
 		"dueDate": "` + farFutureDueDate + `",
 		"lines": [{"description": "Consulting", "quantity": 1, "unitPrice": 1000, "vatRate": 0}]
 	}`)
-	invoiceRecorder := doRequest(handler, http.MethodPost, "/invoices", tenant.token, invoiceBody)
+	invoiceRecorder := doRequest(handler, http.MethodPost, "/api/v1/invoices", tenant.token, invoiceBody)
 	if invoiceRecorder.Code != http.StatusCreated {
 		t.Fatalf("create invoice: status %d (body: %s)", invoiceRecorder.Code, invoiceRecorder.Body.String())
 	}
@@ -761,13 +822,13 @@ func TestApp_InvoiceLifecycle_DraftSentPaid(t *testing.T) {
 	}
 
 	// Draft cannot accept payment.
-	paymentAgainstDraft := doRequest(handler, http.MethodPost, "/invoices/"+invoice.ID+"/payments", tenant.token, bytes.NewBufferString(`{"amount":1000,"paymentMethod":"cash","paymentDate":"2026-01-15"}`))
+	paymentAgainstDraft := doRequest(handler, http.MethodPost, "/api/v1/invoices/"+invoice.ID+"/payments", tenant.token, bytes.NewBufferString(`{"amount":1000,"paymentMethod":"cash","paymentDate":"2026-01-15"}`))
 	if paymentAgainstDraft.Code != http.StatusConflict {
 		t.Fatalf("expected status %d paying a Draft invoice, got %d (body: %s)", http.StatusConflict, paymentAgainstDraft.Code, paymentAgainstDraft.Body.String())
 	}
 
 	// Draft -> Sent.
-	sendRecorder := doRequest(handler, http.MethodPost, "/invoices/"+invoice.ID+"/send", tenant.token, nil)
+	sendRecorder := doRequest(handler, http.MethodPost, "/api/v1/invoices/"+invoice.ID+"/send", tenant.token, nil)
 	if sendRecorder.Code != http.StatusOK {
 		t.Fatalf("send invoice: status %d (body: %s)", sendRecorder.Code, sendRecorder.Body.String())
 	}
@@ -786,19 +847,19 @@ func TestApp_InvoiceLifecycle_DraftSentPaid(t *testing.T) {
 	}
 
 	// Repeated send is rejected, not silently successful.
-	repeatSendRecorder := doRequest(handler, http.MethodPost, "/invoices/"+invoice.ID+"/send", tenant.token, nil)
+	repeatSendRecorder := doRequest(handler, http.MethodPost, "/api/v1/invoices/"+invoice.ID+"/send", tenant.token, nil)
 	if repeatSendRecorder.Code != http.StatusConflict {
 		t.Fatalf("expected status %d for a repeated send, got %d (body: %s)", http.StatusConflict, repeatSendRecorder.Code, repeatSendRecorder.Body.String())
 	}
 
 	// Partial payment: still Sent (due date is a year out, never overdue
 	// for the life of this test).
-	partialPaymentRecorder := doRequest(handler, http.MethodPost, "/invoices/"+invoice.ID+"/payments", tenant.token, bytes.NewBufferString(`{"amount":400,"paymentMethod":"cash","paymentDate":"2026-01-15"}`))
+	partialPaymentRecorder := doRequest(handler, http.MethodPost, "/api/v1/invoices/"+invoice.ID+"/payments", tenant.token, bytes.NewBufferString(`{"amount":400,"paymentMethod":"cash","paymentDate":"2026-01-15"}`))
 	if partialPaymentRecorder.Code != http.StatusCreated {
 		t.Fatalf("create partial payment: status %d (body: %s)", partialPaymentRecorder.Code, partialPaymentRecorder.Body.String())
 	}
 
-	afterPartialRecorder := doRequest(handler, http.MethodGet, "/invoices/"+invoice.ID, tenant.token, nil)
+	afterPartialRecorder := doRequest(handler, http.MethodGet, "/api/v1/invoices/"+invoice.ID, tenant.token, nil)
 	var afterPartial struct {
 		Status     string `json:"status"`
 		AmountPaid int64  `json:"amountPaid"`
@@ -812,12 +873,12 @@ func TestApp_InvoiceLifecycle_DraftSentPaid(t *testing.T) {
 	}
 
 	// Final payment: Sent -> Paid.
-	finalPaymentRecorder := doRequest(handler, http.MethodPost, "/invoices/"+invoice.ID+"/payments", tenant.token, bytes.NewBufferString(`{"amount":600,"paymentMethod":"cash","paymentDate":"2026-01-20"}`))
+	finalPaymentRecorder := doRequest(handler, http.MethodPost, "/api/v1/invoices/"+invoice.ID+"/payments", tenant.token, bytes.NewBufferString(`{"amount":600,"paymentMethod":"cash","paymentDate":"2026-01-20"}`))
 	if finalPaymentRecorder.Code != http.StatusCreated {
 		t.Fatalf("create final payment: status %d (body: %s)", finalPaymentRecorder.Code, finalPaymentRecorder.Body.String())
 	}
 
-	afterFinalRecorder := doRequest(handler, http.MethodGet, "/invoices/"+invoice.ID, tenant.token, nil)
+	afterFinalRecorder := doRequest(handler, http.MethodGet, "/api/v1/invoices/"+invoice.ID, tenant.token, nil)
 	var afterFinal struct {
 		Status string `json:"status"`
 	}
@@ -827,7 +888,7 @@ func TestApp_InvoiceLifecycle_DraftSentPaid(t *testing.T) {
 	}
 
 	// Paid invoices can never be (re-)sent.
-	sendAfterPaidRecorder := doRequest(handler, http.MethodPost, "/invoices/"+invoice.ID+"/send", tenant.token, nil)
+	sendAfterPaidRecorder := doRequest(handler, http.MethodPost, "/api/v1/invoices/"+invoice.ID+"/send", tenant.token, nil)
 	if sendAfterPaidRecorder.Code != http.StatusConflict {
 		t.Fatalf("expected status %d sending a Paid invoice, got %d (body: %s)", http.StatusConflict, sendAfterPaidRecorder.Code, sendAfterPaidRecorder.Body.String())
 	}
@@ -850,7 +911,7 @@ func TestApp_CrossTenantIsolation_TwoOrganisations(t *testing.T) {
 
 	// GET /organisation must always resolve to the caller's own
 	// organisation — there is no ID in the URL for a client to manipulate.
-	orgARecorder := doRequest(handler, http.MethodGet, "/organisation", tenantA.token, nil)
+	orgARecorder := doRequest(handler, http.MethodGet, "/api/v1/organisation", tenantA.token, nil)
 	if orgARecorder.Code != http.StatusOK {
 		t.Fatalf("GET /organisation as tenant A: status %d (body: %s)", orgARecorder.Code, orgARecorder.Body.String())
 	}
@@ -866,7 +927,7 @@ func TestApp_CrossTenantIsolation_TwoOrganisations(t *testing.T) {
 
 	// Tenant B creates a customer, a product, and an invoice against that
 	// customer — all as itself, all protected routes.
-	customerBRecorder := doRequest(handler, http.MethodPost, "/customers", tenantB.token, bytes.NewBufferString(`{"name":"Tenant B Customer"}`))
+	customerBRecorder := doRequest(handler, http.MethodPost, "/api/v1/customers", tenantB.token, bytes.NewBufferString(`{"name":"Tenant B Customer"}`))
 	if customerBRecorder.Code != http.StatusCreated {
 		t.Fatalf("create tenant B customer: status %d (body: %s)", customerBRecorder.Code, customerBRecorder.Body.String())
 	}
@@ -877,7 +938,7 @@ func TestApp_CrossTenantIsolation_TwoOrganisations(t *testing.T) {
 		t.Fatalf("decode customer response: %v", err)
 	}
 
-	productBRecorder := doRequest(handler, http.MethodPost, "/products", tenantB.token, bytes.NewBufferString(`{"name":"Tenant B Product","sku":"TB-SKU-1","price":500}`))
+	productBRecorder := doRequest(handler, http.MethodPost, "/api/v1/products", tenantB.token, bytes.NewBufferString(`{"name":"Tenant B Product","sku":"TB-SKU-1","price":500}`))
 	if productBRecorder.Code != http.StatusCreated {
 		t.Fatalf("create tenant B product: status %d (body: %s)", productBRecorder.Code, productBRecorder.Body.String())
 	}
@@ -894,7 +955,7 @@ func TestApp_CrossTenantIsolation_TwoOrganisations(t *testing.T) {
 		"dueDate": "2026-01-31",
 		"lines": [{"description": "Service", "quantity": 1, "unitPrice": 1000, "vatRate": 0}]
 	}`)
-	invoiceBRecorder := doRequest(handler, http.MethodPost, "/invoices", tenantB.token, invoiceBBody)
+	invoiceBRecorder := doRequest(handler, http.MethodPost, "/api/v1/invoices", tenantB.token, invoiceBBody)
 	if invoiceBRecorder.Code != http.StatusCreated {
 		t.Fatalf("create tenant B invoice: status %d (body: %s)", invoiceBRecorder.Code, invoiceBRecorder.Body.String())
 	}
@@ -914,16 +975,16 @@ func TestApp_CrossTenantIsolation_TwoOrganisations(t *testing.T) {
 		path   string
 		body   string // built fresh into a new *bytes.Buffer per request — a *bytes.Buffer is drained after one use
 	}{
-		{"get tenant B customer", http.MethodGet, "/customers/" + customerB.ID, ""},
-		{"get tenant B customer's billing address", http.MethodGet, "/customers/" + customerB.ID + "/billing-address", ""},
-		{"put tenant B customer's billing address", http.MethodPut, "/customers/" + customerB.ID + "/billing-address", `{"street":"Attacker St","city":"X","postalCode":"00000","country":"XX"}`},
-		{"get tenant B product", http.MethodGet, "/products/" + productB.ID, ""},
-		{"get tenant B invoice", http.MethodGet, "/invoices/" + invoiceB.ID, ""},
-		{"get tenant B invoice pdf", http.MethodGet, "/invoices/" + invoiceB.ID + "/pdf", ""},
-		{"send tenant B invoice", http.MethodPost, "/invoices/" + invoiceB.ID + "/send", ""},
-		{"create payment against tenant B invoice", http.MethodPost, "/invoices/" + invoiceB.ID + "/payments", `{"amount":100,"paymentMethod":"cash","paymentDate":"2026-01-15"}`},
-		{"list payments for tenant B invoice", http.MethodGet, "/invoices/" + invoiceB.ID + "/payments", ""},
-		{"get tenant B user", http.MethodGet, "/users/" + tenantB.userID, ""},
+		{"get tenant B customer", http.MethodGet, "/api/v1/customers/" + customerB.ID, ""},
+		{"get tenant B customer's billing address", http.MethodGet, "/api/v1/customers/" + customerB.ID + "/billing-address", ""},
+		{"put tenant B customer's billing address", http.MethodPut, "/api/v1/customers/" + customerB.ID + "/billing-address", `{"street":"Attacker St","city":"X","postalCode":"00000","country":"XX"}`},
+		{"get tenant B product", http.MethodGet, "/api/v1/products/" + productB.ID, ""},
+		{"get tenant B invoice", http.MethodGet, "/api/v1/invoices/" + invoiceB.ID, ""},
+		{"get tenant B invoice pdf", http.MethodGet, "/api/v1/invoices/" + invoiceB.ID + "/pdf", ""},
+		{"send tenant B invoice", http.MethodPost, "/api/v1/invoices/" + invoiceB.ID + "/send", ""},
+		{"create payment against tenant B invoice", http.MethodPost, "/api/v1/invoices/" + invoiceB.ID + "/payments", `{"amount":100,"paymentMethod":"cash","paymentDate":"2026-01-15"}`},
+		{"list payments for tenant B invoice", http.MethodGet, "/api/v1/invoices/" + invoiceB.ID + "/payments", ""},
+		{"get tenant B user", http.MethodGet, "/api/v1/users/" + tenantB.userID, ""},
 	}
 
 	for _, c := range crossTenantCases {
@@ -945,7 +1006,7 @@ func TestApp_CrossTenantIsolation_TwoOrganisations(t *testing.T) {
 
 	// Confirm none of tenant A's attempts actually mutated tenant B's
 	// data: tenant B, acting as itself, must still see zero payments.
-	paymentsRecorder := doRequest(handler, http.MethodGet, "/invoices/"+invoiceB.ID+"/payments", tenantB.token, nil)
+	paymentsRecorder := doRequest(handler, http.MethodGet, "/api/v1/invoices/"+invoiceB.ID+"/payments", tenantB.token, nil)
 	if paymentsRecorder.Code != http.StatusOK {
 		t.Fatalf("list tenant B's own payments: status %d (body: %s)", paymentsRecorder.Code, paymentsRecorder.Body.String())
 	}
@@ -960,7 +1021,7 @@ func TestApp_CrossTenantIsolation_TwoOrganisations(t *testing.T) {
 	// Confirm tenant A's blocked billing-address PUT attempt didn't create
 	// one for tenant B either — tenant B, acting as itself, must still see
 	// no billing address for its own customer.
-	billingAddressRecorder := doRequest(handler, http.MethodGet, "/customers/"+customerB.ID+"/billing-address", tenantB.token, nil)
+	billingAddressRecorder := doRequest(handler, http.MethodGet, "/api/v1/customers/"+customerB.ID+"/billing-address", tenantB.token, nil)
 	if billingAddressRecorder.Code != http.StatusNotFound {
 		t.Fatalf("expected tenant B's customer to still have no billing address after tenant A's blocked attempts, got status %d (body: %s)", billingAddressRecorder.Code, billingAddressRecorder.Body.String())
 	}
@@ -972,7 +1033,7 @@ func TestApp_CrossTenantIsolation_TwoOrganisations(t *testing.T) {
 	// deliberately supplied ?organisationId=<tenant B> query parameter
 	// must still have zero effect on which organisation the new user
 	// lands in.
-	createRecorder := doRequest(handler, http.MethodPost, "/users?organisationId="+tenantB.organisationID, tenantA.token, bytes.NewBufferString(`{"name":"Should Belong To A","email":"cross-tenant-created@example.com","password":"`+testPassword+`"}`))
+	createRecorder := doRequest(handler, http.MethodPost, "/api/v1/users?organisationId="+tenantB.organisationID, tenantA.token, bytes.NewBufferString(`{"name":"Should Belong To A","email":"cross-tenant-created@example.com","password":"`+testPassword+`"}`))
 	if createRecorder.Code != http.StatusCreated {
 		t.Fatalf("create user as tenant A: status %d (body: %s)", createRecorder.Code, createRecorder.Body.String())
 	}

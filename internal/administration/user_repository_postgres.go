@@ -53,7 +53,11 @@ func (r *PostgresUserRepository) WithTx(tx pgx.Tx) UserRepository {
 }
 
 // Create inserts a new user row. created_at and updated_at are left to
-// PostgreSQL's DEFAULT NOW(), and deleted_at/last_login stay NULL.
+// PostgreSQL's DEFAULT NOW(), and deleted_at/last_login stay NULL — the
+// two DB-generated values are scanned straight back onto user via
+// RETURNING, so a caller building an API response directly from this
+// same *User (RegistrationService.Register, UserService.Create) gets
+// real timestamps without a second SELECT.
 //
 // Email uniqueness is enforced by the users_email_unique database
 // constraint, not by a pre-emptive lookup here — that would introduce a
@@ -77,9 +81,10 @@ func (r *PostgresUserRepository) Create(
 		VALUES (
 			$1, $2, $3, $4, $5, $6, $7
 		)
+		RETURNING created_at, updated_at
 	`
 
-	_, err := r.db.Exec(
+	err := r.db.QueryRow(
 		ctx,
 		query,
 		user.ID,
@@ -89,7 +94,7 @@ func (r *PostgresUserRepository) Create(
 		user.PasswordHash,
 		user.Role,
 		user.IsActive,
-	)
+	).Scan(&user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == postgresUniqueViolation {

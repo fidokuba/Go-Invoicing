@@ -181,6 +181,7 @@ func TestOrganisationHandler_Update_Success(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"email":"hello@acme.test","city":"London"}`)
 	request := httptest.NewRequest(http.MethodPatch, "/organisation", body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedOrganisation(request, organisation.ID)
 	recorder := httptest.NewRecorder()
 
@@ -212,6 +213,7 @@ func TestOrganisationHandler_Update_BlankName(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"name":""}`)
 	request := httptest.NewRequest(http.MethodPatch, "/organisation", body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedOrganisation(request, organisation.ID)
 	recorder := httptest.NewRecorder()
 
@@ -231,6 +233,7 @@ func TestOrganisationHandler_Update_InvalidEmail(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"email":"not-an-email"}`)
 	request := httptest.NewRequest(http.MethodPatch, "/organisation", body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedOrganisation(request, organisation.ID)
 	recorder := httptest.NewRecorder()
 
@@ -250,6 +253,7 @@ func TestOrganisationHandler_Update_InvalidJSON(t *testing.T) {
 
 	body := bytes.NewBufferString(`{`)
 	request := httptest.NewRequest(http.MethodPatch, "/organisation", body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedOrganisation(request, organisation.ID)
 	recorder := httptest.NewRecorder()
 
@@ -265,6 +269,7 @@ func TestOrganisationHandler_Update_MissingAuthenticatedContext(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"email":"hello@acme.test"}`)
 	request := httptest.NewRequest(http.MethodPatch, "/organisation", body)
+	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 
 	handler.Update(recorder, request)
@@ -282,6 +287,7 @@ func TestOrganisationHandler_Update_NotFound(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"email":"hello@acme.test"}`)
 	request := httptest.NewRequest(http.MethodPatch, "/organisation", body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedOrganisation(request, uuid.New())
 	recorder := httptest.NewRecorder()
 

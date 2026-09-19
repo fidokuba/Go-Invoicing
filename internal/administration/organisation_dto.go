@@ -2,13 +2,6 @@ package admin
 
 import "time"
 
-// CreateOrganisationRequest is the shape a client may POST to create an
-// organisation. It deliberately exposes only what a caller is allowed to
-// set — not ID, CreatedAt, DeletedAt, or anything else the server owns.
-type CreateOrganisationRequest struct {
-	Name string `json:"name"`
-}
-
 // OrganisationResponse is the shape returned to clients. It's a separate
 // type from Organisation so the API's wire format can stay stable even if
 // the internal/database model changes, and so internal-only fields (like
@@ -46,8 +39,8 @@ func toOrganisationResponse(organisation *Organisation) OrganisationResponse {
 		PostalCode: organisation.PostalCode,
 		Country:    organisation.Country,
 		TaxID:      organisation.TaxID,
-		CreatedAt:  organisation.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:  organisation.UpdatedAt.Format(time.RFC3339),
+		CreatedAt:  organisation.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:  organisation.UpdatedAt.UTC().Format(time.RFC3339),
 	}
 }
 

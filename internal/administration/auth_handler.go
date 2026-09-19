@@ -1,9 +1,10 @@
 package admin
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
+
+	"go-invoicing/internal/httpx"
 )
 
 // AuthHandler owns the HTTP-specific concerns for authentication:
@@ -32,34 +33,27 @@ func NewAuthHandler(service *AuthService) *AuthHandler {
 // content or status code, which of the three actually happened.
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	var request LoginRequest
-
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if !httpx.DecodeJSON(w, r, &request) {
 		return
 	}
 
 	result, err := h.service.Login(r.Context(), request.Email, request.Password)
 	if err != nil {
 		if errors.Is(err, ErrLoginEmailRequired) || errors.Is(err, ErrLoginPasswordRequired) {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeValidationFailed, err.Error())
 			return
 		}
 
 		if errors.Is(err, ErrInvalidCredentials) {
-			http.Error(w, "invalid email or password", http.StatusUnauthorized)
+			httpx.WriteError(w, http.StatusUnauthorized, httpx.CodeUnauthorized, "invalid email or password")
 			return
 		}
 
-		http.Error(w, "failed to log in", http.StatusInternalServerError)
+		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to log in")
 		return
 	}
 
 	response := toLoginResponse(result)
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
-	}
+	httpx.WriteJSON(w, http.StatusOK, response)
 }

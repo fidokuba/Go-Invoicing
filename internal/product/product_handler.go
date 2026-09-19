@@ -1,13 +1,13 @@
 package product
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 
 	"github.com/google/uuid"
 
 	admin "go-invoicing/internal/administration"
+	"go-invoicing/internal/httpx"
 )
 
 // ProductHandler owns the HTTP-specific concerns for products: decoding
@@ -38,9 +38,7 @@ func (h *ProductHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var request CreateProductRequest
-
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if !httpx.DecodeJSON(w, r, &request) {
 		return
 	}
 
@@ -57,27 +55,22 @@ func (h *ProductHandler) Create(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, ErrProductNameRequired) ||
 			errors.Is(err, ErrProductSKURequired) ||
 			errors.Is(err, ErrProductPriceNegative) {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeValidationFailed, err.Error())
 			return
 		}
 
 		if errors.Is(err, ErrProductSKUAlreadyExists) {
-			http.Error(w, err.Error(), http.StatusConflict)
+			httpx.WriteError(w, http.StatusConflict, "sku_already_exists", err.Error())
 			return
 		}
 
-		http.Error(w, "failed to create product", http.StatusInternalServerError)
+		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to create product")
 		return
 	}
 
 	response := toProductResponse(p)
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
-	}
+	httpx.WriteJSON(w, http.StatusCreated, response)
 }
 
 // GetByID handles GET /products/{id}.
@@ -91,26 +84,22 @@ func (h *ProductHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 
 	id, err := uuid.Parse(idString)
 	if err != nil {
-		http.Error(w, "invalid product ID", http.StatusBadRequest)
+		httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, "invalid product ID")
 		return
 	}
 
 	p, err := h.service.GetByID(r.Context(), identity.OrganisationID, id)
 	if err != nil {
 		if errors.Is(err, ErrProductNotFound) {
-			http.Error(w, "product not found", http.StatusNotFound)
+			httpx.WriteError(w, http.StatusNotFound, "product_not_found", "product not found")
 			return
 		}
 
-		http.Error(w, "failed to get product", http.StatusInternalServerError)
+		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to get product")
 		return
 	}
 
 	response := toProductResponse(p)
 
-	w.Header().Set("Content-Type", "application/json")
-
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
-	}
+	httpx.WriteJSON(w, http.StatusOK, response)
 }

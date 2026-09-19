@@ -45,7 +45,7 @@ func toProductResponse(p *Product) ProductResponse {
 		Price:          p.Price,
 		Category:       p.Category,
 		IsActive:       p.IsActive,
-		CreatedAt:      p.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:      p.UpdatedAt.Format(time.RFC3339),
+		CreatedAt:      p.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:      p.UpdatedAt.UTC().Format(time.RFC3339),
 	}
 }

@@ -1,7 +1,6 @@
 package invoice
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -10,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	admin "go-invoicing/internal/administration"
+	"go-invoicing/internal/httpx"
 )
 
 // InvoiceHandler owns the HTTP-specific concerns for invoices: decoding
@@ -47,38 +47,31 @@ func (h *InvoiceHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var request CreateInvoiceRequest
-
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if !httpx.DecodeJSON(w, r, &request) {
 		return
 	}
 
-	inv, lines, err := h.service.Create(r.Context(), identity.OrganisationID, request)
+	inv, lines, currency, err := h.service.Create(r.Context(), identity.OrganisationID, request)
 	if err != nil {
 		if errors.Is(err, ErrInvoiceCustomerNotFound) || errors.Is(err, ErrInvoiceLineProductNotFound) {
-			http.Error(w, err.Error(), http.StatusNotFound)
+			httpx.WriteError(w, http.StatusNotFound, httpx.CodeNotFound, err.Error())
 			return
 		}
 
 		if isInvoiceValidationError(err) {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeValidationFailed, err.Error())
 			return
 		}
 
-		http.Error(w, "failed to create invoice", http.StatusInternalServerError)
+		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to create invoice")
 		return
 	}
 
 	// A brand-new invoice cannot have any payments yet — no query needed
 	// to know amountPaid is 0.
-	response := toInvoiceResponse(inv, lines, 0, time.Now().UTC())
+	response := toInvoiceResponse(inv, lines, 0, currency, time.Now().UTC())
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
-	}
+	httpx.WriteJSON(w, http.StatusCreated, response)
 }
 
 // GetByID handles GET /invoices/{id}.
@@ -90,28 +83,29 @@ func (h *InvoiceHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
-		http.Error(w, "invalid invoice ID", http.StatusBadRequest)
+		httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, "invalid invoice ID")
 		return
 	}
 
-	inv, lines, amountPaid, err := h.service.GetByID(r.Context(), identity.OrganisationID, id)
+	inv, lines, amountPaid, currency, err := h.service.GetByID(r.Context(), identity.OrganisationID, id)
 	if err != nil {
 		if errors.Is(err, ErrInvoiceNotFound) {
-			http.Error(w, "invoice not found", http.StatusNotFound)
+			httpx.WriteError(w, http.StatusNotFound, "invoice_not_found", "invoice not found")
 			return
 		}
 
-		http.Error(w, "failed to get invoice", http.StatusInternalServerError)
+		if errors.Is(err, ErrInvoiceCurrencyUnavailable) {
+			httpx.WriteError(w, http.StatusConflict, httpx.CodeConflict, err.Error())
+			return
+		}
+
+		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to get invoice")
 		return
 	}
 
-	response := toInvoiceResponse(inv, lines, amountPaid, time.Now().UTC())
+	response := toInvoiceResponse(inv, lines, amountPaid, currency, time.Now().UTC())
 
-	w.Header().Set("Content-Type", "application/json")
-
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
-	}
+	httpx.WriteJSON(w, http.StatusOK, response)
 }
 
 // Send handles POST /invoices/{id}/send — a lifecycle finalisation
@@ -126,18 +120,18 @@ func (h *InvoiceHandler) Send(w http.ResponseWriter, r *http.Request) {
 
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
-		http.Error(w, "invalid invoice ID", http.StatusBadRequest)
+		httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, "invalid invoice ID")
 		return
 	}
 
 	if _, err := h.service.Send(r.Context(), identity.OrganisationID, id); err != nil {
 		if errors.Is(err, ErrInvoiceNotFound) {
-			http.Error(w, "invoice not found", http.StatusNotFound)
+			httpx.WriteError(w, http.StatusNotFound, "invoice_not_found", "invoice not found")
 			return
 		}
 
 		if errors.Is(err, ErrInvoiceAlreadySent) {
-			http.Error(w, err.Error(), http.StatusConflict)
+			httpx.WriteError(w, http.StatusConflict, "invoice_already_sent", err.Error())
 			return
 		}
 
@@ -151,33 +145,31 @@ func (h *InvoiceHandler) Send(w http.ResponseWriter, r *http.Request) {
 		// ErrInvoiceSnapshotDataUnavailable is excluded) — only sentinels
 		// with a fixed, safe message reach this branch.
 		if isSnapshotIncompleteError(err) {
-			http.Error(w, err.Error(), http.StatusConflict)
+			httpx.WriteError(w, http.StatusConflict, httpx.CodeConflict, err.Error())
 			return
 		}
 
-		http.Error(w, "failed to send invoice", http.StatusInternalServerError)
+		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to send invoice")
 		return
 	}
 
 	// Send only returns the bare *Invoice; re-fetch through the existing
 	// GetByID path to build the same full InvoiceResponse shape (lines +
-	// amountPaid) every other invoice-returning endpoint already uses,
-	// rather than duplicating that assembly here. A newly-sent invoice
-	// cannot have any payments yet (CreatePayment already refuses a Draft
-	// invoice), so this adds no surprising state, just the lines.
-	inv, lines, amountPaid, err := h.service.GetByID(r.Context(), identity.OrganisationID, id)
+	// amountPaid + currency) every other invoice-returning endpoint
+	// already uses, rather than duplicating that assembly here. A
+	// newly-sent invoice cannot have any payments yet (CreatePayment
+	// already refuses a Draft invoice), so this adds no surprising
+	// state, just the lines; its currency snapshot was just captured by
+	// Send itself, so GetByID's resolution can't fail here in practice.
+	inv, lines, amountPaid, currency, err := h.service.GetByID(r.Context(), identity.OrganisationID, id)
 	if err != nil {
-		http.Error(w, "failed to get invoice", http.StatusInternalServerError)
+		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to get invoice")
 		return
 	}
 
-	response := toInvoiceResponse(inv, lines, amountPaid, time.Now().UTC())
+	response := toInvoiceResponse(inv, lines, amountPaid, currency, time.Now().UTC())
 
-	w.Header().Set("Content-Type", "application/json")
-
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
-	}
+	httpx.WriteJSON(w, http.StatusOK, response)
 }
 
 // CreatePayment handles POST /invoices/{id}/payments.
@@ -189,52 +181,56 @@ func (h *InvoiceHandler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 
 	invoiceID, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
-		http.Error(w, "invalid invoice ID", http.StatusBadRequest)
+		httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, "invalid invoice ID")
 		return
 	}
 
 	var body CreatePaymentHTTPRequest
-
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if !httpx.DecodeJSON(w, r, &body) {
 		return
 	}
 
 	request, err := body.toCreatePaymentRequest()
 	if err != nil {
-		http.Error(w, "invalid payment date", http.StatusBadRequest)
+		httpx.WriteError(w, http.StatusBadRequest, httpx.CodeValidationFailed, "invalid payment date")
 		return
 	}
 
 	payment, _, err := h.service.CreatePayment(r.Context(), identity.OrganisationID, invoiceID, request)
 	if err != nil {
 		if errors.Is(err, ErrInvoiceNotFound) {
-			http.Error(w, "invoice not found", http.StatusNotFound)
+			httpx.WriteError(w, http.StatusNotFound, "invoice_not_found", "invoice not found")
 			return
 		}
 
 		if errors.Is(err, ErrInvoiceCannotAcceptPayment) {
-			http.Error(w, err.Error(), http.StatusConflict)
+			httpx.WriteError(w, http.StatusConflict, httpx.CodeConflict, err.Error())
 			return
 		}
 
-		if errors.Is(err, ErrPaymentAmountInvalid) || errors.Is(err, ErrPaymentExceedsOutstanding) {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		// Milestone 8 Part 2 (400 vs 409 convention): the amount is
+		// intrinsically invalid (<= 0) regardless of any server state —
+		// that stays 400. Exceeding the outstanding balance depends
+		// entirely on the invoice's current state (how much has already
+		// been paid), so it's a conflict with that state, not a
+		// malformed request — 409, not 400.
+		if errors.Is(err, ErrPaymentAmountInvalid) {
+			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeValidationFailed, err.Error())
 			return
 		}
 
-		http.Error(w, "failed to create payment", http.StatusInternalServerError)
+		if errors.Is(err, ErrPaymentExceedsOutstanding) {
+			httpx.WriteError(w, http.StatusConflict, httpx.CodeConflict, err.Error())
+			return
+		}
+
+		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to create payment")
 		return
 	}
 
 	response := toPaymentResponse(payment)
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
-	}
+	httpx.WriteJSON(w, http.StatusCreated, response)
 }
 
 // GetPayments handles GET /invoices/{id}/payments.
@@ -246,18 +242,18 @@ func (h *InvoiceHandler) GetPayments(w http.ResponseWriter, r *http.Request) {
 
 	invoiceID, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
-		http.Error(w, "invalid invoice ID", http.StatusBadRequest)
+		httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, "invalid invoice ID")
 		return
 	}
 
 	payments, err := h.service.GetPayments(r.Context(), identity.OrganisationID, invoiceID)
 	if err != nil {
 		if errors.Is(err, ErrInvoiceNotFound) {
-			http.Error(w, "invoice not found", http.StatusNotFound)
+			httpx.WriteError(w, http.StatusNotFound, "invoice_not_found", "invoice not found")
 			return
 		}
 
-		http.Error(w, "failed to get payments", http.StatusInternalServerError)
+		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to get payments")
 		return
 	}
 
@@ -266,11 +262,7 @@ func (h *InvoiceHandler) GetPayments(w http.ResponseWriter, r *http.Request) {
 		response = append(response, toPaymentResponse(p))
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
-	}
+	httpx.WriteJSON(w, http.StatusOK, response)
 }
 
 // GetPDF handles GET /invoices/{id}/pdf — synchronously generates and
@@ -286,14 +278,14 @@ func (h *InvoiceHandler) GetPDF(w http.ResponseWriter, r *http.Request) {
 
 	invoiceID, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
-		http.Error(w, "invalid invoice ID", http.StatusBadRequest)
+		httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, "invalid invoice ID")
 		return
 	}
 
 	pdfBytes, invoiceNumber, err := h.pdfService.Generate(r.Context(), identity.OrganisationID, invoiceID)
 	if err != nil {
 		if errors.Is(err, ErrInvoiceNotFound) {
-			http.Error(w, "invoice not found", http.StatusNotFound)
+			httpx.WriteError(w, http.StatusNotFound, "invoice_not_found", "invoice not found")
 			return
 		}
 
@@ -308,7 +300,7 @@ func (h *InvoiceHandler) GetPDF(w http.ResponseWriter, r *http.Request) {
 		// ErrInvoicePDFDataUnavailable is excluded and falls through to
 		// the generic 500 below instead.
 		if isPDFDataIncompleteError(err) {
-			http.Error(w, err.Error(), http.StatusConflict)
+			httpx.WriteError(w, http.StatusConflict, httpx.CodeConflict, err.Error())
 			return
 		}
 
@@ -318,7 +310,7 @@ func (h *InvoiceHandler) GetPDF(w http.ResponseWriter, r *http.Request) {
 		// problems — mapped to a single generic message so no gopdf
 		// error, SQL detail, or filesystem path is ever exposed to the
 		// client.
-		http.Error(w, "failed to generate invoice pdf", http.StatusInternalServerError)
+		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to generate invoice pdf")
 		return
 	}
 

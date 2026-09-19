@@ -46,7 +46,7 @@ func TestInvoiceService_Create_CommitsAllRowsTogether(t *testing.T) {
 		},
 	}
 
-	inv, lines, err := service.Create(ctx, organisationID, request)
+	inv, lines, _, err := service.Create(ctx, organisationID, request)
 	if err != nil {
 		t.Fatalf("create invoice: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestInvoiceService_Create_SequentialInvoiceNumbers(t *testing.T) {
 		}
 	}
 
-	first, _, err := service.Create(ctx, organisationID, request())
+	first, _, _, err := service.Create(ctx, organisationID, request())
 	if err != nil {
 		t.Fatalf("create first invoice: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestInvoiceService_Create_SequentialInvoiceNumbers(t *testing.T) {
 		_, _ = db.Exec(context.Background(), "DELETE FROM invoices WHERE id = $1", first.ID)
 	})
 
-	second, _, err := service.Create(ctx, organisationID, request())
+	second, _, _, err := service.Create(ctx, organisationID, request())
 	if err != nil {
 		t.Fatalf("create second invoice: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestInvoiceService_Create_IndependentSequencesPerOrganisation(t *testing.T)
 		}
 	}
 
-	invA1, _, err := service.Create(ctx, organisationA, newRequest(customerA.String()))
+	invA1, _, _, err := service.Create(ctx, organisationA, newRequest(customerA.String()))
 	if err != nil {
 		t.Fatalf("create organisation A's first invoice: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestInvoiceService_Create_IndependentSequencesPerOrganisation(t *testing.T)
 		_, _ = db.Exec(context.Background(), "DELETE FROM invoices WHERE id = $1", invA1.ID)
 	})
 
-	invA2, _, err := service.Create(ctx, organisationA, newRequest(customerA.String()))
+	invA2, _, _, err := service.Create(ctx, organisationA, newRequest(customerA.String()))
 	if err != nil {
 		t.Fatalf("create organisation A's second invoice: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestInvoiceService_Create_IndependentSequencesPerOrganisation(t *testing.T)
 		_, _ = db.Exec(context.Background(), "DELETE FROM invoices WHERE id = $1", invA2.ID)
 	})
 
-	invB1, _, err := service.Create(ctx, organisationB, newRequest(customerB.String()))
+	invB1, _, _, err := service.Create(ctx, organisationB, newRequest(customerB.String()))
 	if err != nil {
 		t.Fatalf("create organisation B's first invoice: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestInvoiceService_Create_RollsBackAtomicallyOnLineFailure(t *testing.T) {
 		},
 	}
 
-	_, _, err := service.Create(ctx, organisationID, request)
+	_, _, _, err := service.Create(ctx, organisationID, request)
 	if err == nil {
 		t.Fatal("expected an error from the second line's database constraint violation, got nil")
 	}
@@ -378,7 +378,7 @@ func TestInvoiceService_Create_ConcurrentInvoiceCreation(t *testing.T) {
 				},
 			}
 
-			inv, _, err := service.Create(ctx, organisationID, request)
+			inv, _, _, err := service.Create(ctx, organisationID, request)
 			invoices[i] = inv
 			errs[i] = err
 		}(i)

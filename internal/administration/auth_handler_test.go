@@ -22,6 +22,7 @@ func TestAuthHandler_Login_Success(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"email":"` + f.activeEmail + `","password":"` + f.activePassword + `"}`)
 	request := httptest.NewRequest(http.MethodPost, "/auth/login", body)
+	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 
 	handler.Login(recorder, request)
@@ -57,6 +58,7 @@ func TestAuthHandler_Login_ResponseContainsNoCredentialFields(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"email":"` + f.activeEmail + `","password":"` + f.activePassword + `"}`)
 	request := httptest.NewRequest(http.MethodPost, "/auth/login", body)
+	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 
 	handler.Login(recorder, request)
@@ -72,6 +74,7 @@ func TestAuthHandler_Login_MalformedJSON(t *testing.T) {
 
 	body := bytes.NewBufferString(`{`)
 	request := httptest.NewRequest(http.MethodPost, "/auth/login", body)
+	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 
 	handler.Login(recorder, request)
@@ -86,6 +89,7 @@ func TestAuthHandler_Login_MissingEmail(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"password":"` + f.activePassword + `"}`)
 	request := httptest.NewRequest(http.MethodPost, "/auth/login", body)
+	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 
 	handler.Login(recorder, request)
@@ -100,6 +104,7 @@ func TestAuthHandler_Login_MissingPassword(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"email":"` + f.activeEmail + `"}`)
 	request := httptest.NewRequest(http.MethodPost, "/auth/login", body)
+	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 
 	handler.Login(recorder, request)
@@ -129,6 +134,7 @@ func TestAuthHandler_Login_InvalidCredentialCasesAreIndistinguishable(t *testing
 	for name, payload := range scenarios {
 		body := bytes.NewBufferString(payload)
 		request := httptest.NewRequest(http.MethodPost, "/auth/login", body)
+		request.Header.Set("Content-Type", "application/json")
 		recorder := httptest.NewRecorder()
 
 		handler.Login(recorder, request)
@@ -157,6 +163,7 @@ func TestAuthHandler_Login_ErrorResponsesDoNotLeakToken(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"email":"` + f.activeEmail + `","password":"wrong password"}`)
 	request := httptest.NewRequest(http.MethodPost, "/auth/login", body)
+	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 
 	handler.Login(recorder, request)

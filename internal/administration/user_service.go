@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/mail"
 	"strings"
 
 	"github.com/google/uuid"
@@ -22,6 +23,7 @@ const minPasswordLength = 12
 var (
 	ErrUserNameRequired     = errors.New("user name is required")
 	ErrUserEmailRequired    = errors.New("user email is required")
+	ErrUserEmailInvalid     = errors.New("user email is not a valid email address")
 	ErrUserPasswordRequired = errors.New("user password is required")
 	ErrUserPasswordTooShort = fmt.Errorf("user password must be at least %d characters", minPasswordLength)
 	ErrUserRoleInvalid      = errors.New("user role is not valid")
@@ -50,6 +52,18 @@ var (
 // RegistrationService.Register. Keeping this logic in one place is what
 // keeps those two paths from silently drifting apart on a
 // security-relevant rule like the password minimum length.
+//
+// Email format (Milestone 8 Part 2 section 20) is validated here via
+// net/mail.ParseAddress — the same standard-library check
+// OrganisationService.Update already uses for an organisation's email —
+// because a user's email is an authentication identifier (the value
+// AuthService.Login looks a user up by): an invalid address is a user
+// who can never log in, and a syntactically-broken address is worth
+// rejecting at creation rather than discovering later at login.
+// CustomerService deliberately does not gain the equivalent check here —
+// see CreateCustomerRequest's own doc comment for why a customer's email
+// stays permissive/optional: it identifies a business contact, not a
+// credential.
 func normalizeAndValidateUserFields(name, email, password string) (normalizedName, normalizedEmail string, err error) {
 	normalizedName = strings.TrimSpace(name)
 	if normalizedName == "" {
@@ -59,6 +73,10 @@ func normalizeAndValidateUserFields(name, email, password string) (normalizedNam
 	normalizedEmail = strings.ToLower(strings.TrimSpace(email))
 	if normalizedEmail == "" {
 		return "", "", ErrUserEmailRequired
+	}
+
+	if _, err := mail.ParseAddress(normalizedEmail); err != nil {
+		return "", "", ErrUserEmailInvalid
 	}
 
 	if password == "" {

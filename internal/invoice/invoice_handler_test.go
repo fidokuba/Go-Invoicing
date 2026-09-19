@@ -39,6 +39,7 @@ func TestInvoiceHandler_Create(t *testing.T) {
 		]
 	}`)
 	request := httptest.NewRequest(http.MethodPost, "/invoices", body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedOrganisation(request, f.organisationID)
 	recorder := httptest.NewRecorder()
 
@@ -103,6 +104,7 @@ func TestInvoiceHandler_Create_IgnoresOrganisationIdQueryParameter(t *testing.T)
 		]
 	}`)
 	request := httptest.NewRequest(http.MethodPost, "/invoices?organisationId="+otherOrganisationID.String(), body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedOrganisation(request, f.organisationID)
 	recorder := httptest.NewRecorder()
 
@@ -128,6 +130,7 @@ func TestInvoiceHandler_Create_InvalidJSON(t *testing.T) {
 
 	body := bytes.NewBufferString(`{`)
 	request := httptest.NewRequest(http.MethodPost, "/invoices", body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedOrganisation(request, f.organisationID)
 	recorder := httptest.NewRecorder()
 
@@ -150,6 +153,7 @@ func TestInvoiceHandler_Create_ValidationFailure(t *testing.T) {
 		"lines": []
 	}`)
 	request := httptest.NewRequest(http.MethodPost, "/invoices", body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedOrganisation(request, f.organisationID)
 	recorder := httptest.NewRecorder()
 
@@ -173,6 +177,7 @@ func TestInvoiceHandler_Create_CustomerNotFound(t *testing.T) {
 		]
 	}`)
 	request := httptest.NewRequest(http.MethodPost, "/invoices", body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedOrganisation(request, f.organisationID)
 	recorder := httptest.NewRecorder()
 
@@ -201,6 +206,7 @@ func TestInvoiceHandler_Create_MissingAuthenticatedContext(t *testing.T) {
 		]
 	}`)
 	request := httptest.NewRequest(http.MethodPost, "/invoices", body)
+	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 
 	handler.Create(recorder, request)
@@ -215,7 +221,7 @@ func TestInvoiceHandler_GetByID(t *testing.T) {
 	handler := newTestHandler(f)
 
 	request := validRequest(f.customerID)
-	created, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	created, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 	if err != nil {
 		t.Fatalf("create invoice: %v", err)
 	}
@@ -259,7 +265,7 @@ func TestInvoiceHandler_GetByID_WithPayments(t *testing.T) {
 	handler := newTestHandler(f)
 
 	request := validRequest(f.customerID)
-	created, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	created, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 	if err != nil {
 		t.Fatalf("create invoice: %v", err)
 	}
@@ -310,7 +316,7 @@ func TestInvoiceHandler_GetByID_MultiplePayments(t *testing.T) {
 	handler := newTestHandler(f)
 
 	request := validRequest(f.customerID)
-	created, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	created, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 	if err != nil {
 		t.Fatalf("create invoice: %v", err)
 	}
@@ -359,7 +365,7 @@ func TestInvoiceHandler_GetByID_FullyPaid_OutstandingIsZero(t *testing.T) {
 	handler := newTestHandler(f)
 
 	request := validRequest(f.customerID)
-	created, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	created, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 	if err != nil {
 		t.Fatalf("create invoice: %v", err)
 	}
@@ -459,7 +465,7 @@ func TestInvoiceHandler_GetByID_WrongOrganisation(t *testing.T) {
 	handler := newTestHandler(f)
 
 	request := validRequest(f.customerID)
-	created, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	created, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 	if err != nil {
 		t.Fatalf("create invoice: %v", err)
 	}
@@ -486,7 +492,7 @@ func TestInvoiceHandler_GetByID_IgnoresOrganisationIdQueryParameter(t *testing.T
 	handler := newTestHandler(f)
 
 	request := validRequest(f.customerID)
-	created, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	created, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 	if err != nil {
 		t.Fatalf("create invoice: %v", err)
 	}

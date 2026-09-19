@@ -553,6 +553,15 @@ func newTestFixture() *testFixture {
 // with a known Total/Status rather than one built through the whole
 // invoice-creation flow.
 func (f *testFixture) addInvoice(total int64, status string) uuid.UUID {
+	// Milestone 8 Part 2: GetByID now resolves a response currency for
+	// every invoice, and refuses to fabricate one for an issued invoice
+	// with no snapshot (see resolveInvoiceCurrency's own comment). A
+	// helper-built Sent/Paid invoice needs a Currency exactly as a real
+	// Send would have captured one; a Draft invoice's Currency is never
+	// read (it resolves from live settings instead), so setting it
+	// unconditionally here is harmless either way.
+	currency := "GBP"
+
 	inv := Invoice{
 		ID:             uuid.New(),
 		OrganisationID: f.organisationID,
@@ -560,6 +569,7 @@ func (f *testFixture) addInvoice(total int64, status string) uuid.UUID {
 		InvoiceNumber:  "INV-TEST-" + uuid.New().String(),
 		Total:          total,
 		Status:         status,
+		Currency:       &currency,
 		// 30 days out: comfortably in the future, so a Sent invoice
 		// built by this helper never accidentally derives as Overdue via
 		// Invoice.EffectiveStatus (Milestone 5) merely because it was
@@ -655,7 +665,7 @@ func TestInvoiceService_Create_NoLines(t *testing.T) {
 	request := validRequest(f.customerID)
 	request.Lines = nil
 
-	_, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	_, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 
 	if !errors.Is(err, ErrInvoiceNoLines) {
 		t.Fatalf("expected ErrInvoiceNoLines, got %v", err)
@@ -667,7 +677,7 @@ func TestInvoiceService_Create_MissingCustomerID(t *testing.T) {
 	request := validRequest(f.customerID)
 	request.CustomerID = "  "
 
-	_, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	_, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 
 	if !errors.Is(err, ErrInvoiceCustomerIDRequired) {
 		t.Fatalf("expected ErrInvoiceCustomerIDRequired, got %v", err)
@@ -679,7 +689,7 @@ func TestInvoiceService_Create_InvalidCustomerID(t *testing.T) {
 	request := validRequest(f.customerID)
 	request.CustomerID = "not-a-uuid"
 
-	_, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	_, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 
 	if !errors.Is(err, ErrInvoiceCustomerIDInvalid) {
 		t.Fatalf("expected ErrInvoiceCustomerIDInvalid, got %v", err)
@@ -690,7 +700,7 @@ func TestInvoiceService_Create_CustomerNotFound(t *testing.T) {
 	f := newTestFixture()
 	request := validRequest(uuid.New()) // a customer ID that doesn't exist
 
-	_, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	_, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 
 	if !errors.Is(err, ErrInvoiceCustomerNotFound) {
 		t.Fatalf("expected ErrInvoiceCustomerNotFound, got %v", err)
@@ -702,7 +712,7 @@ func TestInvoiceService_Create_MissingIssueDate(t *testing.T) {
 	request := validRequest(f.customerID)
 	request.IssueDate = ""
 
-	_, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	_, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 
 	if !errors.Is(err, ErrInvoiceIssueDateRequired) {
 		t.Fatalf("expected ErrInvoiceIssueDateRequired, got %v", err)
@@ -714,7 +724,7 @@ func TestInvoiceService_Create_InvalidIssueDate(t *testing.T) {
 	request := validRequest(f.customerID)
 	request.IssueDate = "not-a-date"
 
-	_, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	_, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 
 	if !errors.Is(err, ErrInvoiceIssueDateInvalid) {
 		t.Fatalf("expected ErrInvoiceIssueDateInvalid, got %v", err)
@@ -726,7 +736,7 @@ func TestInvoiceService_Create_MissingDueDate(t *testing.T) {
 	request := validRequest(f.customerID)
 	request.DueDate = ""
 
-	_, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	_, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 
 	if !errors.Is(err, ErrInvoiceDueDateRequired) {
 		t.Fatalf("expected ErrInvoiceDueDateRequired, got %v", err)
@@ -739,7 +749,7 @@ func TestInvoiceService_Create_DueDateBeforeIssueDate(t *testing.T) {
 	request.IssueDate = "2026-01-31"
 	request.DueDate = "2026-01-01"
 
-	_, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	_, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 
 	if !errors.Is(err, ErrInvoiceDueDateBeforeIssueDate) {
 		t.Fatalf("expected ErrInvoiceDueDateBeforeIssueDate, got %v", err)
@@ -754,7 +764,7 @@ func TestInvoiceService_Create_DueDateEqualsIssueDate(t *testing.T) {
 	request.IssueDate = "2026-01-01"
 	request.DueDate = "2026-01-01"
 
-	_, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	_, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 	if err != nil {
 		t.Fatalf("expected same-day due date to be accepted, got %v", err)
 	}
@@ -766,7 +776,7 @@ func TestInvoiceService_Create_ZeroQuantity(t *testing.T) {
 	line.Quantity = 0
 	request := validRequest(f.customerID, line)
 
-	_, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	_, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 
 	if !errors.Is(err, ErrInvoiceLineQuantityInvalid) {
 		t.Fatalf("expected ErrInvoiceLineQuantityInvalid, got %v", err)
@@ -779,7 +789,7 @@ func TestInvoiceService_Create_NegativeQuantity(t *testing.T) {
 	line.Quantity = -1
 	request := validRequest(f.customerID, line)
 
-	_, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	_, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 
 	if !errors.Is(err, ErrInvoiceLineQuantityInvalid) {
 		t.Fatalf("expected ErrInvoiceLineQuantityInvalid, got %v", err)
@@ -793,7 +803,7 @@ func TestInvoiceService_Create_ValidFractionalQuantity(t *testing.T) {
 	line.Quantity = 1.5
 	request := validRequest(f.customerID, line)
 
-	_, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	_, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 	if err != nil {
 		t.Fatalf("expected fractional quantity 1.5 to be accepted, got %v", err)
 	}
@@ -805,7 +815,7 @@ func TestInvoiceService_Create_NegativeUnitPrice(t *testing.T) {
 	line.UnitPrice = -1
 	request := validRequest(f.customerID, line)
 
-	_, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	_, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 
 	if !errors.Is(err, ErrInvoiceLineUnitPriceNegative) {
 		t.Fatalf("expected ErrInvoiceLineUnitPriceNegative, got %v", err)
@@ -818,7 +828,7 @@ func TestInvoiceService_Create_NegativeVATRate(t *testing.T) {
 	line.VATRate = -1
 	request := validRequest(f.customerID, line)
 
-	_, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	_, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 
 	if !errors.Is(err, ErrInvoiceLineVATRateNegative) {
 		t.Fatalf("expected ErrInvoiceLineVATRateNegative, got %v", err)
@@ -831,7 +841,7 @@ func TestInvoiceService_Create_EmptyDescription(t *testing.T) {
 	line.Description = "   "
 	request := validRequest(f.customerID, line)
 
-	_, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	_, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 
 	if !errors.Is(err, ErrInvoiceLineDescriptionRequired) {
 		t.Fatalf("expected ErrInvoiceLineDescriptionRequired, got %v", err)
@@ -844,7 +854,7 @@ func TestInvoiceService_Create_DescriptionIsTrimmed(t *testing.T) {
 	line.Description = "  Consulting services  "
 	request := validRequest(f.customerID, line)
 
-	_, lines, err := f.service.Create(context.Background(), f.organisationID, request)
+	_, lines, _, err := f.service.Create(context.Background(), f.organisationID, request)
 	if err != nil {
 		t.Fatalf("create invoice: %v", err)
 	}
@@ -861,7 +871,7 @@ func TestInvoiceService_Create_InvalidProductID(t *testing.T) {
 	line.ProductID = &badID
 	request := validRequest(f.customerID, line)
 
-	_, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	_, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 
 	if !errors.Is(err, ErrInvoiceLineProductIDInvalid) {
 		t.Fatalf("expected ErrInvoiceLineProductIDInvalid, got %v", err)
@@ -875,7 +885,7 @@ func TestInvoiceService_Create_ProductNotFound(t *testing.T) {
 	line.ProductID = &missingID
 	request := validRequest(f.customerID, line)
 
-	_, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	_, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 
 	if !errors.Is(err, ErrInvoiceLineProductNotFound) {
 		t.Fatalf("expected ErrInvoiceLineProductNotFound, got %v", err)
@@ -891,7 +901,7 @@ func TestInvoiceService_Create_ProductBackedLine(t *testing.T) {
 	line.ProductID = &productIDStr
 	request := validRequest(f.customerID, line)
 
-	_, lines, err := f.service.Create(context.Background(), f.organisationID, request)
+	_, lines, _, err := f.service.Create(context.Background(), f.organisationID, request)
 	if err != nil {
 		t.Fatalf("create invoice: %v", err)
 	}
@@ -911,7 +921,7 @@ func TestInvoiceService_Create_CustomLineWithoutProduct(t *testing.T) {
 	f := newTestFixture()
 	request := validRequest(f.customerID) // default line has no ProductID
 
-	_, lines, err := f.service.Create(context.Background(), f.organisationID, request)
+	_, lines, _, err := f.service.Create(context.Background(), f.organisationID, request)
 	if err != nil {
 		t.Fatalf("create invoice: %v", err)
 	}
@@ -930,7 +940,7 @@ func TestInvoiceService_Create_CustomerScopedToOrganisation(t *testing.T) {
 
 	request := validRequest(otherCustomerID)
 
-	_, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	_, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 
 	if !errors.Is(err, ErrInvoiceCustomerNotFound) {
 		t.Fatalf("expected ErrInvoiceCustomerNotFound for a cross-organisation customer, got %v", err)
@@ -948,7 +958,7 @@ func TestInvoiceService_Create_ProductScopedToOrganisation(t *testing.T) {
 	line.ProductID = &otherProductID
 	request := validRequest(f.customerID, line)
 
-	_, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	_, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 
 	if !errors.Is(err, ErrInvoiceLineProductNotFound) {
 		t.Fatalf("expected ErrInvoiceLineProductNotFound for a cross-organisation product, got %v", err)
@@ -961,7 +971,7 @@ func TestInvoiceService_Create_Success(t *testing.T) {
 	f := newTestFixture()
 	request := validRequest(f.customerID) // quantity 1, unitPrice 1000, vatRate 20
 
-	inv, lines, err := f.service.Create(context.Background(), f.organisationID, request)
+	inv, lines, _, err := f.service.Create(context.Background(), f.organisationID, request)
 	if err != nil {
 		t.Fatalf("create invoice: %v", err)
 	}
@@ -1009,7 +1019,7 @@ func TestInvoiceService_Create_MultipleLines(t *testing.T) {
 
 	request := validRequest(f.customerID, lineA, lineB, lineC)
 
-	inv, lines, err := f.service.Create(context.Background(), f.organisationID, request)
+	inv, lines, _, err := f.service.Create(context.Background(), f.organisationID, request)
 	if err != nil {
 		t.Fatalf("create invoice: %v", err)
 	}
@@ -1043,12 +1053,12 @@ func TestInvoiceService_GetByID(t *testing.T) {
 	f := newTestFixture()
 	request := validRequest(f.customerID)
 
-	created, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	created, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 	if err != nil {
 		t.Fatalf("create invoice: %v", err)
 	}
 
-	inv, lines, amountPaid, err := f.service.GetByID(context.Background(), f.organisationID, created.ID)
+	inv, lines, amountPaid, _, err := f.service.GetByID(context.Background(), f.organisationID, created.ID)
 	if err != nil {
 		t.Fatalf("get invoice: %v", err)
 	}
@@ -1078,7 +1088,7 @@ func TestInvoiceService_Create_CommitsOnSuccess(t *testing.T) {
 	f := newTestFixture()
 	request := validRequest(f.customerID)
 
-	_, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	_, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 	if err != nil {
 		t.Fatalf("create invoice: %v", err)
 	}
@@ -1097,7 +1107,7 @@ func TestInvoiceService_Create_RollsBackOnInvoiceInsertFailure(t *testing.T) {
 	f.repository.createErr = errors.New("connection reset by peer")
 	request := validRequest(f.customerID)
 
-	_, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	_, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 	if err == nil {
 		t.Fatal("expected an error, got nil")
 	}
@@ -1116,7 +1126,7 @@ func TestInvoiceService_Create_RollsBackOnLineInsertFailure(t *testing.T) {
 	f.repository.createLinesErr = errors.New("connection reset by peer")
 	request := validRequest(f.customerID)
 
-	_, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	_, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 	if err == nil {
 		t.Fatal("expected an error, got nil")
 	}
@@ -1141,7 +1151,7 @@ func TestInvoiceService_Create_SettingsNotFound(t *testing.T) {
 	f.service.settingsRepository = f.settingsRepository
 	request := validRequest(f.customerID)
 
-	_, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	_, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 	if !errors.Is(err, ErrInvoiceSettingsNotFound) {
 		t.Fatalf("expected ErrInvoiceSettingsNotFound, got %v", err)
 	}
@@ -1156,7 +1166,7 @@ func TestInvoiceService_Create_RollsBackOnSettingsUpdateFailure(t *testing.T) {
 	f.settingsRepository.updateInvoiceNumberErr = errors.New("connection reset by peer")
 	request := validRequest(f.customerID)
 
-	_, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	_, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 	if err == nil {
 		t.Fatal("expected an error, got nil")
 	}
@@ -1184,7 +1194,7 @@ func TestInvoiceService_Create_BeginError(t *testing.T) {
 
 	request := validRequest(f.customerID)
 
-	_, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	_, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 	if err == nil {
 		t.Fatal("expected an error when Begin fails, got nil")
 	}
@@ -1195,7 +1205,7 @@ func TestInvoiceService_Create_CommitError(t *testing.T) {
 	f.tx.commitErr = errors.New("commit failed")
 	request := validRequest(f.customerID)
 
-	_, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	_, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 	if err == nil {
 		t.Fatal("expected an error when Commit fails, got nil")
 	}
@@ -1209,12 +1219,12 @@ func TestInvoiceService_GetByID_WrongOrganisation(t *testing.T) {
 	f := newTestFixture()
 	request := validRequest(f.customerID)
 
-	created, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	created, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
 	if err != nil {
 		t.Fatalf("create invoice: %v", err)
 	}
 
-	_, _, _, err = f.service.GetByID(context.Background(), uuid.New(), created.ID)
+	_, _, _, _, err = f.service.GetByID(context.Background(), uuid.New(), created.ID)
 	if !errors.Is(err, ErrInvoiceNotFound) {
 		t.Fatalf("expected ErrInvoiceNotFound for a cross-organisation lookup, got %v", err)
 	}
@@ -1226,7 +1236,7 @@ func TestInvoiceService_GetByID_NoPayments(t *testing.T) {
 	f := newTestFixture()
 	invoiceID := f.addInvoice(10000, InvoiceStatusSent)
 
-	inv, _, amountPaid, err := f.service.GetByID(context.Background(), f.organisationID, invoiceID)
+	inv, _, amountPaid, _, err := f.service.GetByID(context.Background(), f.organisationID, invoiceID)
 	if err != nil {
 		t.Fatalf("get invoice: %v", err)
 	}
@@ -1251,7 +1261,7 @@ func TestInvoiceService_GetByID_OnePayment(t *testing.T) {
 		t.Fatalf("create payment: %v", err)
 	}
 
-	_, _, amountPaid, err := f.service.GetByID(context.Background(), f.organisationID, invoiceID)
+	_, _, amountPaid, _, err := f.service.GetByID(context.Background(), f.organisationID, invoiceID)
 	if err != nil {
 		t.Fatalf("get invoice: %v", err)
 	}
@@ -1275,7 +1285,7 @@ func TestInvoiceService_GetByID_MultiplePayments_SumsCorrectly(t *testing.T) {
 		}
 	}
 
-	inv, _, amountPaid, err := f.service.GetByID(ctx, f.organisationID, invoiceID)
+	inv, _, amountPaid, _, err := f.service.GetByID(ctx, f.organisationID, invoiceID)
 	if err != nil {
 		t.Fatalf("get invoice: %v", err)
 	}
@@ -1302,7 +1312,7 @@ func TestInvoiceService_GetByID_FullyPaid_OutstandingIsZero(t *testing.T) {
 		t.Fatalf("create payment: %v", err)
 	}
 
-	inv, _, amountPaid, err := f.service.GetByID(context.Background(), f.organisationID, invoiceID)
+	inv, _, amountPaid, _, err := f.service.GetByID(context.Background(), f.organisationID, invoiceID)
 	if err != nil {
 		t.Fatalf("get invoice: %v", err)
 	}
@@ -1321,7 +1331,7 @@ func TestInvoiceService_GetByID_PaymentRepositoryErrorPropagates(t *testing.T) {
 	invoiceID := f.addInvoice(10000, InvoiceStatusSent)
 	f.paymentRepository.getTotalPaidErr = errors.New("connection reset by peer")
 
-	_, _, _, err := f.service.GetByID(context.Background(), f.organisationID, invoiceID)
+	_, _, _, _, err := f.service.GetByID(context.Background(), f.organisationID, invoiceID)
 	if err == nil {
 		t.Fatal("expected an error, got nil")
 	}

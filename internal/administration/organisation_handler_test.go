@@ -1,7 +1,6 @@
 package admin
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -141,65 +140,6 @@ func newTestHandler() *OrganisationHandler {
 	repository := newFakeOrganisationRepository()
 	service := NewOrganisationService(repository, newFakeSettingsRepository())
 	return NewOrganisationHandler(service)
-}
-
-func TestOrganisationHandler_Create(t *testing.T) {
-	handler := newTestHandler()
-
-	body := bytes.NewBufferString(`{"name":"Acme Ltd"}`)
-	request := httptest.NewRequest(http.MethodPost, "/organisations", body)
-	recorder := httptest.NewRecorder()
-
-	handler.Create(recorder, request)
-
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusCreated, recorder.Code, recorder.Body.String())
-	}
-
-	var response OrganisationResponse
-	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-
-	if response.Name != "Acme Ltd" {
-		t.Errorf("expected name %q, got %q", "Acme Ltd", response.Name)
-	}
-
-	if _, err := uuid.Parse(response.ID); err != nil {
-		t.Errorf("expected response ID to be a valid UUID, got %q", response.ID)
-	}
-
-	if response.CreatedAt == "" {
-		t.Error("expected CreatedAt to be set")
-	}
-}
-
-func TestOrganisationHandler_Create_MissingName(t *testing.T) {
-	handler := newTestHandler()
-
-	body := bytes.NewBufferString(`{"name":"   "}`)
-	request := httptest.NewRequest(http.MethodPost, "/organisations", body)
-	recorder := httptest.NewRecorder()
-
-	handler.Create(recorder, request)
-
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusBadRequest, recorder.Code, recorder.Body.String())
-	}
-}
-
-func TestOrganisationHandler_Create_InvalidJSON(t *testing.T) {
-	handler := newTestHandler()
-
-	body := bytes.NewBufferString(`{`)
-	request := httptest.NewRequest(http.MethodPost, "/organisations", body)
-	recorder := httptest.NewRecorder()
-
-	handler.Create(recorder, request)
-
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusBadRequest, recorder.Code, recorder.Body.String())
-	}
 }
 
 // withAuthenticatedOrganisation attaches an AuthenticatedUser identity

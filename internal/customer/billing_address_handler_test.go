@@ -42,6 +42,7 @@ func TestCustomerHandler_UpsertBillingAddress_CreatesFirst(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"street":"1 Acme Way","city":"London","postalCode":"E1 6AN","country":"GB"}`)
 	request := httptest.NewRequest(http.MethodPut, "/customers/"+customerID.String()+"/billing-address", body)
+	request.Header.Set("Content-Type", "application/json")
 	request.SetPathValue("id", customerID.String())
 	request = withAuthenticatedOrganisation(request, organisationID)
 	recorder := httptest.NewRecorder()
@@ -76,6 +77,7 @@ func TestCustomerHandler_UpsertBillingAddress_SecondCallUpdatesNotDuplicates(t *
 
 	firstBody := bytes.NewBufferString(`{"street":"1 Acme Way","city":"London","postalCode":"E1 6AN","country":"GB"}`)
 	firstRequest := httptest.NewRequest(http.MethodPut, "/customers/"+customerID.String()+"/billing-address", firstBody)
+	firstRequest.Header.Set("Content-Type", "application/json")
 	firstRequest.SetPathValue("id", customerID.String())
 	firstRequest = withAuthenticatedOrganisation(firstRequest, organisationID)
 	firstRecorder := httptest.NewRecorder()
@@ -88,6 +90,7 @@ func TestCustomerHandler_UpsertBillingAddress_SecondCallUpdatesNotDuplicates(t *
 
 	secondBody := bytes.NewBufferString(`{"street":"2 New Street","city":"Manchester","postalCode":"M1 1AE","country":"GB"}`)
 	secondRequest := httptest.NewRequest(http.MethodPut, "/customers/"+customerID.String()+"/billing-address", secondBody)
+	secondRequest.Header.Set("Content-Type", "application/json")
 	secondRequest.SetPathValue("id", customerID.String())
 	secondRequest = withAuthenticatedOrganisation(secondRequest, organisationID)
 	secondRecorder := httptest.NewRecorder()
@@ -163,6 +166,7 @@ func TestCustomerHandler_UpsertBillingAddress_InvalidUUID(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"street":"1 Acme Way","city":"London","postalCode":"E1 6AN","country":"GB"}`)
 	request := httptest.NewRequest(http.MethodPut, "/customers/not-a-uuid/billing-address", body)
+	request.Header.Set("Content-Type", "application/json")
 	request.SetPathValue("id", "not-a-uuid")
 	request = withAuthenticatedOrganisation(request, uuid.New())
 	recorder := httptest.NewRecorder()
@@ -193,6 +197,7 @@ func TestCustomerHandler_UpsertBillingAddress_MissingAuthenticatedContext(t *tes
 
 	body := bytes.NewBufferString(`{"street":"1 Acme Way","city":"London","postalCode":"E1 6AN","country":"GB"}`)
 	request := httptest.NewRequest(http.MethodPut, "/customers/"+uuid.New().String()+"/billing-address", body)
+	request.Header.Set("Content-Type", "application/json")
 	request.SetPathValue("id", uuid.New().String())
 	recorder := httptest.NewRecorder()
 
@@ -214,6 +219,7 @@ func TestCustomerHandler_GetBillingAddress_CrossTenant(t *testing.T) {
 
 	upsertBody := bytes.NewBufferString(`{"street":"1 Acme Way","city":"London","postalCode":"E1 6AN","country":"GB"}`)
 	upsertRequest := httptest.NewRequest(http.MethodPut, "/customers/"+customerID.String()+"/billing-address", upsertBody)
+	upsertRequest.Header.Set("Content-Type", "application/json")
 	upsertRequest.SetPathValue("id", customerID.String())
 	upsertRequest = withAuthenticatedOrganisation(upsertRequest, ownerOrganisationID)
 	handler.UpsertBillingAddress(httptest.NewRecorder(), upsertRequest)
@@ -242,6 +248,7 @@ func TestCustomerHandler_UpsertBillingAddress_CrossTenant(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"street":"Attacker Street","city":"Nowhere","postalCode":"00000","country":"XX"}`)
 	request := httptest.NewRequest(http.MethodPut, "/customers/"+customerID.String()+"/billing-address?organisationId="+ownerOrganisationID.String(), body)
+	request.Header.Set("Content-Type", "application/json")
 	request.SetPathValue("id", customerID.String())
 	request = withAuthenticatedOrganisation(request, attackerOrganisationID)
 	recorder := httptest.NewRecorder()
@@ -282,6 +289,7 @@ func TestCustomerHandler_UpsertBillingAddress_ValidationErrors(t *testing.T) {
 			customerID := createFakeCustomer(t, customerRepository, addressRepository, organisationID)
 
 			request := httptest.NewRequest(http.MethodPut, "/customers/"+customerID.String()+"/billing-address", bytes.NewBufferString(tt.body))
+			request.Header.Set("Content-Type", "application/json")
 			request.SetPathValue("id", customerID.String())
 			request = withAuthenticatedOrganisation(request, organisationID)
 			recorder := httptest.NewRecorder()
@@ -301,6 +309,7 @@ func TestCustomerHandler_UpsertBillingAddress_InvalidJSON(t *testing.T) {
 	customerID := createFakeCustomer(t, customerRepository, addressRepository, organisationID)
 
 	request := httptest.NewRequest(http.MethodPut, "/customers/"+customerID.String()+"/billing-address", bytes.NewBufferString(`{`))
+	request.Header.Set("Content-Type", "application/json")
 	request.SetPathValue("id", customerID.String())
 	request = withAuthenticatedOrganisation(request, organisationID)
 	recorder := httptest.NewRecorder()

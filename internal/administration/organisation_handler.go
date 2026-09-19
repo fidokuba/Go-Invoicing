@@ -1,9 +1,10 @@
 package admin
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
+
+	"go-invoicing/internal/httpx"
 )
 
 // OrganisationHandler owns the HTTP-specific concerns for organisations:
@@ -18,36 +19,6 @@ func NewOrganisationHandler(
 ) *OrganisationHandler {
 	return &OrganisationHandler{
 		service: service,
-	}
-}
-
-// Create handles POST /organisations.
-func (h *OrganisationHandler) Create(w http.ResponseWriter, r *http.Request) {
-	var request CreateOrganisationRequest
-
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	organisation, err := h.service.Create(r.Context(), request.Name)
-	if err != nil {
-		if errors.Is(err, ErrOrganisationNameRequired) {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		http.Error(w, "failed to create organisation", http.StatusInternalServerError)
-		return
-	}
-
-	response := toOrganisationResponse(organisation)
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
 	}
 }
 
@@ -66,21 +37,17 @@ func (h *OrganisationHandler) GetCurrent(w http.ResponseWriter, r *http.Request)
 	organisation, err := h.service.GetByID(r.Context(), identity.OrganisationID)
 	if err != nil {
 		if errors.Is(err, ErrOrganisationNotFound) {
-			http.Error(w, "organisation not found", http.StatusNotFound)
+			httpx.WriteError(w, http.StatusNotFound, "organisation_not_found", "organisation not found")
 			return
 		}
 
-		http.Error(w, "failed to get organisation", http.StatusInternalServerError)
+		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to get organisation")
 		return
 	}
 
 	response := toOrganisationResponse(organisation)
 
-	w.Header().Set("Content-Type", "application/json")
-
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
-	}
+	httpx.WriteJSON(w, http.StatusOK, response)
 }
 
 // Update handles PATCH /organisation (Milestone 7 Part 1) — admin-only,
@@ -96,33 +63,27 @@ func (h *OrganisationHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var request UpdateOrganisationRequest
-
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if !httpx.DecodeJSON(w, r, &request) {
 		return
 	}
 
 	organisation, err := h.service.Update(r.Context(), identity.OrganisationID, request)
 	if err != nil {
 		if errors.Is(err, ErrOrganisationNotFound) {
-			http.Error(w, "organisation not found", http.StatusNotFound)
+			httpx.WriteError(w, http.StatusNotFound, "organisation_not_found", "organisation not found")
 			return
 		}
 
 		if errors.Is(err, ErrOrganisationNameRequired) || errors.Is(err, ErrOrganisationEmailInvalid) {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeValidationFailed, err.Error())
 			return
 		}
 
-		http.Error(w, "failed to update organisation", http.StatusInternalServerError)
+		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to update organisation")
 		return
 	}
 
 	response := toOrganisationResponse(organisation)
 
-	w.Header().Set("Content-Type", "application/json")
-
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
-	}
+	httpx.WriteJSON(w, http.StatusOK, response)
 }

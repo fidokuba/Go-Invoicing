@@ -261,3 +261,43 @@ func TestPostgresUserRepository_UpdateLastLogin_NotFound(t *testing.T) {
 		t.Fatalf("expected ErrUserNotFound, got %v", err)
 	}
 }
+
+// TestPostgresUserRepository_Create_PopulatesTimestamps is the
+// Milestone 8 Part 2 regression test for the systemic Create-response
+// timestamp defect Part 1 found (RegistrationService.Register and
+// UserService.Create both build their response directly from the same
+// *User Create is given).
+func TestPostgresUserRepository_Create_PopulatesTimestamps(t *testing.T) {
+	db := newTestPool(t)
+	ctx := context.Background()
+
+	organisationID := createTestOrganisation(t, db)
+	repository := NewPostgresUserRepository(db)
+
+	user := newTestUser(organisationID, "timestamp-check@example.com")
+	if err := repository.Create(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Exec(context.Background(), "DELETE FROM users WHERE id = $1", user.ID)
+	})
+
+	if user.CreatedAt.IsZero() {
+		t.Error("expected CreatedAt to be populated by Create, got the zero value")
+	}
+	if user.UpdatedAt.IsZero() {
+		t.Error("expected UpdatedAt to be populated by Create, got the zero value")
+	}
+
+	fetched, err := repository.GetByID(ctx, organisationID, user.ID)
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+
+	if !user.CreatedAt.Equal(fetched.CreatedAt) {
+		t.Errorf("expected Create's returned CreatedAt %v to match the persisted value %v", user.CreatedAt, fetched.CreatedAt)
+	}
+	if !user.UpdatedAt.Equal(fetched.UpdatedAt) {
+		t.Errorf("expected Create's returned UpdatedAt %v to match the persisted value %v", user.UpdatedAt, fetched.UpdatedAt)
+	}
+}

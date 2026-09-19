@@ -1,12 +1,36 @@
 package admin
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/google/uuid"
 )
+
+// assertForbiddenBody decodes recorder's body as the standard JSON error
+// envelope and asserts it carries forbidden's fixed, generic
+// {code, message} — used by every test asserting a 403, in this file and
+// in user_handler_test.go, so the envelope shape only needs updating in
+// one place if it ever changes.
+func assertForbiddenBody(t *testing.T, recorder *httptest.ResponseRecorder) {
+	t.Helper()
+
+	var body struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&body); err != nil {
+		t.Fatalf("decode forbidden response: %v", err)
+	}
+
+	if body.Error.Code != "forbidden" || body.Error.Message != "forbidden" {
+		t.Errorf("expected generic {code: forbidden, message: forbidden}, got %+v", body.Error)
+	}
+}
 
 // doRoleGatedRequest builds a request, optionally attaching identity to
 // its context (nil means no authenticated identity at all), and runs it
@@ -80,9 +104,7 @@ func TestRequireRole_DeniesRoleNotInList(t *testing.T) {
 				t.Fatalf("expected status %d, got %d (body: %s)", http.StatusForbidden, recorder.Code, recorder.Body.String())
 			}
 
-			if recorder.Body.String() != "forbidden\n" {
-				t.Errorf("expected generic body %q, got %q", "forbidden\n", recorder.Body.String())
-			}
+			assertForbiddenBody(t, recorder)
 
 			if spy.called {
 				t.Error("expected the downstream handler not to be called")

@@ -38,7 +38,7 @@ type UserResponse struct {
 func toUserResponse(u *User) UserResponse {
 	var lastLogin *string
 	if u.LastLogin != nil {
-		s := u.LastLogin.Format(time.RFC3339)
+		s := u.LastLogin.UTC().Format(time.RFC3339)
 		lastLogin = &s
 	}
 
@@ -50,7 +50,7 @@ func toUserResponse(u *User) UserResponse {
 		Role:           u.Role,
 		IsActive:       u.IsActive,
 		LastLogin:      lastLogin,
-		CreatedAt:      u.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:      u.UpdatedAt.Format(time.RFC3339),
+		CreatedAt:      u.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:      u.UpdatedAt.UTC().Format(time.RFC3339),
 	}
 }

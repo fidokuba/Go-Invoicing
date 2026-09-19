@@ -1,6 +1,10 @@
 package admin
 
-import "net/http"
+import (
+	"net/http"
+
+	"go-invoicing/internal/httpx"
+)
 
 // forbidden writes the single generic 403 response used for every
 // role-related authorisation failure, regardless of which role was
@@ -9,7 +13,7 @@ import "net/http"
 // authentication failures. Never expose which role(s) were required or
 // why the caller was denied.
 func forbidden(w http.ResponseWriter) {
-	http.Error(w, "forbidden", http.StatusForbidden)
+	httpx.WriteError(w, http.StatusForbidden, httpx.CodeForbidden, "forbidden")
 }
 
 // RequireRole returns a middleware that only allows a request through

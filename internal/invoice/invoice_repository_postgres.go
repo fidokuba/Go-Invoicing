@@ -54,7 +54,10 @@ func (r *PostgresInvoiceRepository) WithTx(tx pgx.Tx) InvoiceRepository {
 
 // Create inserts a new invoice row. created_at and updated_at are left to
 // PostgreSQL's DEFAULT NOW(), and deleted_at stays NULL until the invoice
-// is soft-deleted.
+// is soft-deleted — the two DB-generated values are scanned straight
+// back onto invoice via RETURNING, so InvoiceService.Create's caller (the
+// HTTP handler, building InvoiceResponse directly from this same
+// *Invoice) gets real timestamps without a second SELECT.
 //
 // This does not also create the invoice's lines — see CreateLines. The two
 // are separate statements, but InvoiceService.Create runs both of them
@@ -81,9 +84,10 @@ func (r *PostgresInvoiceRepository) Create(
 		VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
 		)
+		RETURNING created_at, updated_at
 	`
 
-	_, err := r.db.Exec(
+	err := r.db.QueryRow(
 		ctx,
 		query,
 		invoice.ID,
@@ -97,7 +101,7 @@ func (r *PostgresInvoiceRepository) Create(
 		invoice.Total,
 		invoice.Status,
 		invoice.Notes,
-	)
+	).Scan(&invoice.CreatedAt, &invoice.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("create invoice: %w", err)
 	}

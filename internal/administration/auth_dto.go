@@ -26,7 +26,7 @@ type LoginResponse struct {
 func toLoginResponse(result *LoginResult) LoginResponse {
 	return LoginResponse{
 		Token:     result.Token,
-		ExpiresAt: result.Session.ExpiresAt.Format(time.RFC3339),
+		ExpiresAt: result.Session.ExpiresAt.UTC().Format(time.RFC3339),
 		User:      toUserResponse(result.User),
 	}
 }

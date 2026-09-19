@@ -40,6 +40,7 @@ func TestUserHandler_Create_Success(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"name":"Alice Example","email":"alice@example.com","password":"` + validPassword + `"}`)
 	request := httptest.NewRequest(http.MethodPost, "/users", body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedIdentity(request, newIdentity(organisationID, UserRoleAdmin))
 	recorder := httptest.NewRecorder()
 
@@ -81,6 +82,7 @@ func TestUserHandler_Create_IgnoresOrganisationIdQueryParameter(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"name":"Alice","email":"alice@example.com","password":"` + validPassword + `"}`)
 	request := httptest.NewRequest(http.MethodPost, "/users?organisationId="+otherOrganisationID.String(), body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedIdentity(request, newIdentity(organisationID, UserRoleAdmin))
 	recorder := httptest.NewRecorder()
 
@@ -105,6 +107,7 @@ func TestUserHandler_Create_ResponseContainsNoCredentialFields(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"name":"Alice","email":"alice@example.com","password":"` + validPassword + `"}`)
 	request := httptest.NewRequest(http.MethodPost, "/users", body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedIdentity(request, newIdentity(organisationID, UserRoleAdmin))
 	recorder := httptest.NewRecorder()
 
@@ -125,6 +128,7 @@ func TestUserHandler_Create_MalformedJSON(t *testing.T) {
 
 	body := bytes.NewBufferString(`{`)
 	request := httptest.NewRequest(http.MethodPost, "/users", body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedIdentity(request, newIdentity(organisationID, UserRoleAdmin))
 	recorder := httptest.NewRecorder()
 
@@ -145,6 +149,7 @@ func TestUserHandler_Create_MissingAuthenticatedContext(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"name":"Alice","email":"alice@example.com","password":"` + validPassword + `"}`)
 	request := httptest.NewRequest(http.MethodPost, "/users", body)
+	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 
 	handler.Create(recorder, request)
@@ -161,6 +166,27 @@ func TestUserHandler_Create_ValidationError(t *testing.T) {
 	// validation error, which the handler must map to 400.
 	body := bytes.NewBufferString(`{"name":"Alice","email":"alice@example.com","password":"short"}`)
 	request := httptest.NewRequest(http.MethodPost, "/users", body)
+	request.Header.Set("Content-Type", "application/json")
+	request = withAuthenticatedIdentity(request, newIdentity(organisationID, UserRoleAdmin))
+	recorder := httptest.NewRecorder()
+
+	handler.Create(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusBadRequest, recorder.Code, recorder.Body.String())
+	}
+}
+
+// TestUserHandler_Create_InvalidEmailRejected is the Milestone 8 Part 2
+// regression test for the new user-email format validation (section
+// 20): a user's email is an authentication identifier, so — unlike a
+// customer's — it must be a syntactically valid address.
+func TestUserHandler_Create_InvalidEmailRejected(t *testing.T) {
+	handler, _, organisationID := newTestUserHandler()
+
+	body := bytes.NewBufferString(`{"name":"Alice","email":"not-an-email","password":"` + validPassword + `"}`)
+	request := httptest.NewRequest(http.MethodPost, "/users", body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedIdentity(request, newIdentity(organisationID, UserRoleAdmin))
 	recorder := httptest.NewRecorder()
 
@@ -176,6 +202,7 @@ func TestUserHandler_Create_OrganisationNotFound(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"name":"Alice","email":"alice@example.com","password":"` + validPassword + `"}`)
 	request := httptest.NewRequest(http.MethodPost, "/users", body)
+	request.Header.Set("Content-Type", "application/json")
 	// A random organisation ID: authenticated, but that organisation
 	// doesn't exist in the fake repository — an edge case of a stale
 	// identity outliving its organisation.
@@ -195,6 +222,7 @@ func TestUserHandler_Create_DuplicateEmail(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"name":"Alice","email":"alice@example.com","password":"` + validPassword + `"}`)
 	request := httptest.NewRequest(http.MethodPost, "/users", body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedIdentity(request, identity)
 	recorder := httptest.NewRecorder()
 	handler.Create(recorder, request)
@@ -205,6 +233,7 @@ func TestUserHandler_Create_DuplicateEmail(t *testing.T) {
 
 	body = bytes.NewBufferString(`{"name":"Alice Again","email":"alice@example.com","password":"` + validPassword + `"}`)
 	request = httptest.NewRequest(http.MethodPost, "/users", body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedIdentity(request, identity)
 	recorder = httptest.NewRecorder()
 	handler.Create(recorder, request)
@@ -219,6 +248,7 @@ func TestUserHandler_Create_ManagerCreatesUser_Succeeds(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"name":"Alice","email":"alice@example.com","password":"` + validPassword + `","role":"user"}`)
 	request := httptest.NewRequest(http.MethodPost, "/users", body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedIdentity(request, newIdentity(organisationID, UserRoleManager))
 	recorder := httptest.NewRecorder()
 
@@ -239,6 +269,7 @@ func TestUserHandler_Create_ManagerCannotCreateManager(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"name":"Alice","email":"alice@example.com","password":"` + validPassword + `","role":"manager"}`)
 	request := httptest.NewRequest(http.MethodPost, "/users", body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedIdentity(request, newIdentity(organisationID, UserRoleManager))
 	recorder := httptest.NewRecorder()
 
@@ -248,9 +279,7 @@ func TestUserHandler_Create_ManagerCannotCreateManager(t *testing.T) {
 		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusForbidden, recorder.Code, recorder.Body.String())
 	}
 
-	if recorder.Body.String() != "forbidden\n" {
-		t.Errorf("expected generic body %q, got %q", "forbidden\n", recorder.Body.String())
-	}
+	assertForbiddenBody(t, recorder)
 
 	if len(users.usersByID) != 0 {
 		t.Error("expected no user to have been created")
@@ -262,6 +291,7 @@ func TestUserHandler_Create_ManagerCannotCreateAdmin(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"name":"Alice","email":"alice@example.com","password":"` + validPassword + `","role":"admin"}`)
 	request := httptest.NewRequest(http.MethodPost, "/users", body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedIdentity(request, newIdentity(organisationID, UserRoleManager))
 	recorder := httptest.NewRecorder()
 
@@ -285,6 +315,7 @@ func TestUserHandler_Create_UserActorCannotCreateAnyone(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"name":"Alice","email":"alice@example.com","password":"` + validPassword + `"}`)
 	request := httptest.NewRequest(http.MethodPost, "/users", body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedIdentity(request, newIdentity(organisationID, UserRoleUser))
 	recorder := httptest.NewRecorder()
 
@@ -371,9 +402,7 @@ func TestUserHandler_GetByID_User_CannotGetAnother(t *testing.T) {
 		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusForbidden, recorder.Code, recorder.Body.String())
 	}
 
-	if recorder.Body.String() != "forbidden\n" {
-		t.Errorf("expected generic body %q, got %q", "forbidden\n", recorder.Body.String())
-	}
+	assertForbiddenBody(t, recorder)
 }
 
 func TestUserHandler_GetByID_Manager_CanGetAnother(t *testing.T) {

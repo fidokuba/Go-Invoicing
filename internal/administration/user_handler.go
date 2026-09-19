@@ -1,11 +1,12 @@
 package admin
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 
 	"github.com/google/uuid"
+
+	"go-invoicing/internal/httpx"
 )
 
 // UserHandler owns the HTTP-specific concerns for users: decoding
@@ -41,9 +42,7 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var request CreateUserRequest
-
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if !httpx.DecodeJSON(w, r, &request) {
 		return
 	}
 
@@ -56,10 +55,11 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, ErrUserNameRequired) ||
 			errors.Is(err, ErrUserEmailRequired) ||
+			errors.Is(err, ErrUserEmailInvalid) ||
 			errors.Is(err, ErrUserPasswordRequired) ||
 			errors.Is(err, ErrUserPasswordTooShort) ||
 			errors.Is(err, ErrUserRoleInvalid) {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeValidationFailed, err.Error())
 			return
 		}
 
@@ -70,27 +70,22 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if errors.Is(err, ErrOrganisationNotFound) {
-			http.Error(w, "organisation not found", http.StatusNotFound)
+			httpx.WriteError(w, http.StatusNotFound, "organisation_not_found", "organisation not found")
 			return
 		}
 
 		if errors.Is(err, ErrUserEmailAlreadyExists) {
-			http.Error(w, err.Error(), http.StatusConflict)
+			httpx.WriteError(w, http.StatusConflict, "email_already_exists", err.Error())
 			return
 		}
 
-		http.Error(w, "failed to create user", http.StatusInternalServerError)
+		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to create user")
 		return
 	}
 
 	response := toUserResponse(user)
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
-	}
+	httpx.WriteJSON(w, http.StatusCreated, response)
 }
 
 // GetByID handles GET /users/{id}. The requested user ID is
@@ -113,7 +108,7 @@ func (h *UserHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
-		http.Error(w, "invalid user ID", http.StatusBadRequest)
+		httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, "invalid user ID")
 		return
 	}
 
@@ -125,19 +120,15 @@ func (h *UserHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	user, err := h.service.GetByID(r.Context(), identity.OrganisationID, id)
 	if err != nil {
 		if errors.Is(err, ErrUserNotFound) {
-			http.Error(w, "user not found", http.StatusNotFound)
+			httpx.WriteError(w, http.StatusNotFound, "user_not_found", "user not found")
 			return
 		}
 
-		http.Error(w, "failed to get user", http.StatusInternalServerError)
+		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to get user")
 		return
 	}
 
 	response := toUserResponse(user)
 
-	w.Header().Set("Content-Type", "application/json")
-
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
-	}
+	httpx.WriteJSON(w, http.StatusOK, response)
 }

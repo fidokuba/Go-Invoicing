@@ -60,6 +60,16 @@ var (
 	// has its own established meaning and is reused as-is for the
 	// analogous missing-settings case.
 	ErrInvoiceSnapshotDataUnavailable = errors.New("required business data for the invoice snapshot is unavailable")
+
+	// ErrInvoiceCurrencyUnavailable is returned when the currency to show
+	// on an InvoiceResponse (Milestone 8 Part 2) cannot be reliably
+	// determined: a Draft invoice whose organisation has no settings row,
+	// or an issued (Sent/Paid) invoice with no immutable currency
+	// snapshot — only possible for an invoice sent before Milestone 7
+	// Part 2 introduced that column. Deliberately never substituted with
+	// a default or with the organisation's current Settings.Currency for
+	// an issued invoice — see resolveInvoiceCurrency's own comment.
+	ErrInvoiceCurrencyUnavailable = errors.New("invoice currency is unavailable")
 )
 
 // TxBeginner starts a new transaction. *pgxpool.Pool satisfies this
@@ -136,7 +146,10 @@ type validatedLine struct {
 // referenced products) exist within the organisation, computes every
 // line's VAT amount and total plus the invoice's subtotal/VAT total/total,
 // and persists the invoice and its lines. The new invoice is returned
-// together with its lines.
+// together with its lines and the currency an InvoiceResponse should
+// display for it (Milestone 8 Part 2) — always the organisation's
+// current Settings.Currency, since a brand-new invoice is always Draft
+// and has no snapshot yet.
 //
 // Structural validation (presence, format, per-field rules) runs before
 // any database lookup, so a malformed request never reaches the database.
@@ -159,43 +172,43 @@ func (s *InvoiceService) Create(
 	ctx context.Context,
 	organisationID uuid.UUID,
 	request CreateInvoiceRequest,
-) (*Invoice, []*Line, error) {
+) (*Invoice, []*Line, string, error) {
 	customerID, err := parseRequiredUUID(request.CustomerID, ErrInvoiceCustomerIDRequired, ErrInvoiceCustomerIDInvalid)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 
 	if len(request.Lines) == 0 {
-		return nil, nil, ErrInvoiceNoLines
+		return nil, nil, "", ErrInvoiceNoLines
 	}
 
 	issueDate, err := parseRequiredDate(request.IssueDate, ErrInvoiceIssueDateRequired, ErrInvoiceIssueDateInvalid)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 
 	dueDate, err := parseRequiredDate(request.DueDate, ErrInvoiceDueDateRequired, ErrInvoiceDueDateInvalid)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 
 	if dueDate.Before(issueDate) {
-		return nil, nil, ErrInvoiceDueDateBeforeIssueDate
+		return nil, nil, "", ErrInvoiceDueDateBeforeIssueDate
 	}
 
 	validated, err := validateLines(request.Lines)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 
 	// Existence checks happen only after every structural rule above has
 	// passed, so a malformed request never triggers a database lookup.
 	if _, err := s.customerRepository.GetByID(ctx, organisationID, customerID); err != nil {
 		if errors.Is(err, customer.ErrCustomerNotFound) {
-			return nil, nil, ErrInvoiceCustomerNotFound
+			return nil, nil, "", ErrInvoiceCustomerNotFound
 		}
 
-		return nil, nil, fmt.Errorf("look up invoice customer: %w", err)
+		return nil, nil, "", fmt.Errorf("look up invoice customer: %w", err)
 	}
 
 	for _, v := range validated {
@@ -205,10 +218,10 @@ func (s *InvoiceService) Create(
 
 		if _, err := s.productRepository.GetByID(ctx, organisationID, *v.productID); err != nil {
 			if errors.Is(err, product.ErrProductNotFound) {
-				return nil, nil, ErrInvoiceLineProductNotFound
+				return nil, nil, "", ErrInvoiceLineProductNotFound
 			}
 
-			return nil, nil, fmt.Errorf("look up invoice line product: %w", err)
+			return nil, nil, "", fmt.Errorf("look up invoice line product: %w", err)
 		}
 	}
 
@@ -239,7 +252,7 @@ func (s *InvoiceService) Create(
 	// or are all undone together.
 	tx, err := s.txBeginner.Begin(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("begin invoice transaction: %w", err)
+		return nil, nil, "", fmt.Errorf("begin invoice transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
@@ -252,16 +265,22 @@ func (s *InvoiceService) Create(
 	settings, err := txSettingsRepository.GetForUpdate(ctx, organisationID)
 	if err != nil {
 		if errors.Is(err, admin.ErrSettingsNotFound) {
-			return nil, nil, ErrInvoiceSettingsNotFound
+			return nil, nil, "", ErrInvoiceSettingsNotFound
 		}
 
-		return nil, nil, fmt.Errorf("lock organisation settings: %w", err)
+		return nil, nil, "", fmt.Errorf("lock organisation settings: %w", err)
 	}
+
+	// A Draft invoice always displays the organisation's current
+	// Settings.Currency (Milestone 8 Part 2) — there is no snapshot yet
+	// to protect, and this same settings row is already locked and in
+	// scope for invoice-number allocation, so no extra lookup is needed.
+	currency := normalizeCurrency(settings.Currency)
 
 	allocatedNumber := settings.NextInvoiceNumber()
 
 	if err := txSettingsRepository.UpdateInvoiceNumber(ctx, organisationID, settings.InvoiceNumber); err != nil {
-		return nil, nil, fmt.Errorf("update organisation settings: %w", err)
+		return nil, nil, "", fmt.Errorf("update organisation settings: %w", err)
 	}
 
 	inv := &Invoice{
@@ -281,20 +300,20 @@ func (s *InvoiceService) Create(
 	txRepository := s.repository.WithTx(tx)
 
 	if err := txRepository.Create(ctx, inv); err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 
 	if err := txRepository.CreateLines(ctx, lines); err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 
 	// COMMIT — only reached once the settings update, the invoice, and
 	// every line inserted without error.
 	if err := tx.Commit(ctx); err != nil {
-		return nil, nil, fmt.Errorf("commit invoice transaction: %w", err)
+		return nil, nil, "", fmt.Errorf("commit invoice transaction: %w", err)
 	}
 
-	return inv, lines, nil
+	return inv, lines, currency, nil
 }
 
 // GetByID delegates the invoice lookup to the repository (organisation
@@ -304,27 +323,75 @@ func (s *InvoiceService) Create(
 // SQL. amountOutstanding is not computed here; it's derived by
 // toInvoiceResponse from Invoice.Total and this returned amountPaid, the
 // same way CreatePayment derives its own outstanding balance.
+//
+// The returned currency (Milestone 8 Part 2) follows the same binary
+// snapshot rule as PDF generation (see InvoicePDFService.BuildData) and
+// Send's own snapshot capture: a persisted Draft invoice always shows
+// the organisation's current Settings.Currency; anything else (Sent,
+// Paid, or effectively Overdue — still persisted Sent) shows ONLY the
+// immutable Invoice.Currency snapshot, never live settings, even if the
+// organisation's currency has since changed. See resolveInvoiceCurrency.
 func (s *InvoiceService) GetByID(
 	ctx context.Context,
 	organisationID uuid.UUID,
 	invoiceID uuid.UUID,
-) (*Invoice, []*Line, int64, error) {
+) (*Invoice, []*Line, int64, string, error) {
 	inv, err := s.repository.GetByID(ctx, organisationID, invoiceID)
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, nil, 0, "", err
 	}
 
 	lines, err := s.repository.GetLinesByInvoiceID(ctx, organisationID, invoiceID)
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, nil, 0, "", err
 	}
 
 	amountPaid, err := s.paymentRepository.GetTotalPaidByInvoiceID(ctx, organisationID, invoiceID)
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, nil, 0, "", err
 	}
 
-	return inv, lines, amountPaid, nil
+	currency, err := s.resolveInvoiceCurrency(ctx, organisationID, inv)
+	if err != nil {
+		return nil, nil, 0, "", err
+	}
+
+	return inv, lines, amountPaid, currency, nil
+}
+
+// resolveInvoiceCurrency implements Milestone 8 Part 2's currency rule
+// for GetByID (Create resolves it inline instead, since it already holds
+// the relevant settings row inside its own transaction — see Create's
+// own comment). A persisted Draft invoice has no snapshot yet, so its
+// currency is read live; any other status uses ONLY the immutable
+// Invoice.Currency snapshot. An invoice sent before that column existed
+// has Currency == nil despite not being Draft — that is deliberately
+// reported as ErrInvoiceCurrencyUnavailable rather than silently shown
+// using the organisation's current currency, which could misrepresent a
+// legacy invoice's actual historical currency.
+func (s *InvoiceService) resolveInvoiceCurrency(
+	ctx context.Context,
+	organisationID uuid.UUID,
+	inv *Invoice,
+) (string, error) {
+	if inv.Status != InvoiceStatusDraft {
+		if inv.Currency == nil || strings.TrimSpace(*inv.Currency) == "" {
+			return "", ErrInvoiceCurrencyUnavailable
+		}
+
+		return normalizeCurrency(*inv.Currency), nil
+	}
+
+	settings, err := s.settingsRepository.GetByOrganisationID(ctx, organisationID)
+	if err != nil {
+		if errors.Is(err, admin.ErrSettingsNotFound) {
+			return "", ErrInvoiceCurrencyUnavailable
+		}
+
+		return "", fmt.Errorf("look up organisation settings for invoice currency: %w", err)
+	}
+
+	return normalizeCurrency(settings.Currency), nil
 }
 
 // Send finalises a Draft invoice into the Sent lifecycle state — this is

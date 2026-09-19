@@ -20,6 +20,7 @@ func newPaymentTestRequest(method, url string, body *bytes.Buffer, invoiceID uui
 	}
 
 	request := httptest.NewRequest(method, url, body)
+	request.Header.Set("Content-Type", "application/json")
 	request.SetPathValue("id", invoiceID.String())
 	request = withAuthenticatedOrganisation(request, organisationID)
 
@@ -137,6 +138,7 @@ func TestInvoiceHandler_CreatePayment_InvalidUUID(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"amount": 5000, "paymentMethod": "cash", "paymentDate": "2026-09-17"}`)
 	request := httptest.NewRequest(http.MethodPost, "/invoices/not-a-uuid/payments", body)
+	request.Header.Set("Content-Type", "application/json")
 	request.SetPathValue("id", "not-a-uuid")
 	request = withAuthenticatedOrganisation(request, f.organisationID)
 	recorder := httptest.NewRecorder()
@@ -159,6 +161,7 @@ func TestInvoiceHandler_CreatePayment_MissingAuthenticatedContext(t *testing.T) 
 
 	body := bytes.NewBufferString(`{"amount": 5000, "paymentMethod": "cash", "paymentDate": "2026-09-17"}`)
 	request := httptest.NewRequest(http.MethodPost, "/invoices/"+invoiceID.String()+"/payments", body)
+	request.Header.Set("Content-Type", "application/json")
 	request.SetPathValue("id", invoiceID.String())
 	recorder := httptest.NewRecorder()
 
@@ -182,6 +185,7 @@ func TestInvoiceHandler_CreatePayment_IgnoresOrganisationIdQueryParameter(t *tes
 
 	body := bytes.NewBufferString(`{"amount": 5000, "paymentMethod": "cash", "paymentDate": "2026-09-17"}`)
 	request := httptest.NewRequest(http.MethodPost, "/invoices/"+invoiceID.String()+"/payments?organisationId="+f.organisationID.String(), body)
+	request.Header.Set("Content-Type", "application/json")
 	request.SetPathValue("id", invoiceID.String())
 	request = withAuthenticatedOrganisation(request, attackerOrganisationID)
 	recorder := httptest.NewRecorder()
@@ -225,6 +229,11 @@ func TestInvoiceHandler_CreatePayment_InvalidAmount(t *testing.T) {
 	}
 }
 
+// TestInvoiceHandler_CreatePayment_Overpayment proves the Milestone 8
+// Part 2 400-vs-409 convention: this request is well-formed (a positive
+// amount) but conflicts with the invoice's current outstanding balance —
+// a state-dependent conflict, not a malformed request, so 409 rather
+// than 400 (see ErrPaymentExceedsOutstanding's own comment).
 func TestInvoiceHandler_CreatePayment_Overpayment(t *testing.T) {
 	f := newTestFixture()
 	handler := newTestHandler(f)
@@ -236,8 +245,8 @@ func TestInvoiceHandler_CreatePayment_Overpayment(t *testing.T) {
 
 	handler.CreatePayment(recorder, request)
 
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusBadRequest, recorder.Code, recorder.Body.String())
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusConflict, recorder.Code, recorder.Body.String())
 	}
 }
 

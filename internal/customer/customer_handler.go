@@ -1,13 +1,13 @@
 package customer
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 
 	"github.com/google/uuid"
 
 	admin "go-invoicing/internal/administration"
+	"go-invoicing/internal/httpx"
 )
 
 // CustomerHandler owns the HTTP-specific concerns for customers: decoding
@@ -38,9 +38,7 @@ func (h *CustomerHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var request CreateCustomerRequest
-
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if !httpx.DecodeJSON(w, r, &request) {
 		return
 	}
 
@@ -55,22 +53,17 @@ func (h *CustomerHandler) Create(w http.ResponseWriter, r *http.Request) {
 	)
 	if err != nil {
 		if errors.Is(err, ErrCustomerNameRequired) {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeValidationFailed, err.Error())
 			return
 		}
 
-		http.Error(w, "failed to create customer", http.StatusInternalServerError)
+		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to create customer")
 		return
 	}
 
 	response := toCustomerResponse(c)
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
-	}
+	httpx.WriteJSON(w, http.StatusCreated, response)
 }
 
 // GetByID handles GET /customers/{id}.
@@ -84,28 +77,24 @@ func (h *CustomerHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 
 	id, err := uuid.Parse(idString)
 	if err != nil {
-		http.Error(w, "invalid customer ID", http.StatusBadRequest)
+		httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, "invalid customer ID")
 		return
 	}
 
 	c, err := h.service.GetByID(r.Context(), identity.OrganisationID, id)
 	if err != nil {
 		if errors.Is(err, ErrCustomerNotFound) {
-			http.Error(w, "customer not found", http.StatusNotFound)
+			httpx.WriteError(w, http.StatusNotFound, "customer_not_found", "customer not found")
 			return
 		}
 
-		http.Error(w, "failed to get customer", http.StatusInternalServerError)
+		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to get customer")
 		return
 	}
 
 	response := toCustomerResponse(c)
 
-	w.Header().Set("Content-Type", "application/json")
-
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
-	}
+	httpx.WriteJSON(w, http.StatusOK, response)
 }
 
 // GetBillingAddress handles GET /customers/{id}/billing-address.
@@ -117,28 +106,24 @@ func (h *CustomerHandler) GetBillingAddress(w http.ResponseWriter, r *http.Reque
 
 	customerID, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
-		http.Error(w, "invalid customer ID", http.StatusBadRequest)
+		httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, "invalid customer ID")
 		return
 	}
 
 	address, err := h.service.GetBillingAddress(r.Context(), identity.OrganisationID, customerID)
 	if err != nil {
 		if errors.Is(err, ErrBillingAddressNotFound) {
-			http.Error(w, "billing address not found", http.StatusNotFound)
+			httpx.WriteError(w, http.StatusNotFound, "billing_address_not_found", "billing address not found")
 			return
 		}
 
-		http.Error(w, "failed to get billing address", http.StatusInternalServerError)
+		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to get billing address")
 		return
 	}
 
 	response := toAddressResponse(address)
 
-	w.Header().Set("Content-Type", "application/json")
-
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
-	}
+	httpx.WriteJSON(w, http.StatusOK, response)
 }
 
 // UpsertBillingAddress handles PUT /customers/{id}/billing-address —
@@ -152,40 +137,34 @@ func (h *CustomerHandler) UpsertBillingAddress(w http.ResponseWriter, r *http.Re
 
 	customerID, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
-		http.Error(w, "invalid customer ID", http.StatusBadRequest)
+		httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, "invalid customer ID")
 		return
 	}
 
 	var request UpsertBillingAddressRequest
-
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if !httpx.DecodeJSON(w, r, &request) {
 		return
 	}
 
 	address, err := h.service.UpsertBillingAddress(r.Context(), identity.OrganisationID, customerID, request)
 	if err != nil {
 		if errors.Is(err, ErrBillingAddressNotFound) {
-			http.Error(w, "customer not found", http.StatusNotFound)
+			httpx.WriteError(w, http.StatusNotFound, "customer_not_found", "customer not found")
 			return
 		}
 
 		if isBillingAddressValidationError(err) {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeValidationFailed, err.Error())
 			return
 		}
 
-		http.Error(w, "failed to save billing address", http.StatusInternalServerError)
+		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to save billing address")
 		return
 	}
 
 	response := toAddressResponse(address)
 
-	w.Header().Set("Content-Type", "application/json")
-
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
-	}
+	httpx.WriteJSON(w, http.StatusOK, response)
 }
 
 // isBillingAddressValidationError reports whether err is one of

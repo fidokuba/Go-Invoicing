@@ -34,6 +34,7 @@ func TestProductHandler_Create(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"name":"Widget","sku":"SKU-1","price":1999}`)
 	request := httptest.NewRequest(http.MethodPost, "/products", body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedOrganisation(request, organisationID)
 	recorder := httptest.NewRecorder()
 
@@ -81,6 +82,7 @@ func TestProductHandler_Create_IgnoresOrganisationIdQueryParameter(t *testing.T)
 
 	body := bytes.NewBufferString(`{"name":"Widget","sku":"SKU-1","price":1999}`)
 	request := httptest.NewRequest(http.MethodPost, "/products?organisationId="+otherOrganisationID.String(), body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedOrganisation(request, authenticatedOrganisationID)
 	recorder := httptest.NewRecorder()
 
@@ -106,6 +108,7 @@ func TestProductHandler_Create_MissingName(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"name":"   ","sku":"SKU-1","price":1999}`)
 	request := httptest.NewRequest(http.MethodPost, "/products", body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedOrganisation(request, organisationID)
 	recorder := httptest.NewRecorder()
 
@@ -122,6 +125,7 @@ func TestProductHandler_Create_MissingSKU(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"name":"Widget","sku":"   ","price":1999}`)
 	request := httptest.NewRequest(http.MethodPost, "/products", body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedOrganisation(request, organisationID)
 	recorder := httptest.NewRecorder()
 
@@ -138,6 +142,7 @@ func TestProductHandler_Create_NegativePrice(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"name":"Widget","sku":"SKU-1","price":-1}`)
 	request := httptest.NewRequest(http.MethodPost, "/products", body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedOrganisation(request, organisationID)
 	recorder := httptest.NewRecorder()
 
@@ -154,6 +159,7 @@ func TestProductHandler_Create_InvalidJSON(t *testing.T) {
 
 	body := bytes.NewBufferString(`{`)
 	request := httptest.NewRequest(http.MethodPost, "/products", body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedOrganisation(request, organisationID)
 	recorder := httptest.NewRecorder()
 
@@ -173,6 +179,7 @@ func TestProductHandler_Create_DuplicateSKU(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"name":"Widget","sku":"SKU-1","price":1999}`)
 	request := httptest.NewRequest(http.MethodPost, "/products", body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedOrganisation(request, organisationID)
 	recorder := httptest.NewRecorder()
 
@@ -192,6 +199,7 @@ func TestProductHandler_Create_UnexpectedRepositoryError(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"name":"Widget","sku":"SKU-1","price":1999}`)
 	request := httptest.NewRequest(http.MethodPost, "/products", body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedOrganisation(request, organisationID)
 	recorder := httptest.NewRecorder()
 
@@ -212,6 +220,7 @@ func TestProductHandler_Create_MissingAuthenticatedContext(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"name":"Widget","sku":"SKU-1","price":1999}`)
 	request := httptest.NewRequest(http.MethodPost, "/products", body)
+	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 
 	handler.Create(recorder, request)

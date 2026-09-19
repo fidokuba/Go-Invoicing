@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"go-invoicing/internal/httpx"
 )
 
 // AuthMiddleware validates the "Authorization: Bearer <token>" header on
@@ -42,7 +44,7 @@ func NewAuthMiddleware(
 // reveals nothing about why this particular request was rejected.
 func unauthorized(w http.ResponseWriter) {
 	w.Header().Set("WWW-Authenticate", "Bearer")
-	http.Error(w, "unauthorized", http.StatusUnauthorized)
+	httpx.WriteError(w, http.StatusUnauthorized, httpx.CodeUnauthorized, "unauthorized")
 }
 
 // RequireAuth wraps next so it only runs once the request carries a
@@ -65,7 +67,7 @@ func (m *AuthMiddleware) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 				return
 			}
 
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+			httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "internal server error")
 			return
 		}
 
@@ -81,7 +83,7 @@ func (m *AuthMiddleware) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 				return
 			}
 
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+			httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "internal server error")
 			return
 		}
 

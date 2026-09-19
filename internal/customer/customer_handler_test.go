@@ -44,6 +44,7 @@ func TestCustomerHandler_Create(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"name":"Acme Ltd","email":"hello@acme.test"}`)
 	request := httptest.NewRequest(http.MethodPost, "/customers", body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedOrganisation(request, organisationID)
 	recorder := httptest.NewRecorder()
 
@@ -83,6 +84,7 @@ func TestCustomerHandler_Create_IgnoresOrganisationIdQueryParameter(t *testing.T
 
 	body := bytes.NewBufferString(`{"name":"Acme Ltd"}`)
 	request := httptest.NewRequest(http.MethodPost, "/customers?organisationId="+otherOrganisationID.String(), body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedOrganisation(request, authenticatedOrganisationID)
 	recorder := httptest.NewRecorder()
 
@@ -108,6 +110,7 @@ func TestCustomerHandler_Create_MissingName(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"name":"   "}`)
 	request := httptest.NewRequest(http.MethodPost, "/customers", body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedOrganisation(request, organisationID)
 	recorder := httptest.NewRecorder()
 
@@ -124,6 +127,7 @@ func TestCustomerHandler_Create_InvalidJSON(t *testing.T) {
 
 	body := bytes.NewBufferString(`{`)
 	request := httptest.NewRequest(http.MethodPost, "/customers", body)
+	request.Header.Set("Content-Type", "application/json")
 	request = withAuthenticatedOrganisation(request, organisationID)
 	recorder := httptest.NewRecorder()
 
@@ -144,6 +148,7 @@ func TestCustomerHandler_Create_MissingAuthenticatedContext(t *testing.T) {
 
 	body := bytes.NewBufferString(`{"name":"Acme Ltd"}`)
 	request := httptest.NewRequest(http.MethodPost, "/customers", body)
+	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 
 	handler.Create(recorder, request)

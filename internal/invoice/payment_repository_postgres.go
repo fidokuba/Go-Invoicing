@@ -2,6 +2,7 @@ package invoice
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -44,14 +45,19 @@ func (r *PostgresPaymentRepository) WithTx(tx pgx.Tx) PaymentRepository {
 // the matched invoices row itself (i.id), not blindly trusted from the
 // caller's payment.InvoiceID, so there is no way for this statement to
 // insert a payment against an invoice it didn't independently verify.
-// created_at and updated_at are left to PostgreSQL's DEFAULT NOW(),
-// matching every other Create in this project.
+// created_at and updated_at are left to PostgreSQL's DEFAULT NOW(), but
+// scanned straight back onto payment via RETURNING, so a caller building
+// an API response directly from this same *Payment gets real timestamps
+// without a second SELECT.
 //
-// If no tenant-owned invoice matches, zero rows are inserted and this
-// returns ErrInvoiceNotFound — the same not-found domain error the
-// service-level ownership check (InvoiceRepository.GetForUpdate) already
-// returns for this case, so the two layers of scoping stay externally
-// indistinguishable from each other and from a genuinely missing invoice.
+// If no tenant-owned invoice matches, zero rows are inserted — RETURNING
+// then yields no row at all, which this reports as pgx.ErrNoRows via
+// QueryRow.Scan, translated to ErrInvoiceNotFound exactly as the
+// previous RowsAffected()==0 check did. This is the same not-found
+// domain error the service-level ownership check
+// (InvoiceRepository.GetForUpdate) already returns for this case, so the
+// two layers of scoping stay externally indistinguishable from each
+// other and from a genuinely missing invoice.
 func (r *PostgresPaymentRepository) Create(
 	ctx context.Context,
 	organisationID uuid.UUID,
@@ -73,9 +79,10 @@ func (r *PostgresPaymentRepository) Create(
 		WHERE i.id = $2
 			AND i.organisation_id = $8
 			AND i.deleted_at IS NULL
+		RETURNING created_at, updated_at
 	`
 
-	tag, err := r.db.Exec(
+	err := r.db.QueryRow(
 		ctx,
 		query,
 		payment.ID,
@@ -86,13 +93,13 @@ func (r *PostgresPaymentRepository) Create(
 		payment.Reference,
 		payment.Notes,
 		organisationID,
-	)
+	).Scan(&payment.CreatedAt, &payment.UpdatedAt)
 	if err != nil {
-		return fmt.Errorf("create payment: %w", err)
-	}
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrInvoiceNotFound
+		}
 
-	if tag.RowsAffected() == 0 {
-		return ErrInvoiceNotFound
+		return fmt.Errorf("create payment: %w", err)
 	}
 
 	return nil

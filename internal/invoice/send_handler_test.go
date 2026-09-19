@@ -18,6 +18,7 @@ func TestInvoiceHandler_Send_Success(t *testing.T) {
 	invoiceID := f.addInvoice(10000, InvoiceStatusDraft)
 
 	request := httptest.NewRequest(http.MethodPost, "/invoices/"+invoiceID.String()+"/send", nil)
+	request.Header.Set("Content-Type", "application/json")
 	request.SetPathValue("id", invoiceID.String())
 	request = withAuthenticatedOrganisation(request, f.organisationID)
 	recorder := httptest.NewRecorder()
@@ -47,6 +48,7 @@ func TestInvoiceHandler_Send_InvalidUUID(t *testing.T) {
 	handler := newTestHandler(f)
 
 	request := httptest.NewRequest(http.MethodPost, "/invoices/not-a-uuid/send", nil)
+	request.Header.Set("Content-Type", "application/json")
 	request.SetPathValue("id", "not-a-uuid")
 	request = withAuthenticatedOrganisation(request, f.organisationID)
 	recorder := httptest.NewRecorder()
@@ -64,6 +66,7 @@ func TestInvoiceHandler_Send_MissingAuthenticatedContext(t *testing.T) {
 	invoiceID := f.addInvoice(10000, InvoiceStatusDraft)
 
 	request := httptest.NewRequest(http.MethodPost, "/invoices/"+invoiceID.String()+"/send", nil)
+	request.Header.Set("Content-Type", "application/json")
 	request.SetPathValue("id", invoiceID.String())
 	recorder := httptest.NewRecorder()
 
@@ -80,6 +83,7 @@ func TestInvoiceHandler_Send_NotFound(t *testing.T) {
 
 	id := uuid.New()
 	request := httptest.NewRequest(http.MethodPost, "/invoices/"+id.String()+"/send", nil)
+	request.Header.Set("Content-Type", "application/json")
 	request.SetPathValue("id", id.String())
 	request = withAuthenticatedOrganisation(request, f.organisationID)
 	recorder := httptest.NewRecorder()
@@ -97,6 +101,7 @@ func TestInvoiceHandler_Send_WrongOrganisation(t *testing.T) {
 	invoiceID := f.addInvoice(10000, InvoiceStatusDraft)
 
 	request := httptest.NewRequest(http.MethodPost, "/invoices/"+invoiceID.String()+"/send", nil)
+	request.Header.Set("Content-Type", "application/json")
 	request.SetPathValue("id", invoiceID.String())
 	request = withAuthenticatedOrganisation(request, uuid.New())
 	recorder := httptest.NewRecorder()
@@ -114,6 +119,7 @@ func TestInvoiceHandler_Send_AlreadySent(t *testing.T) {
 	invoiceID := f.addInvoice(10000, InvoiceStatusSent)
 
 	request := httptest.NewRequest(http.MethodPost, "/invoices/"+invoiceID.String()+"/send", nil)
+	request.Header.Set("Content-Type", "application/json")
 	request.SetPathValue("id", invoiceID.String())
 	request = withAuthenticatedOrganisation(request, f.organisationID)
 	recorder := httptest.NewRecorder()
@@ -131,6 +137,7 @@ func TestInvoiceHandler_Send_Paid(t *testing.T) {
 	invoiceID := f.addInvoice(10000, InvoiceStatusPaid)
 
 	request := httptest.NewRequest(http.MethodPost, "/invoices/"+invoiceID.String()+"/send", nil)
+	request.Header.Set("Content-Type", "application/json")
 	request.SetPathValue("id", invoiceID.String())
 	request = withAuthenticatedOrganisation(request, f.organisationID)
 	recorder := httptest.NewRecorder()
@@ -154,6 +161,7 @@ func TestInvoiceHandler_Send_MissingSellerNameReturnsConflict(t *testing.T) {
 	f.organisationRepository.organisations[f.organisationID] = admin.Organisation{ID: f.organisationID, Name: ""}
 
 	request := httptest.NewRequest(http.MethodPost, "/invoices/"+invoiceID.String()+"/send", nil)
+	request.Header.Set("Content-Type", "application/json")
 	request.SetPathValue("id", invoiceID.String())
 	request = withAuthenticatedOrganisation(request, f.organisationID)
 	recorder := httptest.NewRecorder()
@@ -179,6 +187,7 @@ func TestInvoiceHandler_Send_MissingSettingsReturnsConflict(t *testing.T) {
 	f.service.settingsRepository = f.settingsRepository
 
 	request := httptest.NewRequest(http.MethodPost, "/invoices/"+invoiceID.String()+"/send", nil)
+	request.Header.Set("Content-Type", "application/json")
 	request.SetPathValue("id", invoiceID.String())
 	request = withAuthenticatedOrganisation(request, f.organisationID)
 	recorder := httptest.NewRecorder()
@@ -206,6 +215,7 @@ func TestInvoiceHandler_Send_OrganisationLookupFailureReturnsGenericServerError(
 	delete(f.organisationRepository.organisations, f.organisationID)
 
 	request := httptest.NewRequest(http.MethodPost, "/invoices/"+invoiceID.String()+"/send", nil)
+	request.Header.Set("Content-Type", "application/json")
 	request.SetPathValue("id", invoiceID.String())
 	request = withAuthenticatedOrganisation(request, f.organisationID)
 	recorder := httptest.NewRecorder()
@@ -235,6 +245,7 @@ func TestInvoiceHandler_Send_IgnoresOrganisationIdQueryParameter(t *testing.T) {
 	attackerOrganisationID := uuid.New()
 
 	request := httptest.NewRequest(http.MethodPost, "/invoices/"+invoiceID.String()+"/send?organisationId="+f.organisationID.String(), nil)
+	request.Header.Set("Content-Type", "application/json")
 	request.SetPathValue("id", invoiceID.String())
 	request = withAuthenticatedOrganisation(request, attackerOrganisationID)
 	recorder := httptest.NewRecorder()

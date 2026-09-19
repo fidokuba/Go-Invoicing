@@ -122,6 +122,52 @@ func TestPostgresProductRepository_CreateAndGetByID(t *testing.T) {
 	}
 }
 
+// TestPostgresProductRepository_Create_PopulatesTimestamps is the
+// Milestone 8 Part 2 regression test for the systemic Create-response
+// timestamp defect Part 1 found.
+func TestPostgresProductRepository_Create_PopulatesTimestamps(t *testing.T) {
+	db := newTestPool(t)
+	ctx := context.Background()
+
+	organisationID := createTestOrganisation(t, db)
+	repository := NewPostgresProductRepository(db)
+
+	p := &Product{
+		ID:             uuid.New(),
+		OrganisationID: organisationID,
+		Name:           "Timestamp Test Product",
+		SKU:            "SKU-TIMESTAMP-1",
+		Price:          500,
+		IsActive:       true,
+	}
+
+	if err := repository.Create(ctx, p); err != nil {
+		t.Fatalf("create product: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Exec(context.Background(), "DELETE FROM products WHERE id = $1", p.ID)
+	})
+
+	if p.CreatedAt.IsZero() {
+		t.Error("expected CreatedAt to be populated by Create, got the zero value")
+	}
+	if p.UpdatedAt.IsZero() {
+		t.Error("expected UpdatedAt to be populated by Create, got the zero value")
+	}
+
+	fetched, err := repository.GetByID(ctx, organisationID, p.ID)
+	if err != nil {
+		t.Fatalf("get product: %v", err)
+	}
+
+	if !p.CreatedAt.Equal(fetched.CreatedAt) {
+		t.Errorf("expected Create's returned CreatedAt %v to match the persisted value %v", p.CreatedAt, fetched.CreatedAt)
+	}
+	if !p.UpdatedAt.Equal(fetched.UpdatedAt) {
+		t.Errorf("expected Create's returned UpdatedAt %v to match the persisted value %v", p.UpdatedAt, fetched.UpdatedAt)
+	}
+}
+
 func TestPostgresProductRepository_GetByID_NotFound(t *testing.T) {
 	db := newTestPool(t)
 	ctx := context.Background()

@@ -65,6 +65,15 @@ type InvoiceLineResponse struct {
 //
 // SentAt is nil for a Draft invoice and populated the moment Send
 // succeeds.
+// Currency (Milestone 8 Part 2) is the single 3-letter code every money
+// field on this response is denominated in — Subtotal/VATTotal/Total/
+// AmountPaid/AmountOutstanding and every line's UnitPrice/VATAmount/
+// Total all share it, since an invoice has exactly one currency for its
+// entire lifetime. This is deliberately the only snapshot-derived field
+// exposed here; the other twenty immutable seller/customer snapshot
+// columns stay internal. See toInvoiceResponse's caller for how this
+// value is resolved (live Settings.Currency for a Draft invoice, the
+// immutable Invoice.Currency snapshot for anything else).
 type InvoiceResponse struct {
 	ID                string                `json:"id"`
 	OrganisationID    string                `json:"organisationId"`
@@ -72,6 +81,7 @@ type InvoiceResponse struct {
 	InvoiceNumber     string                `json:"invoiceNumber"`
 	IssueDate         string                `json:"issueDate"`
 	DueDate           string                `json:"dueDate"`
+	Currency          string                `json:"currency"`
 	Subtotal          int64                 `json:"subtotal"`
 	VATTotal          int64                 `json:"vatTotal"`
 	Total             int64                 `json:"total"`
@@ -100,7 +110,12 @@ type InvoiceResponse struct {
 // now is used only to derive Status via Invoice.EffectiveStatus — this
 // function stays pure/deterministic itself rather than calling
 // time.Now(); the HTTP handler supplies the real current time.
-func toInvoiceResponse(inv *Invoice, lines []*Line, amountPaid int64, now time.Time) InvoiceResponse {
+//
+// currency is resolved by the caller (InvoiceService.Create/GetByID, via
+// resolveInvoiceCurrency) before this function ever runs — this stays a
+// pure mapping function with no repository access of its own, exactly
+// like amountPaid above.
+func toInvoiceResponse(inv *Invoice, lines []*Line, amountPaid int64, currency string, now time.Time) InvoiceResponse {
 	lineResponses := make([]InvoiceLineResponse, 0, len(lines))
 
 	for _, l := range lines {
@@ -124,7 +139,7 @@ func toInvoiceResponse(inv *Invoice, lines []*Line, amountPaid int64, now time.T
 
 	var sentAt *string
 	if inv.SentAt != nil {
-		s := inv.SentAt.Format(time.RFC3339)
+		s := inv.SentAt.UTC().Format(time.RFC3339)
 		sentAt = &s
 	}
 
@@ -135,6 +150,7 @@ func toInvoiceResponse(inv *Invoice, lines []*Line, amountPaid int64, now time.T
 		InvoiceNumber:     inv.InvoiceNumber,
 		IssueDate:         inv.IssueDate.Format(dateLayout),
 		DueDate:           inv.DueDate.Format(dateLayout),
+		Currency:          currency,
 		Subtotal:          inv.Subtotal,
 		VATTotal:          inv.VATTotal,
 		Total:             inv.Total,
@@ -144,7 +160,7 @@ func toInvoiceResponse(inv *Invoice, lines []*Line, amountPaid int64, now time.T
 		SentAt:            sentAt,
 		Notes:             inv.Notes,
 		Lines:             lineResponses,
-		CreatedAt:         inv.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:         inv.UpdatedAt.Format(time.RFC3339),
+		CreatedAt:         inv.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:         inv.UpdatedAt.UTC().Format(time.RFC3339),
 	}
 }

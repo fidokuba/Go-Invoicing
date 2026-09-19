@@ -1,9 +1,10 @@
 package admin
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
+
+	"go-invoicing/internal/httpx"
 )
 
 // RegistrationHandler owns the HTTP-specific concerns for registration:
@@ -29,9 +30,7 @@ func NewRegistrationHandler(service *RegistrationService) *RegistrationHandler {
 // token.
 func (h *RegistrationHandler) Register(w http.ResponseWriter, r *http.Request) {
 	var request RegisterRequest
-
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if !httpx.DecodeJSON(w, r, &request) {
 		return
 	}
 
@@ -46,27 +45,23 @@ func (h *RegistrationHandler) Register(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, ErrOrganisationNameRequired) ||
 			errors.Is(err, ErrUserNameRequired) ||
 			errors.Is(err, ErrUserEmailRequired) ||
+			errors.Is(err, ErrUserEmailInvalid) ||
 			errors.Is(err, ErrUserPasswordRequired) ||
 			errors.Is(err, ErrUserPasswordTooShort) {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeValidationFailed, err.Error())
 			return
 		}
 
 		if errors.Is(err, ErrUserEmailAlreadyExists) {
-			http.Error(w, err.Error(), http.StatusConflict)
+			httpx.WriteError(w, http.StatusConflict, "email_already_exists", err.Error())
 			return
 		}
 
-		http.Error(w, "failed to register", http.StatusInternalServerError)
+		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to register")
 		return
 	}
 
 	response := toRegisterResponse(result)
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
-	}
+	httpx.WriteJSON(w, http.StatusCreated, response)
 }
