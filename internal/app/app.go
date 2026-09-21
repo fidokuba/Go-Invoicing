@@ -23,14 +23,47 @@ const apiV1Prefix = "/api/v1"
 type App struct {
 	db     *pgxpool.Pool
 	logger *slog.Logger
+
+	// routes is populated by Handler() as it registers each route — see
+	// RoutePattern's own doc comment for why this exists and how tests
+	// use it.
+	routes []RoutePattern
 }
 
 // New wires an App around an existing database pool and logger. logger is
 // used only by the panic-recovery middleware (see Handler) to record an
 // unexpected handler panic server-side before responding with the
 // standard generic 500 — nothing else in this package logs anything.
+//
+// db may be a typed nil *pgxpool.Pool: every repository constructor
+// Handler calls below only stores it in a struct field, never dereferences
+// it during construction, so building the route table (see RoutePatterns)
+// requires no live database connection. A nil pool only becomes a problem
+// once a handler that actually queries the database is invoked.
 func New(db *pgxpool.Pool, logger *slog.Logger) *App {
 	return &App{db: db, logger: logger}
+}
+
+// RoutePattern is one application route's method and net/http.ServeMux
+// path pattern — nothing about its handler, request schema, or
+// authorization requirements (Milestone 8 Part 5 deliberately keeps this
+// narrow; see its own tests for why). net/http.ServeMux has no public way
+// to enumerate every pattern it holds once registered, so this is
+// collected once, here, at registration time, rather than hand-duplicated
+// in a second list a test would have to keep in sync by hand.
+type RoutePattern struct {
+	Method string
+	Path   string
+}
+
+// RoutePatterns returns the method+path of every route this application
+// registers — /health, /health/db and /api/v1/openapi.yaml included —
+// populated by the most recent call to Handler(). Route registration is
+// entirely static (there is no dynamic/conditional registration anywhere
+// in this package), so calling Handler() once is enough for this to
+// reflect the complete, real route table for the lifetime of the App.
+func (a *App) RoutePatterns() []RoutePattern {
+	return a.routes
 }
 
 // Handler builds the complete application handler: every registered
@@ -40,6 +73,17 @@ func New(db *pgxpool.Pool, logger *slog.Logger) *App {
 // panic anywhere below never reaches the client as a dropped connection).
 func (a *App) Handler() http.Handler {
 	mux := http.NewServeMux()
+
+	// register is the single place a route's method+path ever gets
+	// written down: it both wires handlerFunc into mux under net/http's
+	// "METHOD /path" pattern syntax and records the same (method, path)
+	// pair into a.routes, so RoutePatterns() can never drift from what
+	// was actually registered — see RoutePattern's own doc comment.
+	a.routes = nil
+	register := func(method, path string, handlerFunc http.HandlerFunc) {
+		mux.HandleFunc(method+" "+path, handlerFunc)
+		a.routes = append(a.routes, RoutePattern{Method: method, Path: path})
+	}
 
 	// Wire the organisation dependency chain:
 	// pool -> repository -> service -> handler. OrganisationService also
@@ -70,12 +114,12 @@ func (a *App) Handler() http.Handler {
 	authHandler := admin.NewAuthHandler(authService)
 	authMiddleware := admin.NewAuthMiddleware(sessionRepository, userRepository)
 
-	mux.HandleFunc("POST "+apiV1Prefix+"/auth/login", authHandler.Login)
+	register("POST", apiV1Prefix+"/auth/login", authHandler.Login)
 	// POST /auth/logout (Milestone 8 Part 3): revokes only the current
 	// session (see AuthHandler.Logout) — authentication required, so it
 	// must go through the same RequireAuth every other protected route
 	// does, not a bespoke check.
-	mux.HandleFunc("POST "+apiV1Prefix+"/auth/logout", authMiddleware.RequireAuth(authHandler.Logout))
+	register("POST", apiV1Prefix+"/auth/logout", authMiddleware.RequireAuth(authHandler.Logout))
 
 	// Wire the registration dependency chain: pool -> repositories ->
 	// service -> handler. POST /register (Milestone 4 Part 5) is now the
@@ -88,7 +132,7 @@ func (a *App) Handler() http.Handler {
 	registrationService := admin.NewRegistrationService(organisationRepository, settingsRepository, userRepository, a.db)
 	registrationHandler := admin.NewRegistrationHandler(registrationService)
 
-	mux.HandleFunc("POST "+apiV1Prefix+"/register", registrationHandler.Register)
+	register("POST", apiV1Prefix+"/register", registrationHandler.Register)
 
 	// POST /users (Milestone 4 Part 5) is now a protected, role-gated
 	// route for creating additional users within an existing,
@@ -99,18 +143,18 @@ func (a *App) Handler() http.Handler {
 	// itself enforces which target role the caller's role may assign —
 	// see that method's doc comment for why that rule lives there too,
 	// not only in this route gate.
-	mux.HandleFunc(
-		"POST "+apiV1Prefix+"/users",
+	register(
+		"POST", apiV1Prefix+"/users",
 		authMiddleware.RequireAuth(admin.RequireRole(admin.UserRoleAdmin, admin.UserRoleManager)(userHandler.Create)),
 	)
 	// GET /users (Milestone 8 Part 3): organisation user/team management —
 	// admin/manager only, the same gate POST /users already uses. An
 	// ordinary user must get 403, never a partial/self-only listing.
-	mux.HandleFunc(
-		"GET "+apiV1Prefix+"/users",
+	register(
+		"GET", apiV1Prefix+"/users",
 		authMiddleware.RequireAuth(admin.RequireRole(admin.UserRoleAdmin, admin.UserRoleManager)(userHandler.List)),
 	)
-	mux.HandleFunc("GET "+apiV1Prefix+"/users/{id}", authMiddleware.RequireAuth(userHandler.GetByID))
+	register("GET", apiV1Prefix+"/users/{id}", authMiddleware.RequireAuth(userHandler.GetByID))
 
 	// GET /organisation (Milestone 4 Part 4) is a self-resource route: it
 	// always returns the authenticated caller's own organisation, sourced
@@ -118,15 +162,15 @@ func (a *App) Handler() http.Handler {
 	// segment, so there is no client-supplied organisation identifier to
 	// remove or ignore here. This replaces the earlier protected
 	// GET /organisations/{id}.
-	mux.HandleFunc("GET "+apiV1Prefix+"/organisation", authMiddleware.RequireAuth(organisationHandler.GetCurrent))
+	register("GET", apiV1Prefix+"/organisation", authMiddleware.RequireAuth(organisationHandler.GetCurrent))
 
 	// PATCH /organisation (Milestone 7 Part 1) is admin-only: organisation
 	// identity/legal/business details affect every invoice the tenant
 	// produces, so it isn't freely mutable by every role the way customer/
 	// product/invoice data is. Same RequireRole gate POST /users already
 	// uses, no new role-hierarchy logic.
-	mux.HandleFunc(
-		"PATCH "+apiV1Prefix+"/organisation",
+	register(
+		"PATCH", apiV1Prefix+"/organisation",
 		authMiddleware.RequireAuth(admin.RequireRole(admin.UserRoleAdmin)(organisationHandler.Update)),
 	)
 
@@ -138,11 +182,11 @@ func (a *App) Handler() http.Handler {
 
 	// GET /organisation/settings: every authenticated role may read the
 	// organisation's current invoice-numbering currency/prefix/terms.
-	mux.HandleFunc("GET "+apiV1Prefix+"/organisation/settings", authMiddleware.RequireAuth(settingsHandler.GetCurrent))
+	register("GET", apiV1Prefix+"/organisation/settings", authMiddleware.RequireAuth(settingsHandler.GetCurrent))
 	// PATCH /organisation/settings: admin-only, same gate as PATCH
 	// /organisation — these settings affect every future invoice.
-	mux.HandleFunc(
-		"PATCH "+apiV1Prefix+"/organisation/settings",
+	register(
+		"PATCH", apiV1Prefix+"/organisation/settings",
 		authMiddleware.RequireAuth(admin.RequireRole(admin.UserRoleAdmin)(settingsHandler.Update)),
 	)
 
@@ -156,27 +200,27 @@ func (a *App) Handler() http.Handler {
 	customerService := customer.NewCustomerService(customerRepository, addressRepository)
 	customerHandler := customer.NewCustomerHandler(customerService)
 
-	mux.HandleFunc("POST "+apiV1Prefix+"/customers", authMiddleware.RequireAuth(customerHandler.Create))
+	register("POST", apiV1Prefix+"/customers", authMiddleware.RequireAuth(customerHandler.Create))
 	// GET /customers (Milestone 8 Part 3): open to every authenticated
 	// role, same policy as every other customer route.
-	mux.HandleFunc("GET "+apiV1Prefix+"/customers", authMiddleware.RequireAuth(customerHandler.List))
-	mux.HandleFunc("GET "+apiV1Prefix+"/customers/{id}", authMiddleware.RequireAuth(customerHandler.GetByID))
+	register("GET", apiV1Prefix+"/customers", authMiddleware.RequireAuth(customerHandler.List))
+	register("GET", apiV1Prefix+"/customers/{id}", authMiddleware.RequireAuth(customerHandler.GetByID))
 
 	// Billing address (Milestone 7 Part 1): available to every authenticated
 	// role, same policy as every other customer/invoice business-data route
 	// — only organisation PATCH is admin-only.
-	mux.HandleFunc("GET "+apiV1Prefix+"/customers/{id}/billing-address", authMiddleware.RequireAuth(customerHandler.GetBillingAddress))
-	mux.HandleFunc("PUT "+apiV1Prefix+"/customers/{id}/billing-address", authMiddleware.RequireAuth(customerHandler.UpsertBillingAddress))
+	register("GET", apiV1Prefix+"/customers/{id}/billing-address", authMiddleware.RequireAuth(customerHandler.GetBillingAddress))
+	register("PUT", apiV1Prefix+"/customers/{id}/billing-address", authMiddleware.RequireAuth(customerHandler.UpsertBillingAddress))
 
 	// Wire the product dependency chain: pool -> repository -> service -> handler.
 	productRepository := product.NewPostgresProductRepository(a.db)
 	productService := product.NewProductService(productRepository)
 	productHandler := product.NewProductHandler(productService)
 
-	mux.HandleFunc("POST "+apiV1Prefix+"/products", authMiddleware.RequireAuth(productHandler.Create))
+	register("POST", apiV1Prefix+"/products", authMiddleware.RequireAuth(productHandler.Create))
 	// GET /products (Milestone 8 Part 3): open to every authenticated role.
-	mux.HandleFunc("GET "+apiV1Prefix+"/products", authMiddleware.RequireAuth(productHandler.List))
-	mux.HandleFunc("GET "+apiV1Prefix+"/products/{id}", authMiddleware.RequireAuth(productHandler.GetByID))
+	register("GET", apiV1Prefix+"/products", authMiddleware.RequireAuth(productHandler.List))
+	register("GET", apiV1Prefix+"/products/{id}", authMiddleware.RequireAuth(productHandler.GetByID))
 
 	// Wire the invoice dependency chain: pool -> repository -> service -> handler.
 	// The invoice service also depends on the customer and product
@@ -204,21 +248,21 @@ func (a *App) Handler() http.Handler {
 
 	invoiceHandler := invoice.NewInvoiceHandler(invoiceService, invoicePDFService)
 
-	mux.HandleFunc("POST "+apiV1Prefix+"/invoices", authMiddleware.RequireAuth(invoiceHandler.Create))
+	register("POST", apiV1Prefix+"/invoices", authMiddleware.RequireAuth(invoiceHandler.Create))
 	// GET /invoices (Milestone 8 Part 3): open to every authenticated
 	// role, same policy as every other invoice route.
-	mux.HandleFunc("GET "+apiV1Prefix+"/invoices", authMiddleware.RequireAuth(invoiceHandler.List))
-	mux.HandleFunc("GET "+apiV1Prefix+"/invoices/{id}", authMiddleware.RequireAuth(invoiceHandler.GetByID))
+	register("GET", apiV1Prefix+"/invoices", authMiddleware.RequireAuth(invoiceHandler.List))
+	register("GET", apiV1Prefix+"/invoices/{id}", authMiddleware.RequireAuth(invoiceHandler.GetByID))
 	// POST /invoices/{id}/send (Milestone 5) is a lifecycle finalisation
 	// operation only — no PDF, no email — available to every authenticated
 	// role, same as every other invoice/payment route.
-	mux.HandleFunc("POST "+apiV1Prefix+"/invoices/{id}/send", authMiddleware.RequireAuth(invoiceHandler.Send))
-	mux.HandleFunc("POST "+apiV1Prefix+"/invoices/{id}/payments", authMiddleware.RequireAuth(invoiceHandler.CreatePayment))
-	mux.HandleFunc("GET "+apiV1Prefix+"/invoices/{id}/payments", authMiddleware.RequireAuth(invoiceHandler.GetPayments))
+	register("POST", apiV1Prefix+"/invoices/{id}/send", authMiddleware.RequireAuth(invoiceHandler.Send))
+	register("POST", apiV1Prefix+"/invoices/{id}/payments", authMiddleware.RequireAuth(invoiceHandler.CreatePayment))
+	register("GET", apiV1Prefix+"/invoices/{id}/payments", authMiddleware.RequireAuth(invoiceHandler.GetPayments))
 	// GET /invoices/{id}/pdf (Milestone 7 Part 3): synchronous PDF
 	// generation, same open-to-all-authenticated-roles policy as every
 	// other invoice route.
-	mux.HandleFunc("GET "+apiV1Prefix+"/invoices/{id}/pdf", authMiddleware.RequireAuth(invoiceHandler.GetPDF))
+	register("GET", apiV1Prefix+"/invoices/{id}/pdf", authMiddleware.RequireAuth(invoiceHandler.GetPDF))
 
 	// /health and /health/db (Milestone 1) stay unversioned and require
 	// no authentication — they are infrastructure probes, not part of the
@@ -227,11 +271,11 @@ func (a *App) Handler() http.Handler {
 	// (converted to the JSON envelope by WrapMethodNotAllowed below, the
 	// same as every other route) rather than a second, bespoke method
 	// check duplicating that logic here.
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+	register("GET", "/health", func(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
-	mux.HandleFunc("GET /health/db", func(w http.ResponseWriter, r *http.Request) {
+	register("GET", "/health/db", func(w http.ResponseWriter, r *http.Request) {
 		if err := a.db.Ping(r.Context()); err != nil {
 			httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unavailable"})
 			return
@@ -245,7 +289,7 @@ func (a *App) Handler() http.Handler {
 	// this project's API contract is documented in, never a second,
 	// separately generated document. Deliberately public: a client needs
 	// this before it can know how to authenticate at all.
-	mux.HandleFunc("GET "+apiV1Prefix+"/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
+	register("GET", apiV1Prefix+"/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/yaml")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(openapi.Spec)

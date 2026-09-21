@@ -134,11 +134,28 @@ func (h *UserHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, response)
 }
 
-// userSortFields is the public sort-field allow-list for GET /users,
+// UserListSortFields is the public sort-field allow-list for GET /users,
 // validated by httpx.ParseSortOrder before List ever runs — see
 // userSortColumns in user_repository_postgres.go for how each of these
-// maps onto an actual SQL column.
-var userSortFields = []string{"email", "role", "createdAt"}
+// maps onto an actual SQL column. Exported (Milestone 8 Part 5) so the
+// OpenAPI route/query contract tests can compare the maintained spec's
+// documented sort enum against this handler's actual allow-list without
+// a second, hand-duplicated copy of it living in a test file.
+var UserListSortFields = []string{"email", "role", "createdAt"}
+
+// UserListQueryParams is the complete set of query parameters GET /users
+// recognises — anything else is rejected with 400 (see
+// httpx.RejectUnknownQueryParams). Exported for the same
+// contract-testing reason as UserListSortFields above.
+var UserListQueryParams = []string{"limit", "offset", "role", "active", "sort", "order"}
+
+// UserListDefaultSort and UserListDefaultOrder are GET /users' defaults
+// when "sort"/"order" are omitted — exported for the same
+// contract-testing reason as UserListSortFields above.
+const (
+	UserListDefaultSort  = "createdAt"
+	UserListDefaultOrder = "desc"
+)
 
 // List handles GET /users (Milestone 8 Part 3) — organisation user/team
 // management, so it is role-gated at the route-registration site
@@ -154,7 +171,7 @@ func (h *UserHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !httpx.RejectUnknownQueryParams(w, r, "limit", "offset", "role", "active", "sort", "order") {
+	if !httpx.RejectUnknownQueryParams(w, r, UserListQueryParams...) {
 		return
 	}
 
@@ -163,7 +180,7 @@ func (h *UserHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sort, order, ok := httpx.ParseSortOrder(w, r, userSortFields, "createdAt", "desc")
+	sort, order, ok := httpx.ParseSortOrder(w, r, UserListSortFields, UserListDefaultSort, UserListDefaultOrder)
 	if !ok {
 		return
 	}

@@ -109,11 +109,32 @@ func (h *InvoiceHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, response)
 }
 
-// invoiceSortFields is the public sort-field allow-list for GET
+// InvoiceListSortFields is the public sort-field allow-list for GET
 // /invoices, validated by httpx.ParseSortOrder before List ever runs —
 // see invoiceSortColumns in invoice_repository_postgres.go for how each
-// of these maps onto an actual SQL column.
-var invoiceSortFields = []string{"invoiceNumber", "issueDate", "dueDate", "total", "createdAt"}
+// of these maps onto an actual SQL column. Exported (Milestone 8 Part 5)
+// so the OpenAPI route/query contract tests can compare the maintained
+// spec's documented sort enum against this handler's actual allow-list
+// without a second, hand-duplicated copy of it living in a test file.
+var InvoiceListSortFields = []string{"invoiceNumber", "issueDate", "dueDate", "total", "createdAt"}
+
+// InvoiceListQueryParams is the complete set of query parameters GET
+// /invoices recognises — anything else is rejected with 400 (see
+// httpx.RejectUnknownQueryParams). Exported for the same
+// contract-testing reason as InvoiceListSortFields above.
+var InvoiceListQueryParams = []string{
+	"limit", "offset", "status", "customerId", "search",
+	"issueDateFrom", "issueDateTo", "dueDateFrom", "dueDateTo",
+	"sort", "order",
+}
+
+// InvoiceListDefaultSort and InvoiceListDefaultOrder are GET /invoices'
+// defaults when "sort"/"order" are omitted — exported for the same
+// contract-testing reason as InvoiceListSortFields above.
+const (
+	InvoiceListDefaultSort  = "issueDate"
+	InvoiceListDefaultOrder = "desc"
+)
 
 // List handles GET /invoices (Milestone 8 Part 3) — available to every
 // authenticated role, same policy as every other invoice route. Default
@@ -130,12 +151,7 @@ func (h *InvoiceHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !httpx.RejectUnknownQueryParams(
-		w, r,
-		"limit", "offset", "status", "customerId", "search",
-		"issueDateFrom", "issueDateTo", "dueDateFrom", "dueDateTo",
-		"sort", "order",
-	) {
+	if !httpx.RejectUnknownQueryParams(w, r, InvoiceListQueryParams...) {
 		return
 	}
 
@@ -144,7 +160,7 @@ func (h *InvoiceHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sort, order, ok := httpx.ParseSortOrder(w, r, invoiceSortFields, "issueDate", "desc")
+	sort, order, ok := httpx.ParseSortOrder(w, r, InvoiceListSortFields, InvoiceListDefaultSort, InvoiceListDefaultOrder)
 	if !ok {
 		return
 	}

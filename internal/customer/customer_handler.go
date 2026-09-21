@@ -66,11 +66,29 @@ func (h *CustomerHandler) Create(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusCreated, response)
 }
 
-// customerSortFields is the public sort-field allow-list for GET
+// CustomerListSortFields is the public sort-field allow-list for GET
 // /customers, validated by httpx.ParseSortOrder before List ever runs —
 // see customerSortColumns in customer_repository_postgres.go for how
-// each of these maps onto an actual SQL column.
-var customerSortFields = []string{"name", "companyName", "createdAt"}
+// each of these maps onto an actual SQL column. Exported (Milestone 8
+// Part 5) so the OpenAPI route/query contract tests can compare the
+// maintained spec's documented sort enum against this handler's actual
+// allow-list without a second, hand-duplicated copy of it living in a
+// test file.
+var CustomerListSortFields = []string{"name", "companyName", "createdAt"}
+
+// CustomerListQueryParams is the complete set of query parameters GET
+// /customers recognises — anything else is rejected with 400 (see
+// httpx.RejectUnknownQueryParams). Exported for the same
+// contract-testing reason as CustomerListSortFields above.
+var CustomerListQueryParams = []string{"limit", "offset", "search", "status", "sort", "order"}
+
+// CustomerListDefaultSort and CustomerListDefaultOrder are GET
+// /customers' defaults when "sort"/"order" are omitted — exported for
+// the same contract-testing reason as CustomerListSortFields above.
+const (
+	CustomerListDefaultSort  = "name"
+	CustomerListDefaultOrder = "asc"
+)
 
 // List handles GET /customers (Milestone 8 Part 3) — available to every
 // authenticated role, same policy as every other customer route.
@@ -83,7 +101,7 @@ func (h *CustomerHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !httpx.RejectUnknownQueryParams(w, r, "limit", "offset", "search", "status", "sort", "order") {
+	if !httpx.RejectUnknownQueryParams(w, r, CustomerListQueryParams...) {
 		return
 	}
 
@@ -92,7 +110,7 @@ func (h *CustomerHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sort, order, ok := httpx.ParseSortOrder(w, r, customerSortFields, "name", "asc")
+	sort, order, ok := httpx.ParseSortOrder(w, r, CustomerListSortFields, CustomerListDefaultSort, CustomerListDefaultOrder)
 	if !ok {
 		return
 	}

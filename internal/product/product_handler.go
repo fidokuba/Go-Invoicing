@@ -74,11 +74,28 @@ func (h *ProductHandler) Create(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusCreated, response)
 }
 
-// productSortFields is the public sort-field allow-list for GET
+// ProductListSortFields is the public sort-field allow-list for GET
 // /products, validated by httpx.ParseSortOrder before List ever runs —
 // see productSortColumns in product_repository_postgres.go for how each
-// of these maps onto an actual SQL column.
-var productSortFields = []string{"name", "sku", "price", "createdAt"}
+// of these maps onto an actual SQL column. Exported (Milestone 8 Part 5)
+// so the OpenAPI route/query contract tests can compare the maintained
+// spec's documented sort enum against this handler's actual allow-list
+// without a second, hand-duplicated copy of it living in a test file.
+var ProductListSortFields = []string{"name", "sku", "price", "createdAt"}
+
+// ProductListQueryParams is the complete set of query parameters GET
+// /products recognises — anything else is rejected with 400 (see
+// httpx.RejectUnknownQueryParams). Exported for the same contract-testing
+// reason as ProductListSortFields above.
+var ProductListQueryParams = []string{"limit", "offset", "search", "isActive", "sort", "order"}
+
+// ProductListDefaultSort and ProductListDefaultOrder are GET /products'
+// defaults when "sort"/"order" are omitted — exported for the same
+// contract-testing reason as ProductListSortFields above.
+const (
+	ProductListDefaultSort  = "name"
+	ProductListDefaultOrder = "asc"
+)
 
 // List handles GET /products (Milestone 8 Part 3) — available to every
 // authenticated role, same policy as every other product route. Default
@@ -90,7 +107,7 @@ func (h *ProductHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !httpx.RejectUnknownQueryParams(w, r, "limit", "offset", "search", "isActive", "sort", "order") {
+	if !httpx.RejectUnknownQueryParams(w, r, ProductListQueryParams...) {
 		return
 	}
 
@@ -99,7 +116,7 @@ func (h *ProductHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sort, order, ok := httpx.ParseSortOrder(w, r, productSortFields, "name", "asc")
+	sort, order, ok := httpx.ParseSortOrder(w, r, ProductListSortFields, ProductListDefaultSort, ProductListDefaultOrder)
 	if !ok {
 		return
 	}

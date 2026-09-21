@@ -227,6 +227,8 @@ paths:
                 $ref: "#/components/schemas/ErrorBody"
               example:
                 error: { code: unauthorized, message: invalid email or password }
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "415":
           $ref: "#/components/responses/UnsupportedMediaType"
         "500":
@@ -307,6 +309,8 @@ paths:
                 $ref: "#/components/schemas/ErrorBody"
               example:
                 error: { code: email_already_exists, message: a user with this email already exists }
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "415":
           $ref: "#/components/responses/UnsupportedMediaType"
         "500":
@@ -375,6 +379,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorBody"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "415":
           $ref: "#/components/responses/UnsupportedMediaType"
         "500":
@@ -450,6 +456,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorBody"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "415":
           $ref: "#/components/responses/UnsupportedMediaType"
         "500":
@@ -503,6 +511,8 @@ paths:
                 $ref: "#/components/schemas/ErrorBody"
               example:
                 error: { code: email_already_exists, message: a user with this email already exists }
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "415":
           $ref: "#/components/responses/UnsupportedMediaType"
         "500":
@@ -517,7 +527,13 @@ paths:
       parameters:
         - $ref: "#/components/parameters/LimitParam"
         - $ref: "#/components/parameters/OffsetParam"
-        - $ref: "#/components/parameters/OrderParam"
+        - name: order
+          in: query
+          description: Sort direction.
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
         - name: sort
           in: query
           description: Field to sort by.
@@ -614,6 +630,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "415":
           $ref: "#/components/responses/UnsupportedMediaType"
         "500":
@@ -627,7 +645,13 @@ paths:
       parameters:
         - $ref: "#/components/parameters/LimitParam"
         - $ref: "#/components/parameters/OffsetParam"
-        - $ref: "#/components/parameters/OrderParam"
+        - name: order
+          in: query
+          description: Sort direction.
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: asc
         - name: sort
           in: query
           description: Field to sort by.
@@ -757,6 +781,8 @@ paths:
                 $ref: "#/components/schemas/ErrorBody"
               example:
                 error: { code: customer_not_found, message: customer not found }
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "415":
           $ref: "#/components/responses/UnsupportedMediaType"
         "500":
@@ -802,6 +828,8 @@ paths:
                 $ref: "#/components/schemas/ErrorBody"
               example:
                 error: { code: sku_already_exists, message: a product with this SKU already exists }
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "415":
           $ref: "#/components/responses/UnsupportedMediaType"
         "500":
@@ -815,7 +843,13 @@ paths:
       parameters:
         - $ref: "#/components/parameters/LimitParam"
         - $ref: "#/components/parameters/OffsetParam"
-        - $ref: "#/components/parameters/OrderParam"
+        - name: order
+          in: query
+          description: Sort direction.
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: asc
         - name: sort
           in: query
           description: Field to sort by.
@@ -946,16 +980,20 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorBody"
-        "409":
-          description: The organisation has no settings row, so an invoice number/currency cannot be allocated.
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          description: >-
+            An unexpected server-side failure — including the case where
+            the organisation has no settings row to allocate an invoice
+            number/currency from, which this operation does not treat as
+            a client-facing conflict.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorBody"
-        "415":
-          $ref: "#/components/responses/UnsupportedMediaType"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
     get:
       tags: [Invoices]
       summary: List invoices
@@ -977,7 +1015,13 @@ paths:
       parameters:
         - $ref: "#/components/parameters/LimitParam"
         - $ref: "#/components/parameters/OffsetParam"
-        - $ref: "#/components/parameters/OrderParam"
+        - name: order
+          in: query
+          description: Sort direction.
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
         - name: sort
           in: query
           description: Field to sort by.
@@ -1265,6 +1309,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorBody"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "415":
           $ref: "#/components/responses/UnsupportedMediaType"
         "500":
@@ -1337,13 +1383,6 @@ components:
         type: integer
         minimum: 0
         default: 0
-    OrderParam:
-      name: order
-      in: query
-      description: Sort direction.
-      schema:
-        type: string
-        enum: [asc, desc]
 
   responses:
     BadRequest:
@@ -1410,6 +1449,7 @@ components:
   schemas:
     HealthStatus:
       type: object
+      additionalProperties: false
       required: [status]
       properties:
         status:
@@ -1418,6 +1458,7 @@ components:
 
     ErrorDetail:
       type: object
+      additionalProperties: false
       required: [code, message]
       properties:
         code:
@@ -1429,6 +1470,7 @@ components:
 
     ErrorBody:
       type: object
+      additionalProperties: false
       required: [error]
       properties:
         error:
@@ -1436,6 +1478,7 @@ components:
 
     Pagination:
       type: object
+      additionalProperties: false
       required: [limit, offset, total]
       properties:
         limit:
@@ -1449,6 +1492,7 @@ components:
 
     LoginRequest:
       type: object
+      additionalProperties: false
       required: [email, password]
       properties:
         email:
@@ -1458,6 +1502,7 @@ components:
 
     LoginResponse:
       type: object
+      additionalProperties: false
       required: [token, expiresAt, user]
       properties:
         token:
@@ -1471,6 +1516,7 @@ components:
 
     RegisterOrganisationRequest:
       type: object
+      additionalProperties: false
       required: [name]
       properties:
         name:
@@ -1478,6 +1524,7 @@ components:
 
     RegisterUserRequest:
       type: object
+      additionalProperties: false
       required: [name, email, password]
       properties:
         name:
@@ -1490,6 +1537,7 @@ components:
 
     RegisterRequest:
       type: object
+      additionalProperties: false
       required: [organisation, user]
       properties:
         organisation:
@@ -1499,6 +1547,7 @@ components:
 
     RegisterResponse:
       type: object
+      additionalProperties: false
       required: [organisation, user]
       properties:
         organisation:
@@ -1508,6 +1557,7 @@ components:
 
     UserResponse:
       type: object
+      additionalProperties: false
       required: [id, organisationId, name, email, role, isActive, createdAt, updatedAt]
       properties:
         id:
@@ -1538,6 +1588,7 @@ components:
 
     CreateUserRequest:
       type: object
+      additionalProperties: false
       required: [name, email, password]
       properties:
         name:
@@ -1554,6 +1605,7 @@ components:
 
     UserListResponse:
       type: object
+      additionalProperties: false
       required: [items, pagination]
       properties:
         items:
@@ -1565,6 +1617,7 @@ components:
 
     OrganisationResponse:
       type: object
+      additionalProperties: false
       required: [id, name, createdAt, updatedAt]
       properties:
         id:
@@ -1599,6 +1652,7 @@ components:
 
     UpdateOrganisationRequest:
       type: object
+      additionalProperties: false
       description: Every field is optional — omit a field to leave it unchanged. All fields except name may be cleared by supplying an empty string.
       properties:
         name:
@@ -1624,6 +1678,7 @@ components:
 
     SettingsResponse:
       type: object
+      additionalProperties: false
       required: [currency, paymentTerms, invoicePrefix]
       properties:
         currency:
@@ -1639,6 +1694,7 @@ components:
 
     UpdateSettingsRequest:
       type: object
+      additionalProperties: false
       description: >-
         Every field is optional — omit a field to leave it unchanged.
         Unlike UpdateOrganisationRequest, none of these fields may be
@@ -1656,6 +1712,7 @@ components:
 
     CustomerResponse:
       type: object
+      additionalProperties: false
       required: [id, organisationId, name, status, createdAt, updatedAt]
       properties:
         id:
@@ -1686,6 +1743,7 @@ components:
 
     CreateCustomerRequest:
       type: object
+      additionalProperties: false
       required: [name]
       properties:
         name:
@@ -1702,6 +1760,7 @@ components:
 
     CustomerListResponse:
       type: object
+      additionalProperties: false
       required: [items, pagination]
       properties:
         items:
@@ -1713,6 +1772,7 @@ components:
 
     AddressResponse:
       type: object
+      additionalProperties: false
       required: [id, customerId, type, street, city, postalCode, country, createdAt, updatedAt]
       properties:
         id:
@@ -1744,6 +1804,7 @@ components:
 
     UpsertBillingAddressRequest:
       type: object
+      additionalProperties: false
       required: [street, city, postalCode, country]
       properties:
         street:
@@ -1760,6 +1821,7 @@ components:
 
     ProductResponse:
       type: object
+      additionalProperties: false
       required: [id, organisationId, name, sku, price, isActive, createdAt, updatedAt]
       properties:
         id:
@@ -1791,6 +1853,7 @@ components:
 
     CreateProductRequest:
       type: object
+      additionalProperties: false
       required: [name, sku]
       properties:
         name:
@@ -1811,6 +1874,7 @@ components:
 
     ProductListResponse:
       type: object
+      additionalProperties: false
       required: [items, pagination]
       properties:
         items:
@@ -1822,6 +1886,7 @@ components:
 
     CreateInvoiceLineRequest:
       type: object
+      additionalProperties: false
       required: [description, quantity]
       properties:
         productId:
@@ -1847,6 +1912,7 @@ components:
 
     CreateInvoiceRequest:
       type: object
+      additionalProperties: false
       required: [customerId, issueDate, dueDate, lines]
       properties:
         customerId:
@@ -1869,6 +1935,7 @@ components:
 
     InvoiceLineResponse:
       type: object
+      additionalProperties: false
       required: [id, description, quantity, unitPrice, vatRate, vatAmount, total]
       properties:
         id:
@@ -1895,6 +1962,7 @@ components:
 
     InvoiceResponse:
       type: object
+      additionalProperties: false
       description: >-
         The full invoice representation, including lines. See
         InvoiceListItemResponse for the smaller representation GET
@@ -1976,6 +2044,7 @@ components:
 
     InvoiceListItemResponse:
       type: object
+      additionalProperties: false
       description: >-
         The summary representation GET /api/v1/invoices returns for every
         row. Deliberately has no "lines" key at all — not even an empty
@@ -2047,6 +2116,7 @@ components:
 
     InvoiceListResponse:
       type: object
+      additionalProperties: false
       required: [items, pagination]
       properties:
         items:
@@ -2058,6 +2128,7 @@ components:
 
     CreatePaymentHTTPRequest:
       type: object
+      additionalProperties: false
       required: [amount]
       properties:
         amount:
@@ -2079,6 +2150,7 @@ components:
 
     PaymentResponse:
       type: object
+      additionalProperties: false
       required: [id, invoiceId, amount, paymentMethod, paymentDate, createdAt, updatedAt]
       properties:
         id:
