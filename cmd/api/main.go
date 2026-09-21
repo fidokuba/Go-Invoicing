@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	admin "go-invoicing/internal/administration"
 	"go-invoicing/internal/app"
 	"go-invoicing/internal/config"
@@ -47,6 +48,56 @@ const (
 	// file descriptor for a genuinely active client.
 	serverIdleTimeout = 60 * time.Second
 )
+
+type lifecycleServer interface {
+	ListenAndServe() error
+	Shutdown(context.Context) error
+}
+
+func runServerLifecycle(
+	ctx context.Context,
+	stop context.CancelFunc,
+	logger *slog.Logger,
+	server lifecycleServer,
+	shutdownTimeout time.Duration,
+	workerWait func(),
+) error {
+	serverErrCh := make(chan error, 1)
+	go func() {
+		err := server.ListenAndServe()
+		select {
+		case serverErrCh <- err:
+		default:
+		}
+	}()
+
+	var unexpectedErr error
+	select {
+	case <-ctx.Done():
+	case err := <-serverErrCh:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			unexpectedErr = err
+			logger.Error("unexpected HTTP server termination", "error", err)
+			stop()
+		}
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+
+	if err := server.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		logger.Error("server shutdown failed", "error", err)
+		if unexpectedErr == nil {
+			unexpectedErr = err
+		}
+	}
+
+	if workerWait != nil {
+		workerWait()
+	}
+
+	return unexpectedErr
+}
 
 func main() {
 
@@ -104,16 +155,6 @@ func main() {
 		IdleTimeout:       serverIdleTimeout,
 	}
 
-	// Start the server
-	go func() {
-		logger.Info("API server listening", "addr", server.Addr)
-
-		if err := server.ListenAndServe(); err != nil &&
-			err != http.ErrServerClosed {
-			logger.Error("server failed", "error", err)
-		}
-	}()
-
 	// Start the session cleanup background worker (Milestone 6). It shares
 	// the same root ctx as the HTTP server's shutdown trigger, and the
 	// same database pool — no separate process, no separate connections.
@@ -129,23 +170,12 @@ func main() {
 		}()
 	}
 
-	// Handle shutdown & close the database pool
-	<-ctx.Done()
-	logger.Info("shutdown signal received")
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	logger.Info("shutting down HTTP server")
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		logger.Error("server shutdown failed", "error", err)
+	logger.Info("API server listening", "addr", server.Addr)
+	err = runServerLifecycle(ctx, stop, logger, server, 5*time.Second, workerWg.Wait)
+	if err != nil {
+		logger.Error("runtime shutdown failed", "error", err)
+		return
 	}
-
-	// The worker already stopped taking new batches when ctx was
-	// cancelled above; wait for its goroutine to actually finish before
-	// the deferred db.Close() runs, so the pool can never close out from
-	// under an in-flight cleanup query.
-	workerWg.Wait()
 
 	logger.Info("database pool closed")
 }
