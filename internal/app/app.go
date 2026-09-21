@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"go-invoicing/api"
 	admin "go-invoicing/internal/administration"
 	"go-invoicing/internal/customer"
 	"go-invoicing/internal/httpx"
@@ -237,6 +238,17 @@ func (a *App) Handler() http.Handler {
 		}
 
 		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	// GET /api/v1/openapi.yaml (Milestone 8 Part 4): serves api/openapi.go's
+	// embedded copy of api/openapi.yaml verbatim — the same maintained file
+	// this project's API contract is documented in, never a second,
+	// separately generated document. Deliberately public: a client needs
+	// this before it can know how to authenticate at all.
+	mux.HandleFunc("GET "+apiV1Prefix+"/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/yaml")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(openapi.Spec)
 	})
 
 	// Section 9 (Milestone 8 Part 2): router-generated 404 is

@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"go-invoicing/api"
 	admin "go-invoicing/internal/administration"
 )
 
@@ -60,6 +61,37 @@ func newTestApp(t *testing.T) (http.Handler, *pgxpool.Pool) {
 
 	db := newTestPool(t)
 	return New(db, testLogger).Handler(), db
+}
+
+// TestApp_OpenAPISpecRoute_PublicAndMatchesEmbeddedSource is Milestone 8
+// Part 4's minimal proof that the runtime endpoint actually works: it
+// requires no Authorization header at all (public), returns the YAML
+// content type, a non-empty body, and — the whole point of serving the
+// embedded copy rather than a second hand-written one — a body that is
+// byte-for-byte identical to api.Spec, so the two can never drift apart.
+func TestApp_OpenAPISpecRoute_PublicAndMatchesEmbeddedSource(t *testing.T) {
+	handler, _ := newTestApp(t)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/openapi.yaml", nil)
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusOK, recorder.Code, recorder.Body.String())
+	}
+
+	if contentType := recorder.Header().Get("Content-Type"); contentType != "application/yaml" {
+		t.Errorf("expected Content-Type application/yaml, got %q", contentType)
+	}
+
+	if recorder.Body.Len() == 0 {
+		t.Fatal("expected a non-empty response body")
+	}
+
+	if recorder.Body.String() != string(openapi.Spec) {
+		t.Error("expected the served body to exactly match the embedded openapi.Spec source")
+	}
 }
 
 func TestApp_PublicHealthRoutes_WorkWithoutAuthorization(t *testing.T) {
