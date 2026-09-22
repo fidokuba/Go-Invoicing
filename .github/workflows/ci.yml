@@ -1,0 +1,203 @@
+# Milestone 11 Part 3: CI validation only. This workflow proves every
+# change compiles, is formatted, passes go vet, and — critically — passes
+# the full PostgreSQL-backed test suite against a real, ephemeral
+# database (see internal/database/ci_preflight_test.go for why that
+# specifically cannot silently no-op here the way it does in a
+# PostgreSQL-less local/sandbox run).
+#
+# This workflow does not build a release, publish an image, or deploy
+# anything — that is later Milestone 11 work.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+# Read-only: this workflow only checks out code and runs Go commands —
+# it never needs to write to repository contents, packages, or releases.
+permissions:
+  contents: read
+
+# A new push to the same PR/branch cancels whatever CI run was already in
+# progress for it, so stale commits don't keep consuming runners. Scoped
+# to github.ref, so unrelated branches/PRs are never affected.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# The same disposable, CI-only PostgreSQL credentials used by both the
+# integration and race jobs below — deliberately distinct from
+# compose.yaml's own local-development credentials, so nothing about
+# this ever looks like it could be a real (dev or production) value.
+# There is nothing here worth a GitHub Actions secret: this database
+# exists for the lifetime of one job, on an isolated service container
+# only this job's steps can reach.
+env:
+  CI_POSTGRES_USER: ci_test
+  CI_POSTGRES_PASSWORD: ci_test_disposable
+  CI_POSTGRES_DB: go_invoicing_test
+
+jobs:
+  # quality: everything that needs no database at all. Kept fast and
+  # separate from the PostgreSQL-backed jobs below so a formatting typo
+  # or a broken build fails in seconds, not after a service container has
+  # spun up. go test ./... here runs with Go's normal default
+  # parallelism — safe, because every PostgreSQL-backed test skips
+  # without DATABASE_URL (see internal/app/app_test.go's own
+  # newTestPool), so there is no shared real database for concurrent
+  # packages to interfere with.
+  quality:
+    name: Quality (format, vet, build, tests, cross-compile)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check gofmt formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Verify go.mod/go.sum are tidy
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+      - name: Test (non-DB — PostgreSQL-backed tests skip without DATABASE_URL)
+        run: go test ./... -count=1
+
+      # Milestone 11 Part 1 proved this application is CGO-free and
+      # cross-compiles cleanly for five targets; this is a lightweight,
+      # every-PR subset (not the full release matrix, which belongs to a
+      # later release-build part) that catches an accidental
+      # platform-specific regression without retaining any binaries.
+      - name: Cross-platform compile check
+        run: |
+          echo "--- linux/amd64 ---"
+          CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 go build -o /dev/null ./cmd/api
+          echo "--- windows/amd64 ---"
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o /dev/null ./cmd/api
+          echo "--- darwin/arm64 ---"
+          CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 go build -o /dev/null ./cmd/api
+
+  # integration: the full suite, for real, against an ephemeral
+  # PostgreSQL service container. -p 1 is intentional, not a mistake —
+  # see README's CI section: the DB-backed suite shares one database
+  # across packages (no per-test schema isolation exists yet), so
+  # packages must run serially here even though the quality job above
+  # safely runs with default parallelism.
+  integration:
+    name: Integration (PostgreSQL-backed tests, serial)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: ${{ env.CI_POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ env.CI_POSTGRES_PASSWORD }}
+          POSTGRES_DB: ${{ env.CI_POSTGRES_DB }}
+        ports:
+          - 5432:5432
+        # pg_isready, not an arbitrary sleep: steps below don't start
+        # until this reports healthy.
+        options: >-
+          --health-cmd="pg_isready -U ci_test -d go_invoicing_test"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      # APP_ENV=test proves Milestone 11 Part 2's production-safety rule
+      # (a non-development APP_ENV requires an explicit DATABASE_URL)
+      # works correctly rather than relying on the development fallback
+      # — DATABASE_URL is always supplied explicitly below regardless.
+      APP_ENV: test
+      # sslmode=disable only because this is an isolated, ephemeral,
+      # single-job-lifetime service container — never appropriate for a
+      # real deployment's DATABASE_URL.
+      DATABASE_URL: postgres://ci_test:ci_test_disposable@localhost:5432/go_invoicing_test?sslmode=disable
+      REQUIRE_DATABASE_TESTS: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Applies migrations for real (via the same Migrate function
+      # cmd/api's own startup uses) and fails the build outright if
+      # PostgreSQL is unreachable or misconfigured — see
+      # internal/database/ci_preflight_test.go's own doc comment for
+      # why this exists as its own explicit, ordered step rather than
+      # being left to package test-run order.
+      - name: Database preflight (migrate + connectivity check)
+        run: go test ./internal/database/ -run TestRequireDatabaseTests_CIPreflight -v -count=1
+
+      - name: PostgreSQL-backed test suite (serial — shared database)
+        run: go test -p 1 ./... -count=1
+
+  # race: the same full suite again, under the race detector. A separate
+  # job (its own service container, running in parallel with the plain
+  # integration job above) rather than a third sequential step in one
+  # job, so a slower race-instrumented run doesn't delay the plain
+  # integration result, and so a race failure is unambiguous in the job
+  # list rather than buried partway through a longer combined log.
+  race:
+    name: Race detector (PostgreSQL-backed, serial)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: ${{ env.CI_POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ env.CI_POSTGRES_PASSWORD }}
+          POSTGRES_DB: ${{ env.CI_POSTGRES_DB }}
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U ci_test -d go_invoicing_test"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      APP_ENV: test
+      DATABASE_URL: postgres://ci_test:ci_test_disposable@localhost:5432/go_invoicing_test?sslmode=disable
+      REQUIRE_DATABASE_TESTS: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Database preflight (migrate + connectivity check)
+        run: go test ./internal/database/ -run TestRequireDatabaseTests_CIPreflight -v -count=1
+
+      - name: Race detector — full PostgreSQL-backed suite (serial)
+        run: go test -race -p 1 ./... -count=1

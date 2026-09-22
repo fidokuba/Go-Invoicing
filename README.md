@@ -47,3 +47,32 @@ Basic observability, added in Milestone 10.
 - **`/metrics`**: Prometheus exposition (HTTP request/duration counters, session-cleanup worker and PDF-generation metrics, DB pool state, build-info, standard Go/process stats). Controlled by `METRICS_ENABLED` (default `true`); when `false`, the route doesn't exist at all (plain 404), rather than returning a "disabled" response. It requires no authentication of its own and is **not** part of the `/api/v1` contract or `api/openapi.yaml`.
 - **Deployment note**: `/metrics` should be network-restricted (reverse proxy / firewall / private network) in any real deployment — this application does not implement its own access control for it. That's a Milestone 11 deployment concern, not something the application enforces today.
 - **No business data in observability**: logs and metrics never contain request bodies, tokens, passwords, emails, `DATABASE_URL`, or any tenant/customer/invoice identifier — only bounded values (HTTP method, route pattern, status code, worker/result names, version/commit). Metric labels in particular are deliberately low-cardinality; see `internal/metrics` for the full inventory.
+
+## CI
+
+`.github/workflows/ci.yml` runs on every pull request and every push to `main`, as three jobs:
+
+- **quality** — `gofmt`, `go vet`, `go build`, a `go mod tidy` cleanliness check, the non-database test suite, and a lightweight cross-platform compile check (linux/amd64, windows/amd64, darwin/arm64). No database involved.
+- **integration** — the complete test suite, including every PostgreSQL-backed test, against a real, ephemeral `postgres:18` service container (disposable CI-only credentials, health-checked before anything runs).
+- **race** — the same complete suite again under `-race`.
+
+**PostgreSQL-backed tests are mandatory in CI, not best-effort.** Locally, without `DATABASE_URL` set, those tests skip (as they always have) — that's expected and fine for day-to-day development. In CI, `REQUIRE_DATABASE_TESTS=true` makes a dedicated preflight test (`internal/database/ci_preflight_test.go`) fail the build outright if the database is missing or unreachable, so CI can never go green because every DB test silently skipped. That same preflight step also applies migrations for real before the suite runs.
+
+**Why `-p 1`**: the PostgreSQL-backed tests share one database/schema across packages (there is no per-test schema isolation yet), so they must run serially — running packages concurrently against the same live tables is a known, accepted reliability trade-off, not an oversight. The non-database suite has no such constraint and runs with Go's normal default parallelism.
+
+**Reproducing CI locally:**
+
+```sh
+# Without PostgreSQL — same as local development; DB-backed tests skip.
+go test ./... -count=1
+
+# With PostgreSQL (e.g. `docker compose up -d` for compose.yaml's dev
+# database) — the complete suite, serially:
+DATABASE_URL=postgres://go_invoicing:go_invoicing_dev@localhost:5432/go_invoicing?sslmode=disable \
+  go test -p 1 ./... -count=1
+
+# CI-required mode — fails instead of skipping if the database above
+# isn't actually reachable:
+REQUIRE_DATABASE_TESTS=true DATABASE_URL=postgres://go_invoicing:go_invoicing_dev@localhost:5432/go_invoicing?sslmode=disable \
+  go test ./internal/database/ -run TestRequireDatabaseTests_CIPreflight -v -count=1
+```
