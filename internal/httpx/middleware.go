@@ -73,8 +73,8 @@ func isHealthRequest(r *http.Request) bool {
 
 type statusRecorder struct {
 	http.ResponseWriter
-	status     int
-	size       int
+	status      int
+	size        int
 	wroteHeader bool
 }
 
@@ -140,6 +140,18 @@ func RequestLogging(logger *slog.Logger) func(http.Handler) http.Handler {
 
 			if isHealthRequest(r) && status < http.StatusBadRequest {
 				return
+			}
+
+			if status >= http.StatusInternalServerError && !isHealthRequest(r) {
+				logger.Error(
+					"http request failed",
+					"request_id", requestID,
+					"method", r.Method,
+					"route", route,
+					"status", status,
+					"duration_ms", durationMS,
+					"response_size", recorder.size,
+				)
 			}
 
 			logger.Info(
