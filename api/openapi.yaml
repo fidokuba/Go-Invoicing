@@ -87,6 +87,18 @@ info:
     Search: every `search` filter is a case-insensitive substring match
     against the documented fields.
 
+
+    Diagnostics: every response, success or error, carries a server-
+    generated `X-Request-ID` header — a per-request correlation id with no
+    internal structure a client should parse or rely on. Any
+    client-supplied `X-Request-ID` on the request is ignored; the server
+    always generates its own. This is not documented as a per-operation
+    response header below (every one of this document's ~150 response
+    definitions would otherwise repeat the identical header for no added
+    contract value) — it is a cross-cutting diagnostic detail, not part of
+    any operation's actual response contract, the same way response
+    headers like `Content-Length` aren't documented per-operation either.
+
 servers:
   - url: /
     description: This API is served relative to its own host; no separate base path is assumed.

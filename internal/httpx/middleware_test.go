@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -376,7 +377,7 @@ func TestRequestLogging_RecordsHTTPMetricsWithBoundedLabels(t *testing.T) {
 
 	body := scrapeMetrics(t, m)
 
-	if !strings.Contains(body, `go_invoicing_http_requests_total{method="GET",route="GET /api/v1/invoices/{id}",status="200"} 1`) {
+	if !strings.Contains(body, `go_invoicing_http_requests_total{method="GET",route="/api/v1/invoices/{id}",status="200"} 1`) {
 		t.Fatalf("expected a bounded-label counter sample, got:\n%s", body)
 	}
 	if strings.Contains(body, "550e8400-e29b-41d4-a716-446655440000") {
@@ -472,4 +473,174 @@ func scrapeMetrics(t *testing.T, m *metrics.Metrics) string {
 	}
 
 	return recorder.Body.String()
+}
+
+// --- Milestone 10 Part 5: adversarial hardening tests ---
+
+// TestRequestLogging_ArbitraryHTTPMethodNormalizedForMetricsCardinality
+// proves an attacker-controlled HTTP method token (net/http's server
+// accepts any syntactically valid token, matched or not against any
+// registered route) can never itself become an unbounded metric label
+// value — it must normalize to the fixed "OTHER" fallback. The raw
+// method is still fine to keep in the log line itself (see
+// normalizeHTTPMethod's own doc comment: a log line is not a
+// permanently-retained time-series label), so it is asserted present
+// there instead of scrubbed.
+func TestRequestLogging_ArbitraryHTTPMethodNormalizedForMetricsCardinality(t *testing.T) {
+	const maliciousMethod = "X-ATTACKER-CONTROLLED-METHOD-MARKER"
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	m := metrics.New(nil)
+
+	handler := RequestID(RequestLogging(logger, m)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})))
+
+	request := httptest.NewRequest(maliciousMethod, "/whatever", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+
+	body := scrapeMetrics(t, m)
+	if strings.Contains(body, maliciousMethod) {
+		t.Fatalf("expected the arbitrary method never to appear as a metric label, got:\n%s", body)
+	}
+	if !strings.Contains(body, `go_invoicing_http_requests_total{method="OTHER",route="unmatched",status="200"} 1`) {
+		t.Fatalf("expected the bounded \"OTHER\" method fallback, got:\n%s", body)
+	}
+
+	// The log line, unlike the metric, is not a permanently-retained
+	// label set — recording the raw method there is intentional (see
+	// normalizeHTTPMethod's own doc comment) and asserted here so a
+	// future change doesn't silently start scrubbing it without
+	// noticing.
+	if !strings.Contains(logs.String(), maliciousMethod) {
+		t.Fatal("expected the raw method to still be present in the log line")
+	}
+}
+
+// TestRequestLogging_KnownMethodsAreNeverNormalizedAway proves every
+// method this application actually routes on passes normalizeHTTPMethod
+// unchanged — the bounded fallback only ever fires for something outside
+// this fixed set.
+func TestRequestLogging_KnownMethodsAreNeverNormalizedAway(t *testing.T) {
+	m := metrics.New(nil)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	for _, method := range []string{
+		http.MethodGet, http.MethodPost, http.MethodPut,
+		http.MethodPatch, http.MethodDelete, http.MethodHead, http.MethodOptions,
+	} {
+		handler := RequestID(RequestLogging(logger, m)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})))
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(method, "/whatever", nil))
+	}
+
+	body := scrapeMetrics(t, m)
+	if strings.Contains(body, `method="OTHER"`) {
+		t.Fatalf("expected none of the application's own known methods to fall back to OTHER, got:\n%s", body)
+	}
+}
+
+// TestWriteInternalError_UnderlyingErrorNeverReachesResponseBody is the
+// client-facing half of the exactly-once-failure/error-string audit:
+// whatever a handler passes as the underlying error to WriteInternalError
+// must stay server-side (in the log) and never leak into the JSON body
+// the client actually receives, however sensitive-looking the message
+// text is.
+func TestWriteInternalError_UnderlyingErrorNeverReachesResponseBody(t *testing.T) {
+	const marker = "customer secret-marker@example.test row detail"
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	handler := RequestID(RequestLogging(logger, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		WriteInternalError(w, r, "customer lookup", errors.New(marker))
+	})))
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/customers/123", nil))
+
+	if strings.Contains(recorder.Body.String(), marker) {
+		t.Fatalf("expected the underlying error never to reach the response body, got: %s", recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "internal server error") {
+		t.Fatalf("expected the generic client-facing message, got: %s", recorder.Body.String())
+	}
+	if !strings.Contains(logs.String(), marker) {
+		t.Fatal("expected the underlying error to still reach the server-side log")
+	}
+}
+
+// TestRequestLogging_RequestBodyNeverLogged proves a request body
+// (however sensitive its content) is never read or logged by the request
+// logging/metrics path — nothing in RequestLogging or ObserveHTTPRequest
+// ever touches r.Body, and this pins that property down explicitly.
+func TestRequestLogging_RequestBodyNeverLogged(t *testing.T) {
+	const bodyMarker = "PLAINTEXT-PASSWORD-abc123-DO-NOT-LOG"
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	m := metrics.New(nil)
+
+	handler := RequestID(RequestLogging(logger, m)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body) // the handler itself reads the body, as a real one would
+		w.WriteHeader(http.StatusOK)
+	})))
+
+	body := bytes.NewBufferString(`{"password":"` + bodyMarker + `"}`)
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", body))
+
+	if strings.Contains(logs.String(), bodyMarker) {
+		t.Fatal("expected the request body never to appear in logs")
+	}
+	if strings.Contains(scrapeMetrics(t, m), bodyMarker) {
+		t.Fatal("expected the request body never to appear in metrics")
+	}
+}
+
+// TestRequestLogging_UnmatchedRoute_PathAndQueryMarkersNeverSurface is the
+// combined 404-privacy adversarial test: a completely unmatched path
+// carrying both a distinctive path-segment marker and a distinctive query
+// string marker must produce the bounded "unmatched" route in both logs
+// and metrics, with neither marker appearing anywhere in either.
+func TestRequestLogging_UnmatchedRoute_PathAndQueryMarkersNeverSurface(t *testing.T) {
+	const pathMarker = "ATTACKER-PATH-MARKER-9f8e7d"
+	const queryMarker = "ATTACKER-QUERY-MARKER-1a2b3c"
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	m := metrics.New(nil)
+
+	// No mux at all — mirrors the genuinely-unmatched-route shape
+	// (r.Pattern never populated) documented on
+	// TestRequestLogging_UnmatchedRouteUsesBoundedFallbackLabel above.
+	handler := RequestID(RequestLogging(logger, m)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})))
+
+	request := httptest.NewRequest(http.MethodGet, "/does/not/exist/"+pathMarker+"?token="+queryMarker, nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d, got %d", http.StatusNotFound, recorder.Code)
+	}
+
+	logText := logs.String()
+	metricsBody := scrapeMetrics(t, m)
+
+	for _, marker := range []string{pathMarker, queryMarker} {
+		if strings.Contains(logText, marker) {
+			t.Fatalf("expected marker %q never to appear in logs, got: %s", marker, logText)
+		}
+		if strings.Contains(metricsBody, marker) {
+			t.Fatalf("expected marker %q never to appear in metrics, got:\n%s", marker, metricsBody)
+		}
+	}
+
+	if !strings.Contains(metricsBody, `go_invoicing_http_requests_total{method="GET",route="unmatched",status="404"} 1`) {
+		t.Fatalf("expected the bounded \"unmatched\" route label, got:\n%s", metricsBody)
+	}
 }

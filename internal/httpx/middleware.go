@@ -48,21 +48,77 @@ func RequestID(next http.Handler) http.Handler {
 	})
 }
 
+// requestRoute returns the bounded route-pattern label used by both
+// request logs and HTTP metrics: the matched net/http.ServeMux pattern's
+// path portion only (e.g. "/api/v1/invoices/{id}"), or the fixed
+// "unmatched" fallback for anything ServeMux didn't route to a
+// registered handler at all (a genuinely unregistered path, or the
+// synthetic 404/405 paths ServeMux itself generates) — never the raw
+// request path or any path-parameter value.
+//
+// Milestone 10 Part 5 section 5: every pattern this application ever
+// registers (see app.go's register() helper, and its two direct
+// mux.Handle/HandleFunc calls for /metrics and /api/v1/openapi.yaml) is
+// written as "METHOD /path" — net/http.ServeMux's own pattern syntax —
+// so r.Pattern arrives as e.g. "GET /api/v1/invoices/{id}", with the
+// method baked into the very same string RequestLogging separately
+// records as the "method" field/label. Left as-is, "route" and "method"
+// would silently duplicate the same information — routePathFromPattern
+// strips that leading method token so route stays a pure path pattern
+// and method stays its own independent, already-bounded dimension.
 func requestRoute(r *http.Request) string {
 	if r == nil {
 		return "unmatched"
 	}
 
 	if r.Pattern != "" {
-		return r.Pattern
-	}
-
-	path := strings.TrimSpace(r.URL.Path)
-	if path == "" {
-		return "unmatched"
+		return routePathFromPattern(r.Pattern)
 	}
 
 	return "unmatched"
+}
+
+// routePathFromPattern strips a net/http.ServeMux pattern's leading
+// "METHOD " token, leaving only the path portion. Every pattern this
+// application registers has one (see requestRoute's own doc comment), so
+// the split is unconditional; a pattern with no space is returned
+// verbatim as a safe fallback rather than panicking or guessing.
+func routePathFromPattern(pattern string) string {
+	if idx := strings.IndexByte(pattern, ' '); idx != -1 {
+		return pattern[idx+1:]
+	}
+
+	return pattern
+}
+
+// httpMethodOther is the bounded fallback label normalizeHTTPMethod
+// returns for anything outside the small set of methods this application
+// actually registers routes for. HTTP method tokens are
+// attacker-controlled (an arbitrary request line can carry any
+// syntactically valid token, e.g. "SOMETHINGRANDOM /health") and, left
+// unnormalized, would let a single client generate unlimited distinct
+// Prometheus label values for go_invoicing_http_requests_total /
+// go_invoicing_http_request_duration_seconds — a real cardinality-growth
+// vector, not merely a style concern. Logs still record r.Method
+// verbatim (see RequestLogging below): a log line is one bounded-size
+// text record, not a permanently-retained time-series label, so the raw
+// value there stays useful for forensics without the same growth risk.
+const httpMethodOther = "OTHER"
+
+// normalizeHTTPMethod maps method onto the small, fixed set of HTTP
+// methods this application ever registers a route for, plus "OTHER" for
+// anything else (including a garbage/attacker-supplied token) — see
+// httpMethodOther's own doc comment for why this exists at all. Only
+// used for the metrics label; RequestLogging's log fields keep the raw
+// r.Method.
+func normalizeHTTPMethod(method string) string {
+	switch method {
+	case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch,
+		http.MethodDelete, http.MethodHead, http.MethodOptions:
+		return method
+	default:
+		return httpMethodOther
+	}
 }
 
 func isHealthRequest(r *http.Request) bool {
@@ -192,7 +248,7 @@ func RequestLogging(logger *slog.Logger, m *metrics.Metrics) func(http.Handler) 
 			// two liveness/readiness probes is itself useful availability
 			// signal, not noise — is recorded regardless of status.
 			if !isMetricsRequest(r) {
-				m.ObserveHTTPRequest(r.Method, route, status, duration)
+				m.ObserveHTTPRequest(normalizeHTTPMethod(r.Method), route, status, duration)
 			}
 
 			quiet := isHealthRequest(r) || isMetricsRequest(r)

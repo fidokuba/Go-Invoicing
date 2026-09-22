@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -178,4 +179,42 @@ func TestNew_RegistersRuntimeAndDBPoolCollectors(t *testing.T) {
 	if strings.Contains(body, "go_invoicing_db_pool_") {
 		t.Fatal("expected no db_pool samples for a nil pool")
 	}
+}
+
+// TestMetrics_ConcurrentRecordingAndScrapingIsRaceFree is Milestone 10
+// Part 5's concurrency audit: it hammers every recording method plus
+// concurrent scrapes from many goroutines at once. Meant to be run under
+// `go test -race` — Prometheus's own CounterVec/HistogramVec and the
+// promhttp handler already document themselves as safe for concurrent
+// use; this proves nothing this package adds around them (the
+// dbPoolCollector, the small wrapper methods) breaks that, and that no
+// application-level lock is needed.
+func TestMetrics_ConcurrentRecordingAndScrapingIsRaceFree(t *testing.T) {
+	pool := newUnconnectedPool(t)
+	m := New(pool)
+
+	const goroutines = 50
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for g := 0; g < goroutines; g++ {
+		go func(id int) {
+			defer wg.Done()
+			for i := 0; i < 20; i++ {
+				m.ObserveHTTPRequest("GET", "/api/v1/invoices/{id}", 200, time.Millisecond)
+				m.RecordWorkerRun(time.Millisecond)
+				m.RecordWorkerFailure()
+				m.RecordSessionsDeleted(1)
+				m.RecordPDFGeneration("success", time.Millisecond)
+				if id%5 == 0 {
+					// A raw ServeHTTP call here, not the scrape() helper:
+					// t.Fatalf (which scrape uses on a non-200) must only
+					// ever be called from the test's own goroutine, never
+					// from one of these spawned ones.
+					recorder := httptest.NewRecorder()
+					m.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
 }

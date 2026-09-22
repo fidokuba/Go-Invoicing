@@ -183,12 +183,17 @@ func (m *Metrics) Handler() http.Handler {
 	return promhttp.HandlerFor(m.registry, promhttp.HandlerOpts{})
 }
 
-// ObserveHTTPRequest records one completed HTTP request. route must
-// already be a bounded value — the matched net/http.ServeMux pattern,
-// method prefix included (e.g. "GET /api/v1/invoices/{id}", exactly as
-// registered), or the fixed "unmatched" fallback — never a raw request
-// path or path parameter value. See httpx.requestRoute, which is the
-// sole producer of the route value every call site passes in.
+// ObserveHTTPRequest records one completed HTTP request. method and
+// route must both already be bounded values: method is one of the small,
+// fixed set of HTTP methods this application registers routes for (or
+// "OTHER" — see httpx.normalizeHTTPMethod, which every call site already
+// normalizes through before this is ever called, since raw client input
+// is otherwise unbounded), and route is the matched net/http.ServeMux
+// pattern's path portion only (e.g. "/api/v1/invoices/{id}", method
+// prefix already stripped) or the fixed "unmatched" fallback — never a
+// raw request path or path parameter value. See httpx.requestRoute,
+// which is the sole producer of the route value every call site passes
+// in.
 func (m *Metrics) ObserveHTTPRequest(method, route string, status int, duration time.Duration) {
 	if m == nil {
 		return

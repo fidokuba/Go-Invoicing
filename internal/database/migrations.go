@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	"embed"
 
@@ -15,7 +16,20 @@ import (
 //go:embed migrations/*.sql
 var embedMigrations embed.FS
 
+// Migrate applies any pending embedded SQL migrations against databaseURL.
+// Its returned error is eventually logged verbatim by cmd/api/main.go
+// (there is no client request in play at startup, so there is no
+// WriteInternalError-style boundary to redact at) — see sanitizeDSNError's
+// own doc comment for the one concrete leak path that guards against.
 func Migrate(databaseURL string) error {
+	if err := runMigrations(databaseURL); err != nil {
+		return sanitizeDSNError(err, databaseURL)
+	}
+
+	return nil
+}
+
+func runMigrations(databaseURL string) error {
 	// Create a migration source from the embedded SQL files.
 	ds, err := migratefs.New(embedMigrations, "migrations")
 	if err != nil {
@@ -49,4 +63,27 @@ func Migrate(databaseURL string) error {
 	}
 
 	return nil
+}
+
+// sanitizeDSNError strips databaseURL (credentials included) out of err's
+// message text if it appears there verbatim, replacing it with a fixed,
+// safe placeholder. This guards one concrete, reproduced leak path: when
+// databaseURL is a malformed postgres:// URL (e.g. a bad port), lib/pq's
+// DSN parsing surfaces a *url.Error, whose own Error() method
+// unconditionally embeds the exact string it failed to parse — which is
+// the full DSN, password included — completely independent of anything
+// this application does. Ordinary connection failures (wrong host,
+// connection refused, bad password rejected by the server, ...) already
+// come back without the DSN — pgx and lib/pq both redact it in every
+// other error path this was tested against — so this only ever fires for
+// the one malformed-DSN edge case, and databaseURL (an operator-supplied
+// startup value, never a value this function receives from a request) is
+// the only string it ever redacts; this is not a general secret-scanning
+// pass over arbitrary error text.
+func sanitizeDSNError(err error, databaseURL string) error {
+	if err == nil || databaseURL == "" || !strings.Contains(err.Error(), databaseURL) {
+		return err
+	}
+
+	return errors.New(strings.ReplaceAll(err.Error(), databaseURL, "[redacted database URL]"))
 }
