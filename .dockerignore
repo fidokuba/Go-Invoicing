@@ -1,0 +1,39 @@
+# Milestone 11 Part 5. Kept as an explicit allow-by-default list of
+# exclusions (never a broad "*.yaml"/"*.md"-style glob) specifically so
+# nothing this repository actually needs to compile — go.mod/go.sum, all
+# .go source, internal/database/migrations/*.sql, internal/invoice's
+# embedded font, api/openapi.yaml (all embedded via go:embed) — can ever
+# be excluded by accident.
+
+# Version control — never needed to build; the Dockerfile takes its own
+# VERSION/COMMIT/BUILD_TIME as explicit --build-arg values instead of
+# reading Git inside the build context.
+.git
+.github
+
+# Local/dev-only environment files. Not secrets themselves — .env.example
+# and .env.production.example are placeholder templates with no real
+# credentials — excluded because they're irrelevant to `go build`, not
+# because they're sensitive. A real .env/.env.production is excluded
+# because it's both irrelevant to the build AND may hold real secrets.
+.env
+.env.production
+.env.example
+.env.production.example
+
+# Milestone 11 Part 4's release build output — never needed here; this
+# Dockerfile does its own `go build` directly.
+dist/
+
+# Compose files — irrelevant to the image build itself.
+compose.yaml
+compose.prod.yaml
+
+# Editor/OS artifacts.
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Documentation — not needed to compile the binary.
+README.md

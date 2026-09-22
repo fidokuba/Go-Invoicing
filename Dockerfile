@@ -1,0 +1,127 @@
+# syntax=docker/dockerfile:1
+#
+# Milestone 11 Part 5: the production container image for ./cmd/api.
+#
+# This is deliberately NOT cmd/release: that tool builds all five native
+# release targets and expects release-oriented Git behaviour (a resolved
+# HEAD commit, a semantic version). This Dockerfile only ever needs one
+# Linux binary for whatever platform Docker/BuildKit is targeting, built
+# from build args a caller supplies directly — it never shells out to
+# git itself, so the build context needs no .git directory at all (see
+# .dockerignore). The linker-flag *shape* is intentionally identical to
+# cmd/release/ldflags.go's releaseLDFlags (-s -w plus the same three -X
+# targets against go-invoicing/internal/buildinfo), so both build paths
+# report metadata through the exact same internal/buildinfo fields and
+# the exact same `--version`/startup-log/build-info-metric machinery —
+# there is only ever one build-info implementation.
+
+# ---------------------------------------------------------------------
+# Builder
+# ---------------------------------------------------------------------
+# --platform=$BUILDPLATFORM: always run the Go toolchain natively on
+# whatever architecture is doing the build, never under emulation — Go
+# cross-compiles to the real target (see TARGETOS/TARGETARCH below)
+# faster and more reliably than QEMU-emulating the compiler itself would.
+FROM --platform=$BUILDPLATFORM golang:1.25-bookworm AS builder
+
+WORKDIR /src
+
+# Cache-friendly layering: download modules in their own layer, keyed
+# only on go.mod/go.sum, before the rest of the source is even copied in
+# — an ordinary code change (which doesn't touch go.mod/go.sum) never
+# invalidates this layer or re-downloads anything.
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/root/go/pkg/mod \
+    go mod download
+
+COPY . .
+
+# BuildKit populates these automatically from the --platform requested
+# at build time (e.g. "docker buildx build --platform linux/amd64,linux/arm64").
+# A plain `docker build` with no --platform still sets them correctly for
+# the host's own architecture.
+ARG TARGETOS
+ARG TARGETARCH
+
+# Build metadata (Milestone 11 Part 2's internal/buildinfo). Defaults
+# match internal/buildinfo's own uninjected placeholders exactly, so an
+# ordinary `docker build .` with no --build-arg behaves like an ordinary
+# `go build ./cmd/api` — never silently produces something that looks
+# like a real release. A genuine release image (Part 6) supplies real
+# values via --build-arg.
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_TIME=unknown
+
+RUN --mount=type=cache,target=/root/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build \
+      -trimpath \
+      -ldflags "-s -w \
+        -X go-invoicing/internal/buildinfo.Version=${VERSION} \
+        -X go-invoicing/internal/buildinfo.Commit=${COMMIT} \
+        -X go-invoicing/internal/buildinfo.BuildTime=${BUILD_TIME}" \
+      -o /out/go-invoicing \
+      ./cmd/api
+
+# ---------------------------------------------------------------------
+# Runtime
+# ---------------------------------------------------------------------
+# distroless static, not Alpine: this application is CGO-free (proven in
+# Milestone 11 Part 1), so it needs no libc at all, which is the one
+# thing Alpine's musl would otherwise offer over a plain static binary —
+# choosing Alpine here would only add a package manager and a shell this
+# image has no use for, each its own (small but real) source of CVEs to
+# track. distroless/static ships exactly what a static Go binary needs
+# and nothing else: an /etc/passwd entry for a non-root user, CA
+# certificates (for a production DATABASE_URL that verifies TLS against
+# a managed PostgreSQL provider), and timezone data — no shell, no
+# package manager, no coreutils. The :nonroot tag additionally defaults
+# to UID/GID 65532 ("nonroot"); USER below is still set explicitly so
+# this Dockerfile documents that fact itself rather than relying on
+# knowledge of one specific tag's default.
+FROM gcr.io/distroless/static-debian12:nonroot AS runtime
+
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_TIME=unknown
+
+# Standard OCI labels, derived from the exact same build args as the
+# embedded internal/buildinfo values above — inspectable with
+# `docker inspect` even before the container ever runs, and always
+# consistent with what the running binary's own --version reports.
+LABEL org.opencontainers.image.title="go-invoicing" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${COMMIT}" \
+      org.opencontainers.image.created="${BUILD_TIME}"
+
+COPY --from=builder /out/go-invoicing /go-invoicing
+
+# 65532:65532 is distroless's well-known "nonroot" identity — spelled out
+# numerically here (rather than the name "nonroot") so this is
+# unambiguous even to a tool that only reads UID/GID, e.g. Kubernetes'
+# runAsUser or `docker inspect`'s own numeric reporting.
+USER 65532:65532
+
+# Documentation only — EXPOSE does not publish the port or provide any
+# firewalling; see compose.prod.yaml/README for actual exposure.
+EXPOSE 8080
+
+# The binary is the container's PID 1 directly (no shell wrapper is even
+# possible here — distroless has no /bin/sh to wrap it with), so it
+# receives SIGTERM directly on `docker stop`/Compose shutdown: Milestone
+# 9's graceful-shutdown handling applies exactly as it does outside a
+# container. See compose.prod.yaml's stop_grace_period for why the
+# container-level grace period is set safely longer than the
+# application's own 5-second shutdown timeout.
+ENTRYPOINT ["/go-invoicing"]
+
+# No Dockerfile HEALTHCHECK: this image intentionally has no shell,
+# curl, or wget to run one with, and adding any of them (or a
+# purpose-built healthcheck binary) solely to satisfy a HEALTHCHECK
+# directive would work against the whole reason distroless was chosen.
+# /health and /health/db are still fully available over the network —
+# Compose, a cloud platform's own HTTP health check, or CI's container
+# smoke test (.github/workflows/ci.yml) all probe them from outside the
+# container instead. See README's "Self-hosted Docker Compose" section.

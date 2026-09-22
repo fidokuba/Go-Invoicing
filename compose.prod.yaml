@@ -1,0 +1,123 @@
+# Milestone 11 Part 5: self-hosted/customer Docker Compose deployment —
+# NOT the cloud architecture (see README's "Cloud" section for that) and
+# NOT a replacement for compose.yaml, which continues to serve its own
+# separate purpose (a throwaway development PostgreSQL for a Go process
+# run natively on the host — see that file's own comment). This file
+# assumes exactly one Go Invoicing instance: the application still runs
+# its own startup migrations (see cmd/api/main.go), which is only safe
+# with a single instance — see README's "Horizontal scaling" note.
+#
+# Usage (see README's "Self-hosted Docker Compose" section for the full
+# walkthrough):
+#   cp .env.production.example .env.production   # then edit it
+#   docker compose -f compose.prod.yaml --env-file .env.production up -d --build
+#
+# Always pass -f compose.prod.yaml explicitly — never rely on Compose's
+# default compose.yaml discovery, which would pick up the *development*
+# file instead.
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${VERSION:-dev}
+        COMMIT: ${COMMIT:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
+    image: go-invoicing:${VERSION:-dev}
+    restart: unless-stopped
+    # Only establishes startup ORDER — app won't even start until
+    # postgres reports healthy. It says nothing about later failures
+    # (e.g. Postgres restarting after both are already up); the
+    # application's own pgxpool error handling/health endpoints remain
+    # responsible for those, exactly as outside Compose.
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_ENV: production
+      # APP_HOST is deliberately not set: the default (every interface)
+      # is exactly what a containerized app needs to be reachable
+      # through Docker's own networking — see the Dockerfile/README for
+      # why binding loopback-only here would make the app unreachable
+      # from outside its own container.
+      APP_PORT: "8080"
+      # DATABASE_URL is supplied only at container start, from the
+      # operator's own untracked .env.production — never baked into the
+      # image (see Dockerfile/.dockerignore) and never given a
+      # convenient fallback here (APP_ENV=production requires it
+      # explicitly — Milestone 11 Part 2's own safety rule). Its host is
+      # "postgres" — the service name below, resolved via Compose's own
+      # internal DNS, not a literal hostname to change. It must describe
+      # the SAME database as the POSTGRES_* values below; see
+      # .env.production.example's own comment on why this isn't
+      # constructed automatically from them.
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set in .env.production — see .env.production.example}
+      LOG_FORMAT: json
+      LOG_LEVEL: info
+      # Off by default here specifically: this Compose file publishes
+      # the app's port directly (see below) with no reverse proxy in
+      # front yet, so a public /metrics is one fewer thing exposed by
+      # default until an operator has an actual monitoring consumer and
+      # a network boundary for it. The application's own default
+      # (METRICS_ENABLED=true) remains appropriate elsewhere — this is a
+      # deployment-specific choice, not a change to that default.
+      METRICS_ENABLED: "false"
+    ports:
+      # Plain HTTP, directly published. Appropriate for a trusted LAN or
+      # an evaluation deployment; NOT appropriate as-is for direct
+      # internet exposure — see README's "reverse proxy" note. This
+      # Compose file deliberately does not include a reverse proxy/TLS
+      # terminator (Milestone 11 Part 7 owns hardening the final
+      # topology); putting one in front of this app service is an
+      # operator's own responsibility once this is reachable from
+      # anything less trusted than a LAN.
+      - "8080:8080"
+    # The application writes no local state at all (embedded assets,
+    # stdout-only logging — see Milestone 11 Part 1's own audit); a
+    # read-only root filesystem is expected to work cleanly. /tmp is
+    # mounted as tmpfs as a zero-cost safety margin in case the Go
+    # runtime or a dependency ever wants scratch space — this was
+    # reasoned from the application's confirmed statelessness, not
+    # verified against a live container in this environment (Docker was
+    # unavailable — see the milestone's own report).
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # Comfortably longer than the application's own 5-second shutdown
+    # timeout (cmd/api/main.go), so Compose's SIGTERM-then-SIGKILL never
+    # cuts the app's own graceful shutdown off early.
+    stop_grace_period: 15s
+
+  postgres:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB must be set in .env.production}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER must be set in .env.production}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env.production}
+    volumes:
+      - postgres_prod_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # No host port published (contrast compose.yaml's dev "5432:5432"):
+    # the app service reaches this over the Compose network by service
+    # name ("postgres") alone. Reducing what's reachable from the host
+    # at all is worth more here than the convenience of an external
+    # `psql` connection — an operator who genuinely needs one can still
+    # `docker compose -f compose.prod.yaml exec postgres psql ...`.
+
+volumes:
+  # Named volume: survives `docker compose down`, container recreation,
+  # image upgrades, and host reboots. It is ONLY deleted by the
+  # explicit, destructive `docker compose down -v` (or a manual
+  # `docker volume rm`) — see README's "data persistence" warning.
+  postgres_prod_data:

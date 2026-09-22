@@ -1,4 +1,8 @@
 .env
+# Milestone 11 Part 5: the real, credential-bearing self-hosted Compose
+# env file — .env.production.example is the checked-in, placeholder-only
+# template.
+.env.production
 
 # macOS
 .DS_Store

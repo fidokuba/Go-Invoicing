@@ -1,11 +1,12 @@
-# Milestone 11 Part 3: CI validation only. This workflow proves every
-# change compiles, is formatted, passes go vet, and — critically — passes
-# the full PostgreSQL-backed test suite against a real, ephemeral
-# database (see internal/database/ci_preflight_test.go for why that
-# specifically cannot silently no-op here the way it does in a
-# PostgreSQL-less local/sandbox run).
+# CI validation only (Milestone 11 Parts 3 and 5). This workflow proves
+# every change compiles, is formatted, passes go vet, passes the full
+# PostgreSQL-backed test suite against a real, ephemeral database (see
+# internal/database/ci_preflight_test.go for why that specifically
+# cannot silently no-op here the way it does in a PostgreSQL-less
+# local/sandbox run), and that the production Docker image actually
+# builds and boots.
 #
-# This workflow does not build a release, publish an image, or deploy
+# This workflow does not push/publish an image, cut a release, or deploy
 # anything — that is later Milestone 11 work.
 name: CI
 
@@ -227,3 +228,304 @@ jobs:
 
       - name: Race detector — full PostgreSQL-backed suite (serial)
         run: go test -race -p 1 ./... -count=1
+
+  # docker: Milestone 11 Part 5 — builds the production image (Dockerfile)
+  # and proves it actually boots against a real PostgreSQL service,
+  # running its own genuine startup migrations through the exact path
+  # cmd/api/main.go uses (never the test preflight's own Migrate call).
+  # This job gets its OWN, separate PostgreSQL service — never shared
+  # with integration/race above — specifically so this container's
+  # from-empty migration run can never race against either of those
+  # jobs' own preflight-driven ones. Never pushes/publishes anything;
+  # publishing an image is later Milestone 11 work.
+  docker:
+    name: Docker image build + smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: ${{ env.CI_POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ env.CI_POSTGRES_PASSWORD }}
+          POSTGRES_DB: ${{ env.CI_POSTGRES_DB }}
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U ci_test -d go_invoicing_test"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # No Go toolchain/actions/setup-go here at all — the image build
+      # below does its own compilation entirely inside the Dockerfile's
+      # builder stage; this job only needs Docker itself, which
+      # ubuntu-latest runners already have.
+
+      # v0.0.0-ci/github.sha/a fixed timestamp are throwaway build
+      # metadata for this smoke test only — never implies a real
+      # release. The full 40-character commit SHA is used so the
+      # assertion below can distinguish "the linker flags actually took
+      # effect" from "the default placeholder happened to look right".
+      - name: Build image (throwaway metadata — never a real release)
+        run: |
+          docker build \
+            --build-arg VERSION=v0.0.0-ci \
+            --build-arg COMMIT=${{ github.sha }} \
+            --build-arg BUILD_TIME=1970-01-01T00:00:00Z \
+            -t go-invoicing:ci .
+
+      - name: Verify --version metadata (no database required)
+        run: |
+          actual="$(docker run --rm go-invoicing:ci --version)"
+          echo "$actual"
+          case "$actual" in
+            *"v0.0.0-ci"*"${{ github.sha }}"*"1970-01-01T00:00:00Z"*) ;;
+            *) echo "unexpected --version output — linker metadata injection may be broken"; exit 1 ;;
+          esac
+
+      - name: Verify non-root image user
+        run: |
+          user="$(docker inspect --format='{{.Config.User}}' go-invoicing:ci)"
+          echo "image user: $user"
+          if [ "$user" != "65532:65532" ]; then
+            echo "expected the image's configured user to be 65532:65532, got '$user'"
+            exit 1
+          fi
+
+      # Boots the real image against this job's own PostgreSQL service —
+      # --network host lets the container reach the service (published
+      # to the runner's own localhost by GitHub Actions) and lets this
+      # step reach the container's port 8080, both without a separate
+      # Docker network. Deliberately no Dockerfile HEALTHCHECK to lean
+      # on (see the Dockerfile's own comment on why) — /health and
+      # /health/db are polled directly over HTTP instead, from outside
+      # the (intentionally tool-less) container, exactly as a real
+      # Compose/cloud health check would.
+      - name: Container boot + health smoke test (real startup migrations)
+        run: |
+          docker run -d --name app-smoke --network host \
+            -e APP_ENV=test \
+            -e DATABASE_URL="postgres://ci_test:ci_test_disposable@localhost:5432/go_invoicing_test?sslmode=disable" \
+            -e METRICS_ENABLED=false \
+            go-invoicing:ci
+
+          echo "waiting for /health..."
+          ready=""
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/health >/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ -z "$ready" ]; then
+            echo "/health never became ready within 30s"
+            docker logs app-smoke
+            exit 1
+          fi
+          echo "/health OK"
+
+          if ! curl -sf http://localhost:8080/health/db >/dev/null; then
+            echo "/health/db failed"
+            docker logs app-smoke
+            exit 1
+          fi
+          echo "/health/db OK — real startup migrations applied successfully"
+
+      - name: Show container logs
+        if: always()
+        run: docker logs app-smoke || true
+
+      # docker stop's default 10s grace period comfortably exceeds the
+      # application's own 5-second shutdown timeout — proves the image
+      # actually receives and handles SIGTERM as PID 1 (see the
+      # Dockerfile's own comment), not just that it starts.
+      - name: Stop and remove the container
+        if: always()
+        run: |
+          docker stop app-smoke || true
+          docker rm -f app-smoke || true
+
+  # compose: validates compose.prod.yaml with real `docker compose` —
+  # config rendering/interpolation, required-variable enforcement, and (if
+  # the config step passes) actually running the full stack. This job
+  # needs no services: block of its own — compose.prod.yaml brings up its
+  # own PostgreSQL entirely within the stack it starts, on its own
+  # Compose-managed network with no host-published port — so it can never
+  # collide with the docker/integration/race jobs' own Postgres services.
+  # Every credential here is written fresh to an untracked file on the
+  # runner and is disposable/CI-only; nothing here is a real secret and
+  # nothing here is ever committed.
+  compose:
+    name: Production Compose (config + full stack smoke test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Write a disposable test env file (never committed)
+        run: |
+          cat > .env.ci-compose-test <<EOF
+          POSTGRES_DB=go_invoicing_ci
+          POSTGRES_USER=ci_compose_test
+          POSTGRES_PASSWORD=ci_compose_test_disposable
+          DATABASE_URL=postgres://ci_compose_test:ci_compose_test_disposable@postgres:5432/go_invoicing_ci?sslmode=disable
+          VERSION=v0.0.0-ci
+          COMMIT=${{ github.sha }}
+          BUILD_TIME=1970-01-01T00:00:00Z
+          EOF
+
+      - name: docker compose config (interpolation + required-variable enforcement)
+        run: docker compose -f compose.prod.yaml --env-file .env.ci-compose-test config
+
+      # --format json + jq, not grep over rendered YAML text: precise,
+      # unambiguous field-level assertions instead of brittle substring
+      # matches.
+      - name: Assert the rendered config has the expected shape
+        run: |
+          rendered="$(docker compose -f compose.prod.yaml --env-file .env.ci-compose-test config --format json)"
+
+          echo "$rendered" | jq -e \
+            '.services.app.environment.DATABASE_URL == "postgres://ci_compose_test:ci_compose_test_disposable@postgres:5432/go_invoicing_ci?sslmode=disable"' \
+            || { echo "DATABASE_URL did not resolve as expected"; exit 1; }
+
+          echo "$rendered" | jq -e '.services.app.image == "go-invoicing:v0.0.0-ci"' \
+            || { echo "app image tag did not resolve from VERSION"; exit 1; }
+
+          echo "$rendered" | jq -e '(.services.postgres.ports // []) | length == 0' \
+            || { echo "expected postgres to have no published host port"; exit 1; }
+
+          echo "$rendered" | jq -e '.services.app.ports | length == 1 and .[0].published == "8080" and (.[0].target == 8080)' \
+            || { echo "expected the app to publish exactly port 8080"; exit 1; }
+
+          echo "$rendered" | jq -e '.volumes.postgres_prod_data != null' \
+            || { echo "expected the postgres_prod_data named volume"; exit 1; }
+
+          echo "$rendered" | jq -e '.services.app.read_only == true' \
+            || { echo "expected read_only: true"; exit 1; }
+          echo "$rendered" | jq -e '.services.app.cap_drop == ["ALL"]' \
+            || { echo "expected cap_drop: [ALL]"; exit 1; }
+          echo "$rendered" | jq -e '.services.app.security_opt | index("no-new-privileges:true") != null' \
+            || { echo "expected no-new-privileges:true"; exit 1; }
+          echo "$rendered" | jq -e '.services.app.depends_on.postgres.condition == "service_healthy"' \
+            || { echo "expected depends_on condition service_healthy"; exit 1; }
+          echo "$rendered" | jq -e '.services.app.stop_grace_period != null' \
+            || { echo "expected an explicit stop_grace_period"; exit 1; }
+
+          if echo "$rendered" | grep -q 'go_invoicing_dev'; then
+            echo "unexpected: the dev compose.yaml's own throwaway credential leaked into the rendered production config"
+            exit 1
+          fi
+
+          echo "rendered config matches every expected property"
+
+      - name: Verify required variables are actually enforced
+        run: |
+          if docker compose -f compose.prod.yaml config >/dev/null 2>&1; then
+            echo "expected 'docker compose config' with no env file to fail (DATABASE_URL/POSTGRES_* are required)"
+            exit 1
+          fi
+          echo "confirmed: required variables fail closed when unset"
+
+      - name: Start the full stack
+        run: docker compose -f compose.prod.yaml --env-file .env.ci-compose-test up -d --build
+
+      - name: Verify /health and /health/db
+        run: |
+          ready=""
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8080/health >/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ -z "$ready" ]; then
+            echo "/health never became ready"
+            docker compose -f compose.prod.yaml --env-file .env.ci-compose-test ps
+            docker compose -f compose.prod.yaml --env-file .env.ci-compose-test logs
+            exit 1
+          fi
+          echo "/health OK"
+          curl -sf http://localhost:8080/health/db
+          echo "/health/db OK — real startup migrations applied via the full Compose stack"
+
+      - name: Verify /metrics is unavailable (METRICS_ENABLED=false default)
+        run: |
+          status="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/metrics)"
+          if [ "$status" != "404" ]; then
+            echo "expected /metrics to be a plain 404 with METRICS_ENABLED=false, got $status"
+            exit 1
+          fi
+          echo "/metrics correctly unavailable"
+
+      - name: Verify container security settings
+        run: |
+          app_container="$(docker compose -f compose.prod.yaml --env-file .env.ci-compose-test ps -q app)"
+
+          user="$(docker inspect --format='{{.Config.User}}' "$app_container")"
+          [ "$user" = "65532:65532" ] || { echo "unexpected user: $user"; exit 1; }
+          echo "user OK: $user"
+
+          readonly_rootfs="$(docker inspect --format='{{.HostConfig.ReadonlyRootfs}}' "$app_container")"
+          [ "$readonly_rootfs" = "true" ] || { echo "expected a read-only root filesystem, got $readonly_rootfs"; exit 1; }
+          echo "read-only rootfs OK"
+
+          cap_drop="$(docker inspect --format='{{.HostConfig.CapDrop}}' "$app_container")"
+          echo "$cap_drop" | grep -qi 'ALL' || { echo "expected CapDrop to include ALL, got $cap_drop"; exit 1; }
+          echo "cap_drop OK: $cap_drop"
+
+      - name: Verify no secret is printed in captured logs
+        run: |
+          if docker compose -f compose.prod.yaml --env-file .env.ci-compose-test logs | grep -q 'ci_compose_test_disposable'; then
+            echo "the test database password leaked into container logs"
+            exit 1
+          fi
+          echo "no credential found in logs"
+
+      # Proves the named volume, not the container, is what actually
+      # holds the data: `down` (no -v) removes containers only, and the
+      # marker row must still be there after `up` recreates them.
+      - name: Persistence check — data survives down (without -v) and up again
+        run: |
+          docker compose -f compose.prod.yaml --env-file .env.ci-compose-test exec -T postgres \
+            psql -U ci_compose_test -d go_invoicing_ci -c "CREATE TABLE ci_persistence_marker (id int);"
+          docker compose -f compose.prod.yaml --env-file .env.ci-compose-test exec -T postgres \
+            psql -U ci_compose_test -d go_invoicing_ci -c "INSERT INTO ci_persistence_marker VALUES (1);"
+
+          docker compose -f compose.prod.yaml --env-file .env.ci-compose-test down
+          docker compose -f compose.prod.yaml --env-file .env.ci-compose-test up -d
+
+          found=""
+          for i in $(seq 1 30); do
+            if docker compose -f compose.prod.yaml --env-file .env.ci-compose-test exec -T postgres \
+                 psql -U ci_compose_test -d go_invoicing_ci -tAc "SELECT COUNT(*) FROM ci_persistence_marker;" 2>/dev/null | grep -q '^1$'; then
+              found=1
+              break
+            fi
+            sleep 2
+          done
+          if [ -z "$found" ]; then
+            echo "persistence check failed — marker row not found after down/up"
+            exit 1
+          fi
+          echo "persistence verified: the named volume survived down (without -v) and up"
+
+      - name: Verify graceful shutdown
+        run: docker compose -f compose.prod.yaml --env-file .env.ci-compose-test stop app
+
+      # This -v (unlike README's own explicit warning against it for a
+      # real deployment) is correct and intentional here only: this is
+      # disposable CI infrastructure with test data, on a runner that is
+      # discarded after the job regardless — leaving the volume behind
+      # would just orphan a resource nothing will ever reuse.
+      - name: Tear down (including the disposable test volume)
+        if: always()
+        run: |
+          docker compose -f compose.prod.yaml --env-file .env.ci-compose-test down -v || true
+          rm -f .env.ci-compose-test
