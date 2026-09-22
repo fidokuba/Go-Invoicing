@@ -22,9 +22,15 @@
 //
 //	go run ./cmd/release -version v1.2.3
 //
+// -validate-only checks -version against this package's own SemVer rule
+// and exits immediately without building anything — the release workflow
+// (.github/workflows/release.yml, Milestone 11 Part 6) uses exactly this
+// to validate a Git tag before doing any other release work, so the tag
+// validation rule is never duplicated as a second, shell-side regex.
+//
 // See this package's own flag definitions below for every accepted
-// input, and the project README's "Release builds" section for the
-// full walkthrough.
+// input, and the project README's "Release builds" and "Releases"
+// sections for the full walkthrough.
 package main
 
 import (
@@ -57,6 +63,7 @@ func run(args []string, out io.Writer) error {
 	commit := fs.String("commit", "", "git commit SHA to embed (default: `git rev-parse HEAD`)")
 	buildTime := fs.String("build-time", "", "RFC3339 UTC build timestamp to embed (default: the current time) — pass this so CI can supply one deterministic value instead of each build minting its own")
 	distDir := fs.String("dist", "dist", "output directory for release artifacts (cleared and recreated on each run)")
+	validateOnly := fs.Bool("validate-only", false, "validate -version and exit without building anything — used by the release workflow (Milestone 11 Part 6) to check a Git tag using this exact validator, before any other release work happens, without duplicating the SemVer rule in shell/YAML")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -66,6 +73,11 @@ func run(args []string, out io.Writer) error {
 	}
 	if err := validateReleaseVersion(*version); err != nil {
 		return err
+	}
+
+	if *validateOnly {
+		fmt.Fprintf(out, "%s is a valid release version\n", *version)
+		return nil
 	}
 
 	resolvedCommit := *commit

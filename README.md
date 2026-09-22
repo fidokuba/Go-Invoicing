@@ -75,9 +75,36 @@ cd dist && sha256sum -c checksums.txt   # Linux
 cd dist && shasum -a 256 -c checksums.txt   # macOS
 ```
 
-The Linux/Windows/macOS-amd64/macOS-arm64 artifacts are unsigned and unnotarized — appropriate for development, testing, and technical/self-hosted distribution today, not yet a polished non-technical commercial macOS/Windows install experience (that remains later Milestone 11 work). Raw binaries + a checksum file are all this stage produces; there is no `.tar.gz`/`.zip` packaging and no GitHub Release yet.
+The Linux/Windows/macOS-amd64/macOS-arm64 artifacts are unsigned and unnotarized — appropriate for development, testing, and technical/self-hosted distribution, not yet a polished non-technical commercial macOS/Windows install experience. Downloading one may trigger an OS trust warning (Windows SmartScreen, macOS Gatekeeper) — this is expected until Authenticode/notarization exist, and this Part doesn't pretend otherwise.
 
 The release build only compiles — it never opens a database connection, runs a migration, or reads application configuration, and needs no secret of any kind.
+
+## Releases
+
+`.github/workflows/release.yml` (Milestone 11 Part 6) turns a Git tag into a published GitHub Release and a multi-arch container image — a separate workflow from CI, triggered only by a tag, never by an ordinary push or pull request.
+
+**Tag convention**: `vMAJOR.MINOR.PATCH`, optionally with a prerelease suffix — `v1.2.3`, `v1.2.3-rc.1`. Validated with the exact same rule `cmd/release` itself enforces (via its `-validate-only` flag) — an invalid tag name fails the workflow before anything is built.
+
+**What gets published, for tag `v1.2.3`:**
+
+- A GitHub Release named `Go Invoicing v1.2.3`, with GitHub's auto-generated notes, and all six `cmd/release` outputs attached: the five native binaries plus `checksums.txt`.
+- A multi-arch (`linux/amd64` + `linux/arm64`) image on GHCR, tagged `ghcr.io/<owner>/go-invoicing:v1.2.3`, `:1.2.3`, `:1.2`, `:1`, and `:latest`.
+
+**Prerelease tags** (`v1.2.3-rc.1`) publish a GitHub Release marked as a prerelease, and a container tagged only `:v1.2.3-rc.1` and `:1.2.3-rc.1` — never `:latest`, and never a `:1.2`/`:1` alias, so a prerelease can never accidentally become what `docker pull .../go-invoicing` resolves to by default.
+
+**Native binaries remain unsigned** (see "Release builds" above) — the same OS trust-warning caveat applies to a release download as to a local `cmd/release` build.
+
+**Nothing is ever silently overwritten**: the workflow refuses to proceed if a GitHub Release or the exact container version tag already exists for that version, rather than replacing it.
+
+**Publishing a release never deploys it anywhere** — no server, container host, or cloud environment is touched by this workflow. It only makes artifacts available for someone to deploy manually (see the "Self-hosted Docker Compose"/"Cloud" sections above).
+
+**Operator procedure** (not automated — a human decides when to cut a release):
+
+1. Confirm CI is green on the commit you intend to release.
+2. `git tag v1.2.3` (an annotated tag, `git tag -a v1.2.3 -m "..."`, works equally well).
+3. `git push origin v1.2.3`.
+4. Watch the "Release" workflow run in the Actions tab.
+5. Once it succeeds, verify the GitHub Release page and (if you use the image) `docker pull ghcr.io/<owner>/go-invoicing:v1.2.3`.
 
 ## Operations
 

@@ -1,0 +1,501 @@
+# Milestone 11 Part 6: the Git-tag-driven release pipeline. This is a
+# SEPARATE workflow from .github/workflows/ci.yml (PR/push CI) on
+# purpose — an ordinary push to main or a pull request must never
+# publish anything, and this workflow's own trigger (below) only ever
+# fires for a tag matching this project's release-version shape. Nothing
+# here reruns or replaces ci.yml; see the "validate" job's own comment
+# for why release-time validation is still performed rather than simply
+# trusting whatever CI run happened to complete for this commit earlier.
+#
+# Publishes, for a valid vMAJOR.MINOR.PATCH[-prerelease] tag:
+#   1. A GitHub Release with all five cmd/release native artifacts +
+#      checksums.txt attached.
+#   2. A multi-arch (linux/amd64, linux/arm64) container image on GHCR.
+#
+# Never deploys anything anywhere — publishing a release is not the same
+# as deploying it (see the "publish" job).
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  # Manual re-run/testing path. Conservative by design: an operator can
+  # only ever name an EXISTING tag, never an arbitrary version string
+  # disconnected from a real Git object — actions/checkout below fails
+  # outright if the given tag doesn't exist, which is the entire
+  # enforcement mechanism (no extra validation code needed for that
+  # specific property). Everything downstream then runs the exact same
+  # validate → native → container → publish path a real tag push would.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing Git tag to run the release pipeline for, e.g. v1.2.3 (must already exist — this does not create one)"
+        required: true
+
+# Least privilege at the workflow level; each job that needs more
+# requests it explicitly (see "container" and "publish" below).
+permissions:
+  contents: read
+
+# Deliberately no concurrency-cancellation group here (contrast
+# ci.yml's): cancelling a release mid-publish is exactly the kind of
+# partial-publication state this workflow's own job structure is
+# designed to avoid — a second push of the same tag can't happen (Git
+# tags aren't meant to move), and a workflow_dispatch re-run for a tag
+# that already has a published GitHub Release fails safely in the
+# "publish" job instead (see its "refuse to overwrite" step).
+
+jobs:
+  # validate: resolves and validates the release's identity ONCE — every
+  # other job consumes these outputs rather than re-deriving them, so
+  # there is exactly one definition of "this release's version/commit/
+  # build time", never several subtly different ones computed in
+  # parallel jobs (see Milestone 11 Part 6's own report on this).
+  validate:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      commit: ${{ steps.resolve.outputs.commit }}
+      build_time: ${{ steps.resolve.outputs.build_time }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
+    steps:
+      - name: Determine which ref to check out
+        id: ref
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "ref=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ref: an explicit tag name, never github.ref/github.sha directly —
+      # for workflow_dispatch this is also the ONLY validation that the
+      # supplied tag actually exists: checkout fails outright if it
+      # doesn't. fetch-depth: 0 (full history) is for `gh release create
+      # --generate-notes` in the publish job, which diffs against the
+      # previous tag — not needed for, and irrelevant to, the
+      # synthetic-merge-commit concern that only applies to pull_request
+      # events (this is a plain tag/ref checkout, never a PR merge ref).
+      - name: Checkout the tagged commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ref.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # A freshly-checked-out tag should never be dirty. If it somehow
+      # is (e.g. an unexpected local-state artifact), treat that as a
+      # release-blocking failure, not merely cmd/release's own permissive
+      # local-dev warning (see resolve step below, which calls
+      # cmd/release in -validate-only mode — that mode never reaches
+      # cmd/release's own dirty-tree check at all, so this step is the
+      # one place that guard actually applies for a release).
+      - name: Fail on an unexpectedly dirty checkout
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "the checked-out tag has an unexpectedly dirty working tree — refusing to release from it"
+            git status
+            exit 1
+          fi
+
+      # VERSION comes directly from the tag name — never a separately
+      # supplied value that could disagree with it. COMMIT is resolved
+      # via `git rev-parse HEAD` AFTER checkout, not `github.sha`: for a
+      # tag-push event, github.sha can refer to the tag object itself
+      # rather than the commit it points at, depending on whether the
+      # tag is annotated — resolving it via Git post-checkout is
+      # unambiguous either way and correctly handles both lightweight
+      # and annotated tags. BUILD_TIME is computed exactly once, here,
+      # and threaded through every downstream job's build-arg/-ldflags
+      # invocation — never re-derived per job, which would give the
+      # native artifacts and the container image two different
+      # "identical" release identities.
+      - name: Resolve and validate release metadata
+        id: resolve
+        run: |
+          VERSION="${{ steps.ref.outputs.ref }}"
+          COMMIT="$(git rev-parse HEAD)"
+          BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          # Reuses cmd/release's own SemVer validator via its
+          # -validate-only flag — no duplicated regex in this workflow.
+          go run ./cmd/release -version "$VERSION" -validate-only
+
+          case "$VERSION" in
+            *-*) PRERELEASE=true ;;
+            *) PRERELEASE=false ;;
+          esac
+
+          {
+            echo "version=$VERSION"
+            echo "commit=$COMMIT"
+            echo "build_time=$BUILD_TIME"
+            echo "prerelease=$PRERELEASE"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Resolved release: version=$VERSION commit=$COMMIT build_time=$BUILD_TIME prerelease=$PRERELEASE"
+
+  # native: builds the five cmd/release artifacts for this exact release
+  # identity and stages them as a workflow artifact — not yet the public
+  # GitHub Release (that only happens in "publish", after this AND
+  # "container" both succeed).
+  native:
+    name: Native release artifacts
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout the release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The canonical tool itself — never five hand-written build
+      # commands duplicated in YAML (see cmd/release's own doc comment).
+      - name: Build all five native release artifacts
+        run: |
+          go run ./cmd/release \
+            -version "${{ needs.validate.outputs.version }}" \
+            -commit "${{ needs.validate.outputs.commit }}" \
+            -build-time "${{ needs.validate.outputs.build_time }}"
+
+      # Fails closed on anything unexpected: exactly the five named
+      # binaries plus checksums.txt, nothing else, every checksum valid.
+      - name: Verify the release artifact set
+        run: |
+          VERSION="${{ needs.validate.outputs.version }}"
+
+          expected="$(printf '%s\n' \
+            "go-invoicing_${VERSION}_linux_amd64" \
+            "go-invoicing_${VERSION}_linux_arm64" \
+            "go-invoicing_${VERSION}_windows_amd64.exe" \
+            "go-invoicing_${VERSION}_darwin_amd64" \
+            "go-invoicing_${VERSION}_darwin_arm64" \
+            "checksums.txt" | sort)"
+          actual="$(ls dist | sort)"
+
+          if [ "$actual" != "$expected" ]; then
+            echo "dist/ does not contain exactly the expected release artifact set"
+            echo "--- expected ---"; echo "$expected"
+            echo "--- actual   ---"; echo "$actual"
+            exit 1
+          fi
+
+          (cd dist && sha256sum -c checksums.txt)
+
+          echo "verified: exactly the expected 5 artifacts + checksums.txt, all checksums valid"
+
+      # The host runner is linux/amd64, so that one artifact (only) can
+      # actually execute here — the same "run the one host-runnable
+      # binary" verification Milestone 11 Part 4 used locally.
+      - name: Verify embedded build metadata (host-runnable linux/amd64 binary)
+        run: |
+          actual="$(./dist/go-invoicing_${{ needs.validate.outputs.version }}_linux_amd64 --version)"
+          echo "$actual"
+          case "$actual" in
+            *"${{ needs.validate.outputs.version }}"*"${{ needs.validate.outputs.commit }}"*"${{ needs.validate.outputs.build_time }}"*) ;;
+            *) echo "unexpected --version output — linker metadata injection may be broken"; exit 1 ;;
+          esac
+
+      # Staging only, not the public release — a short retention is
+      # enough since "publish" consumes this within the same workflow
+      # run, normally within minutes.
+      - name: Upload native artifacts (staging — not the public release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-release-artifacts
+          path: dist/
+          retention-days: 1
+          if-no-files-found: error
+
+  # container: builds and publishes the multi-arch production image.
+  # Runs independently of "native" (no shared state, no ordering
+  # requirement between them — both only depend on "validate"), so a
+  # native-artifact problem and a container problem are never
+  # conflated into one failure.
+  container:
+    name: Container image (build, smoke test, publish)
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+      image: ${{ steps.image.outputs.name }}
+    steps:
+      - name: Checkout the release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+
+      # No docker/setup-qemu-action: the builder stage always runs
+      # natively (FROM --platform=$BUILDPLATFORM in the Dockerfile) and
+      # cross-compiles Go itself via TARGETOS/TARGETARCH — nothing here
+      # ever needs to *execute* foreign-architecture code during the
+      # build, only assemble layers (the runtime stage is COPY + metadata
+      # only, no RUN), so emulation would be pure overhead with no
+      # correctness benefit.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ghcr.io requires an all-lowercase image path; github.repository
+      # ("fidokuba/Go-Invoicing") is not guaranteed lowercase, so it's
+      # normalized here rather than hardcoded, in case the repository is
+      # ever renamed.
+      - name: Compute the (lowercase) image reference
+        id: image
+        run: echo "name=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      # Single-platform (this runner's own linux/amd64), loaded into the
+      # local daemon so it can actually be run and smoke-tested — a
+      # multi-platform image cannot be --load-ed at all. Nothing is
+      # pushed by this step. See Milestone 11 Part 6's own report on
+      # exactly how far "never publish before validation" can go across
+      # two independent publish targets (GHCR and GitHub Releases).
+      - name: Build linux/amd64 image locally for smoke test (not pushed)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ steps.image.outputs.name }}:release-check
+          build-args: |
+            VERSION=${{ needs.validate.outputs.version }}
+            COMMIT=${{ needs.validate.outputs.commit }}
+            BUILD_TIME=${{ needs.validate.outputs.build_time }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Reuses Part 5's own proven smoke-test checks (same assertions,
+      # same failure style) against this release's actual metadata,
+      # rather than re-running Part 5's whole PostgreSQL-backed container
+      # boot test here too: that already ran, against this exact commit,
+      # in ci.yml's "docker"/"compose" jobs — re-running the full
+      # database-backed boot sequence a second time here would verify
+      # the same startup path CI already verified, at real extra cost,
+      # for no new information about this release's actual metadata
+      # identity (which is the one thing that's genuinely new here).
+      - name: Smoke test — --version metadata
+        run: |
+          actual="$(docker run --rm ${{ steps.image.outputs.name }}:release-check --version)"
+          echo "$actual"
+          case "$actual" in
+            *"${{ needs.validate.outputs.version }}"*"${{ needs.validate.outputs.commit }}"*"${{ needs.validate.outputs.build_time }}"*) ;;
+            *) echo "unexpected --version output — linker metadata injection may be broken"; exit 1 ;;
+          esac
+
+      - name: Smoke test — non-root user
+        run: |
+          user="$(docker inspect --format='{{.Config.User}}' ${{ steps.image.outputs.name }}:release-check)"
+          [ "$user" = "65532:65532" ] || { echo "unexpected user: $user"; exit 1; }
+          echo "user OK: $user"
+
+      # Standard GHCR login: GITHUB_TOKEN with this job's own
+      # packages:write permission — no personal access token, no
+      # long-lived registry secret.
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Container immutability: refuse to silently overwrite an
+      # already-published exact version tag (a workflow_dispatch re-run
+      # for a tag that was already fully released, for example).
+      - name: Refuse to overwrite an already-published exact version tag
+        run: |
+          IMAGE="${{ steps.image.outputs.name }}"
+          VERSION="${{ needs.validate.outputs.version }}"
+          if docker buildx imagetools inspect "$IMAGE:$VERSION" >/dev/null 2>&1; then
+            echo "$IMAGE:$VERSION already exists — refusing to overwrite an already-published release image"
+            exit 1
+          fi
+          echo "confirmed: $IMAGE:$VERSION does not already exist"
+
+      # Explicit, conservative tag policy (Milestone 11 Part 6 sections
+      # 26/27), computed directly from the already-validated version
+      # string with plain, deterministic shell string manipulation —
+      # locally tested (see this milestone's own report) — rather than
+      # relying on a third-party action's semver-attribute behavior that
+      # couldn't be verified against a real run before this pipeline's
+      # first genuine use:
+      #   stable v1.2.3          -> v1.2.3, 1.2.3, 1.2, 1, latest
+      #   prerelease v1.2.3-rc.1 -> v1.2.3-rc.1, 1.2.3-rc.1 (nothing else —
+      #     latest and the major/minor aliases never move for a prerelease)
+      - name: Compute container tag policy
+        id: meta
+        run: |
+          VERSION="${{ needs.validate.outputs.version }}"
+          IMAGE="${{ steps.image.outputs.name }}"
+
+          numeric="${VERSION#v}"          # "1.2.3" or "1.2.3-rc.1"
+          core="${numeric%%-*}"           # "1.2.3" either way
+          major="${core%%.*}"             # "1"
+          rest="${core#*.}"               # "2.3"
+          minor="${rest%%.*}"             # "2"
+
+          # An array, not a hand-built multi-line string: string-
+          # concatenating literal newlines inside a `run: |` block would
+          # bake in that block's own YAML indentation as leading
+          # whitespace on every continuation line, silently corrupting
+          # each tag. printf joins the array with clean newlines instead.
+          tags=("$IMAGE:$VERSION" "$IMAGE:$numeric")
+          if [ "${{ needs.validate.outputs.prerelease }}" = "false" ]; then
+            tags+=("$IMAGE:$major.$minor" "$IMAGE:$major" "$IMAGE:latest")
+          fi
+
+          # docker/build-push-action's tags: input is newline-separated
+          # (the same format docker/metadata-action's own tags output
+          # uses), not comma-separated. GITHUB_OUTPUT's multi-line-value
+          # delimiter syntax carries that newline-containing value
+          # between steps.
+          {
+            echo "tags<<TAGS_EOF"
+            printf '%s\n' "${tags[@]}"
+            echo "TAGS_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Computed container tags:"
+          printf '%s\n' "${tags[@]}"
+
+      # The actual publish: multi-platform build, pushed as one manifest
+      # list. Build args are the exact same VERSION/COMMIT/BUILD_TIME the
+      # native artifacts used — the core native/container identity
+      # guarantee this milestone requires. No separate labels: input —
+      # the Dockerfile's own LABEL instructions already derive
+      # org.opencontainers.image.{version,revision,created} from these
+      # same build args, so there is nothing left for this step to add.
+      - name: Build and push the multi-arch image
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            VERSION=${{ needs.validate.outputs.version }}
+            COMMIT=${{ needs.validate.outputs.commit }}
+            BUILD_TIME=${{ needs.validate.outputs.build_time }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Never assume multi-arch success merely because buildx exited
+      # zero — actually inspect the pushed manifest list for both
+      # platforms, and report the immutable digest (the strongest
+      # identifier for this container release; never injected into the
+      # image itself).
+      - name: Verify the pushed multi-arch manifest
+        run: |
+          IMAGE="${{ steps.image.outputs.name }}"
+          DIGEST="${{ steps.push.outputs.digest }}"
+          echo "Published digest: $DIGEST"
+
+          docker buildx imagetools inspect "$IMAGE@$DIGEST"
+
+          # Only checked for PRESENCE of the two required platforms below
+          # — deliberately not an exact-match/count assertion, since
+          # Buildx may legitimately add its own extra non-platform
+          # manifest entries (e.g. a provenance attestation, typically
+          # reported as "unknown/unknown") that are harmless noise here.
+          platforms="$(docker buildx imagetools inspect "$IMAGE@$DIGEST" --format '{{json .Manifest}}' \
+            | jq -r '.manifests[].platform | "\(.os)/\(.architecture)"')"
+          echo "Platforms in manifest: $platforms"
+
+          echo "$platforms" | grep -qx 'linux/amd64' || { echo "manifest is missing linux/amd64"; exit 1; }
+          echo "$platforms" | grep -qx 'linux/arm64' || { echo "manifest is missing linux/arm64"; exit 1; }
+          echo "confirmed: published manifest includes both linux/amd64 and linux/arm64"
+
+  # publish: the capstone step — a GitHub Release only ever appears once
+  # BOTH native artifacts and the container image are built and verified
+  # good. See Milestone 11 Part 6's own report for the residual
+  # partial-publication risk this ordering does and doesn't eliminate
+  # (GitHub Releases and GHCR are two independent systems; perfect
+  # atomicity across both isn't achievable).
+  publish:
+    name: Publish GitHub Release
+    needs: [validate, native, container]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout the release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+          fetch-depth: 0
+
+      - name: Download native release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: native-release-artifacts
+          path: dist
+
+      # Release immutability: fail safely rather than silently replacing
+      # an already-published release's assets.
+      - name: Refuse to overwrite an existing GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${{ needs.validate.outputs.version }}" >/dev/null 2>&1; then
+            echo "a GitHub Release already exists for tag ${{ needs.validate.outputs.version }} — refusing to overwrite it"
+            exit 1
+          fi
+          echo "confirmed: no existing release for ${{ needs.validate.outputs.version }}"
+
+      # gh (already present on GitHub-hosted runners), not a third-party
+      # release action: it's the official, GitHub-supported mechanism,
+      # needs nothing beyond GITHUB_TOKEN, and --generate-notes avoids
+      # building a changelog system this project doesn't otherwise use.
+      # --target pins the release to the exact resolved commit — since
+      # the tag already exists (that's the trigger), this doesn't move or
+      # recreate anything; it's just explicit rather than implicit about
+      # which commit the release describes.
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.validate.outputs.version }}"
+
+          prerelease_flag=()
+          if [ "${{ needs.validate.outputs.prerelease }}" = "true" ]; then
+            prerelease_flag=(--prerelease)
+          fi
+
+          gh release create "$VERSION" \
+            --title "Go Invoicing $VERSION" \
+            --generate-notes \
+            --target "${{ needs.validate.outputs.commit }}" \
+            "${prerelease_flag[@]}" \
+            "dist/go-invoicing_${VERSION}_linux_amd64" \
+            "dist/go-invoicing_${VERSION}_linux_arm64" \
+            "dist/go-invoicing_${VERSION}_windows_amd64.exe" \
+            "dist/go-invoicing_${VERSION}_darwin_amd64" \
+            "dist/go-invoicing_${VERSION}_darwin_arm64" \
+            "dist/checksums.txt"
+
+      - name: Report the published release and container digest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "GitHub Release: $(gh release view '${{ needs.validate.outputs.version }}' --json url -q .url)"
+          echo "Container image: ${{ needs.container.outputs.image }}@${{ needs.container.outputs.digest }}"
