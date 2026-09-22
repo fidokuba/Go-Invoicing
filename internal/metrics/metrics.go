@@ -23,6 +23,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"go-invoicing/internal/buildinfo"
 )
 
 // namespace prefixes every metric this package registers, per Prometheus
@@ -149,6 +151,28 @@ func New(pool *pgxpool.Pool) *Metrics {
 		}),
 	}
 
+	// buildInfo (Milestone 11 Part 2 — deferred by Milestone 10 Part 4
+	// until build metadata actually existed) is a set-once gauge, always
+	// 1: its only purpose is carrying version/commit as labels for a
+	// PromQL join against other series, the conventional Prometheus
+	// "info metric" pattern. Labeled by version and commit only —
+	// build_time deliberately excluded: unlike version/commit (bounded
+	// per released binary), a rebuild of the identical commit still gets
+	// a new build_time, which would mint a fresh time series on every
+	// redeploy for no operational value PromQL could actually use.
+	// build_time remains available via buildinfo.String() in the startup
+	// log and `--version` output instead. It is set once here, at
+	// construction time, from the same authoritative source --version
+	// and the startup log both read (internal/buildinfo) — there is no
+	// public RecordX method for it, since nothing about it ever changes
+	// for the life of one running binary.
+	buildInfo := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Name:      "build_info",
+		Help:      "Always 1; labeled by the running binary's version and commit (see internal/buildinfo).",
+	}, []string{"version", "commit"})
+	buildInfo.WithLabelValues(buildinfo.Version, buildinfo.Commit).Set(1)
+
 	registry.MustRegister(
 		m.httpRequestsTotal,
 		m.httpRequestDuration,
@@ -158,6 +182,7 @@ func New(pool *pgxpool.Pool) *Metrics {
 		m.workerRunDuration,
 		m.pdfGenerationsTotal,
 		m.pdfGenerationDuration,
+		buildInfo,
 		newDBPoolCollector(pool),
 		// Standard Go runtime and process collectors (GC pauses, heap,
 		// goroutine count, open file descriptors, RSS, CPU seconds, ...).

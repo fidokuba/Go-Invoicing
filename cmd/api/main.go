@@ -3,12 +3,16 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	admin "go-invoicing/internal/administration"
 	"go-invoicing/internal/app"
+	"go-invoicing/internal/buildinfo"
 	"go-invoicing/internal/config"
 	"go-invoicing/internal/database"
 	"go-invoicing/internal/metrics"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -53,6 +57,65 @@ const (
 type lifecycleServer interface {
 	ListenAndServe() error
 	Shutdown(context.Context) error
+}
+
+// versionRequested reports whether args (main passes os.Args[1:]) asked
+// for build-metadata output. Checked before anything else in main so
+// `--version`/`-version` needs no configuration, opens no database
+// connection, runs no migration, and starts no worker or server — it
+// only ever prints buildinfo.String() and returns. A hand-written check
+// over a single flag is deliberately used instead of the stdlib `flag`
+// package (which would still work, but adds its own -h/--help handling
+// and global flag.CommandLine state this one flag doesn't need) or a
+// third-party CLI framework, per this milestone's own "keep argument
+// handling minimal" instruction.
+func versionRequested(args []string) bool {
+	for _, arg := range args {
+		if arg == "--version" || arg == "-version" {
+			return true
+		}
+	}
+
+	return false
+}
+
+// newLogger builds this process's one application logger — the
+// composition root's single point of *slog.Logger construction (see
+// main; no other package ever calls slog.New). format and level are
+// assumed already validated by config.Load (see config.getEnumEnv), so
+// only "json" is checked explicitly below — anything else (i.e. "text",
+// the only other value config.Load ever allows through) uses the text
+// handler.
+func newLogger(w io.Writer, format, level string) *slog.Logger {
+	opts := &slog.HandlerOptions{Level: parseLogLevel(level)}
+
+	var handler slog.Handler
+	if format == "json" {
+		handler = slog.NewJSONHandler(w, opts)
+	} else {
+		handler = slog.NewTextHandler(w, opts)
+	}
+
+	return slog.New(handler)
+}
+
+// parseLogLevel maps config's validated LOG_LEVEL string onto the
+// matching slog.Level. Like newLogger above, level is assumed already
+// validated by config.Load — the default case exists only to give
+// "info" (and, defensively, any value config.Load's own validation
+// didn't catch) a safe level rather than requiring an error return here
+// too.
+func parseLogLevel(level string) slog.Level {
+	switch level {
+	case "debug":
+		return slog.LevelDebug
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
 }
 
 func runServerLifecycle(
@@ -101,10 +164,25 @@ func runServerLifecycle(
 }
 
 func main() {
+	// --version prints build metadata and exits immediately — before
+	// configuration, logging, the database, or anything else this
+	// process would otherwise initialize. See versionRequested's own doc
+	// comment.
+	if versionRequested(os.Args[1:]) {
+		fmt.Println(buildinfo.String())
+		return
+	}
 
-	logger := slog.New(
-		slog.NewTextHandler(os.Stdout, nil),
-	)
+	// bootstrapLogger exists only to report a failure to load
+	// configuration itself (immediately below): the real logger's
+	// format/level are themselves config values (LOG_FORMAT/LOG_LEVEL),
+	// so they can't be known yet if config.Load has just failed. Once
+	// config loads successfully, logger (built from cfg) is the only
+	// logger the rest of this process ever uses — this is still "one
+	// application logger," not a logging abstraction: the unavoidable
+	// chicken-and-egg case of a config load failure is the sole reason a
+	// second slog.New call exists in this file at all.
+	bootstrapLogger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
 	// The one root, process-level context: cancelled on SIGINT/SIGTERM.
 	// Everything that needs to react to shutdown — pool startup, the
@@ -117,13 +195,32 @@ func main() {
 	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
-		logger.Error("invalid configuration", "error", err)
+		bootstrapLogger.Error("invalid configuration", "error", err)
 		os.Exit(1)
 	}
+
+	logger := newLogger(os.Stdout, cfg.LogFormat, cfg.LogLevel)
+
+	// A single startup build-metadata event (Milestone 11 Part 2, closing
+	// the gap Milestone 10 Part 4 deliberately deferred) — never
+	// re-attached to every subsequent log line; version/commit/build_time
+	// are otherwise available via the go_invoicing_build_info metric
+	// (when METRICS_ENABLED) and `--version`, both reading the same
+	// internal/buildinfo values.
+	logger.Info(
+		"go-invoicing starting",
+		"version", buildinfo.Version,
+		"commit", buildinfo.Commit,
+		"build_time", buildinfo.BuildTime,
+	)
+
 	logger.Info(
 		"configuration loaded",
 		"APP_ENV", cfg.Environment,
+		"APP_HOST", cfg.Host,
 		"APP_PORT", cfg.Port,
+		"LOG_FORMAT", cfg.LogFormat,
+		"LOG_LEVEL", cfg.LogLevel,
 	)
 
 	// Run database migrations before creating the pool.
@@ -158,9 +255,16 @@ func main() {
 	// Create the app
 	application := app.New(db, logger, m)
 
-	// Create an HTTP server
+	// Create an HTTP server. net.JoinHostPort (not naive "host:port"
+	// string concatenation) correctly brackets an IPv6 Host — e.g.
+	// APP_HOST=::1 becomes "[::1]:8080" rather than the malformed
+	// "::1:8080" a plain cfg.Host+":"+cfg.Port would produce. cfg.Host
+	// defaults to "" (every interface), and JoinHostPort("", "8080")
+	// yields ":8080" — byte-for-byte the address this server bound
+	// before APP_HOST existed, so an operator who never sets it sees no
+	// behaviour change at all.
 	server := &http.Server{
-		Addr:              ":" + cfg.Port,
+		Addr:              net.JoinHostPort(cfg.Host, cfg.Port),
 		Handler:           application.Handler(),
 		ReadHeaderTimeout: serverReadHeaderTimeout,
 		ReadTimeout:       serverReadTimeout,

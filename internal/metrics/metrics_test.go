@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"go-invoicing/internal/buildinfo"
 )
 
 // scrape renders m's exposition body as a string for substring
@@ -178,6 +180,26 @@ func TestNew_RegistersRuntimeAndDBPoolCollectors(t *testing.T) {
 	}
 	if strings.Contains(body, "go_invoicing_db_pool_") {
 		t.Fatal("expected no db_pool samples for a nil pool")
+	}
+}
+
+// TestNew_ExposesBuildInfoMetric is Milestone 11 Part 2's addition
+// (deferred by Milestone 10 Part 4 until build metadata existed): every
+// Metrics instance registers a build_info gauge, always 1, labeled with
+// whatever internal/buildinfo currently holds — "dev"/"unknown" for this
+// ordinary `go test` run, since nothing here was built with -ldflags.
+// build_time is deliberately NOT a label — see New's own doc comment on
+// buildInfo for why.
+func TestNew_ExposesBuildInfoMetric(t *testing.T) {
+	m := New(nil)
+
+	body := scrape(t, m)
+	want := `go_invoicing_build_info{commit="` + buildinfo.Commit + `",version="` + buildinfo.Version + `"} 1`
+	if !strings.Contains(body, want) {
+		t.Fatalf("expected %q in the exposition, got:\n%s", want, body)
+	}
+	if strings.Contains(body, "build_time") {
+		t.Fatal("expected no build_time label anywhere in the exposition")
 	}
 }
 
