@@ -150,6 +150,62 @@ func TestWriteInternalError_LogsUnderlyingErrorOnceAndSkipsDuplicateGeneric5xx(t
 	}
 }
 
+func TestRequestLogging_FallbackGeneric5xxLogsOnceAndCompletesOnce(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	handler := RequestID(RequestLogging(logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		WriteError(w, http.StatusInternalServerError, CodeInternalError, "internal server error")
+	})))
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/unknown", nil))
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status %d, got %d", http.StatusInternalServerError, recorder.Code)
+	}
+
+	logText := logs.String()
+	if strings.Count(logText, "http request failed") != 1 {
+		t.Fatalf("expected exactly one generic 5xx error log, got %d: %s", strings.Count(logText, "http request failed"), logText)
+	}
+	if strings.Count(logText, "http request completed") != 1 {
+		t.Fatalf("expected exactly one completion log, got %d: %s", strings.Count(logText, "http request completed"), logText)
+	}
+	if !strings.Contains(logText, "request_id=") {
+		t.Fatal("expected fallback 5xx log to include request_id")
+	}
+	if strings.Contains(logText, "internal request error") {
+		t.Fatal("expected fallback 5xx path not to emit the detailed internal-error log")
+	}
+}
+
+func TestRequestLogging_4xxResponsesDoNotGenerateErrorLogs(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	for _, status := range []int{http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusConflict} {
+		handler := RequestID(RequestLogging(logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			WriteError(w, status, "test_error", "example message")
+		})))
+
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/test", nil))
+
+		if recorder.Code != status {
+			t.Fatalf("expected status %d, got %d", status, recorder.Code)
+		}
+	}
+
+	logText := logs.String()
+	if strings.Contains(logText, "http request failed") || strings.Contains(logText, "internal request error") {
+		t.Fatal("expected 4xx responses to remain out of ERROR logs, got: " + logText)
+	}
+	if strings.Count(logText, "http request completed") == 0 {
+		t.Fatal("expected 4xx responses to keep the normal completion INFO log")
+	}
+}
+
 func TestRequestIDMiddleware_GeneratesAndReturnsRequestID(t *testing.T) {
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
