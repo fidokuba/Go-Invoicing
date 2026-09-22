@@ -149,12 +149,24 @@ jobs:
       # Applies migrations for real (via the same Migrate function
       # cmd/api's own startup uses) and fails the build outright if
       # PostgreSQL is unreachable or misconfigured — see
-      # internal/database/ci_preflight_test.go's own doc comment for
-      # why this exists as its own explicit, ordered step rather than
-      # being left to package test-run order.
+      # internal/database/ci_preflight_test.go's own doc comment for why
+      # this exists as its own explicit, ordered STEP. This is a genuine
+      # ordering guarantee — GitHub Actions always runs a job's steps
+      # sequentially and stops the job on the first failing step (no
+      # continue-on-error is set on this step) — never something that
+      # relies on Go's own, undocumented package-test execution order
+      # within a single `go test ./...` invocation. The -run pattern is
+      # anchored (^...$), not a bare substring, so it can only ever match
+      # this exact test, never some future differently-named test that
+      # happens to contain this one's name as a substring.
       - name: Database preflight (migrate + connectivity check)
-        run: go test ./internal/database/ -run TestRequireDatabaseTests_CIPreflight -v -count=1
+        run: go test ./internal/database/ -run '^TestRequireDatabaseTests_CIPreflight$' -v -count=1
 
+      # This step only runs at all if the preflight step above exited
+      # zero — REQUIRE_DATABASE_TESTS stays "true" for it too (set at the
+      # job level above), so a database that somehow became unreachable
+      # between the two steps still fails closed rather than the ~150
+      # tests below silently skipping.
       - name: PostgreSQL-backed test suite (serial — shared database)
         run: go test -p 1 ./... -count=1
 
@@ -196,8 +208,14 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Same explicit, ordered preflight step as the integration job above
+      # — this job has its own independent, fresh PostgreSQL service
+      # container, so it needs its own migration/connectivity step too;
+      # nothing here is shared with (or assumed already done by) the
+      # integration job. The preflight test itself runs without -race —
+      # only the full suite below needs the detector.
       - name: Database preflight (migrate + connectivity check)
-        run: go test ./internal/database/ -run TestRequireDatabaseTests_CIPreflight -v -count=1
+        run: go test ./internal/database/ -run '^TestRequireDatabaseTests_CIPreflight$' -v -count=1
 
       - name: Race detector — full PostgreSQL-backed suite (serial)
         run: go test -race -p 1 ./... -count=1
