@@ -9,6 +9,7 @@ import (
 	"go-invoicing/internal/customer"
 	"go-invoicing/internal/httpx"
 	"go-invoicing/internal/invoice"
+	"go-invoicing/internal/metrics"
 	"go-invoicing/internal/product"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -21,8 +22,9 @@ import (
 const apiV1Prefix = "/api/v1"
 
 type App struct {
-	db     *pgxpool.Pool
-	logger *slog.Logger
+	db      *pgxpool.Pool
+	logger  *slog.Logger
+	metrics *metrics.Metrics
 
 	// routes is populated by Handler() as it registers each route — see
 	// RoutePattern's own doc comment for why this exists and how tests
@@ -30,18 +32,26 @@ type App struct {
 	routes []RoutePattern
 }
 
-// New wires an App around an existing database pool and logger. logger is
-// used only by the panic-recovery middleware (see Handler) to record an
-// unexpected handler panic server-side before responding with the
-// standard generic 500 — nothing else in this package logs anything.
+// New wires an App around an existing database pool, logger, and metrics
+// (Milestone 10 Part 4). logger is used only by the panic-recovery
+// middleware (see Handler) to record an unexpected handler panic
+// server-side before responding with the standard generic 500 — nothing
+// else in this package logs anything.
 //
 // db may be a typed nil *pgxpool.Pool: every repository constructor
 // Handler calls below only stores it in a struct field, never dereferences
 // it during construction, so building the route table (see RoutePatterns)
 // requires no live database connection. A nil pool only becomes a problem
 // once a handler that actually queries the database is invoked.
-func New(db *pgxpool.Pool, logger *slog.Logger) *App {
-	return &App{db: db, logger: logger}
+//
+// m may be nil, meaning metrics are disabled (see config.Config
+// .MetricsEnabled): Handler then never mounts GET /metrics at all (see
+// its own comment below on why an absent route, not a disabled-response
+// body, is section 32's preferred behaviour), and every *metrics.Metrics
+// method used elsewhere in this package's dependency graph is a nil-safe
+// no-op, so no other conditional is needed.
+func New(db *pgxpool.Pool, logger *slog.Logger, m *metrics.Metrics) *App {
+	return &App{db: db, logger: logger, metrics: m}
 }
 
 // RoutePattern is one application route's method and net/http.ServeMux
@@ -244,7 +254,7 @@ func (a *App) Handler() http.Handler {
 	// repository or query exists. InvoicePDFRenderer is stateless (only
 	// holds the embedded font bytes) and safe to share across requests.
 	invoicePDFRenderer := invoice.NewInvoicePDFRenderer()
-	invoicePDFService := invoice.NewInvoicePDFService(invoiceRepository, paymentRepository, organisationRepository, customerRepository, addressRepository, settingsRepository, invoicePDFRenderer)
+	invoicePDFService := invoice.NewInvoicePDFService(invoiceRepository, paymentRepository, organisationRepository, customerRepository, addressRepository, settingsRepository, invoicePDFRenderer, a.metrics)
 
 	invoiceHandler := invoice.NewInvoiceHandler(invoiceService, invoicePDFService)
 
@@ -295,6 +305,33 @@ func (a *App) Handler() http.Handler {
 		_, _ = w.Write(openapi.Spec)
 	})
 
+	// GET /metrics (Milestone 10 Part 4): the Prometheus scrape endpoint.
+	// Deliberately registered directly on mux, bypassing the register()
+	// helper every other route above uses — it is operational telemetry,
+	// not part of the versioned business API, so it must never appear in
+	// a.routes (RoutePatterns()), which TestRoutes_MatchOpenAPISpec
+	// compares against api/openapi.yaml. Documenting an operational
+	// endpoint in the public API contract would be the actual drift that
+	// test exists to catch, not this one's absence from it.
+	//
+	// Registered only when metrics are enabled (a.metrics != nil — see
+	// config.Config.MetricsEnabled and New's own doc comment): section
+	// 32's preferred disabled-state behaviour is an absent route (a plain
+	// ServeMux 404, exactly like any other unregistered path) rather than
+	// a bespoke "metrics disabled" JSON body.
+	//
+	// It still passes through every middleware layer below (RequestID,
+	// RequestLogging, Recover, WrapMethodNotAllowed) for the same request-
+	// ID/panic-safety every other route gets — RequestLogging just
+	// deliberately excludes this exact path from both the business HTTP
+	// metrics it records (see isMetricsRequest in httpx/middleware.go:
+	// counting a metrics scrape as an HTTP request would be pointless,
+	// ever-growing self-referential traffic) and the ordinary per-request
+	// INFO log on success (same treatment as /health).
+	if a.metrics != nil {
+		mux.Handle("GET /metrics", a.metrics.Handler())
+	}
+
 	// Section 9 (Milestone 8 Part 2): router-generated 404 is
 	// deliberately NOT brought into the JSON envelope, unlike 405 below.
 	// A catch-all "/" pattern was tried and rejected: net/http.ServeMux
@@ -312,7 +349,7 @@ func (a *App) Handler() http.Handler {
 	// instructions anticipate ("if doing so would require ... fighting
 	// ServeMux semantics, leave router-generated 404 ... alone").
 	return httpx.RequestID(
-		httpx.RequestLogging(a.logger)(
+		httpx.RequestLogging(a.logger, a.metrics)(
 			httpx.Recover(a.logger)(
 				httpx.WrapMethodNotAllowed(mux),
 			),

@@ -7,6 +7,7 @@ import (
 	"go-invoicing/internal/app"
 	"go-invoicing/internal/config"
 	"go-invoicing/internal/database"
+	"go-invoicing/internal/metrics"
 	"log/slog"
 	"net/http"
 	"os"
@@ -142,8 +143,20 @@ func main() {
 	}
 	defer db.Close()
 
+	// Metrics (Milestone 10 Part 4): m stays a typed nil when
+	// METRICS_ENABLED=false, which is enough on its own to disable
+	// everything — GET /metrics is never mounted (see App.Handler), and
+	// every *metrics.Metrics method used across the application
+	// (HTTP/worker/PDF recording, the DB pool collector) is a nil-safe
+	// no-op. Constructed with the real pool so its DB-pool collector can
+	// report live pgxpool.Stat() gauges at scrape time.
+	var m *metrics.Metrics
+	if cfg.MetricsEnabled {
+		m = metrics.New(db)
+	}
+
 	// Create the app
-	application := app.New(db, logger)
+	application := app.New(db, logger, m)
 
 	// Create an HTTP server
 	server := &http.Server{
@@ -161,7 +174,7 @@ func main() {
 	var workerWg sync.WaitGroup
 	if cfg.WorkerEnabled {
 		sessionRepository := admin.NewPostgresSessionRepository(db)
-		worker := admin.NewSessionCleanupWorker(sessionRepository, cfg.WorkerInterval, cfg.WorkerBatchSize, logger)
+		worker := admin.NewSessionCleanupWorker(sessionRepository, cfg.WorkerInterval, cfg.WorkerBatchSize, logger, m)
 
 		workerWg.Add(1)
 		go func() {

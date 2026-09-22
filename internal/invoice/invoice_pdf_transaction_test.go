@@ -25,6 +25,7 @@ func realPDFService(db *pgxpool.Pool) *InvoicePDFService {
 		customer.NewPostgresAddressRepository(db),
 		admin.NewPostgresSettingsRepository(db),
 		NewInvoicePDFRenderer(),
+		nil,
 	)
 }
 

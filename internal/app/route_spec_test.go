@@ -34,7 +34,7 @@ import (
 // DATABASE_URL, no live Postgres, safe to run under plain `go test
 // ./...`.
 func TestRoutes_MatchOpenAPISpec(t *testing.T) {
-	application := New(nil, testLogger)
+	application := New(nil, testLogger, nil)
 	_ = application.Handler()
 
 	appRoutes := normalizedAppRoutes(t, application.RoutePatterns())
@@ -61,7 +61,7 @@ func TestRoutes_MatchOpenAPISpec(t *testing.T) {
 // also make the drift comparison above ambiguous about which handler a
 // spec operation is supposed to correspond to.
 func TestRoutes_NoDuplicateMethodAndPath(t *testing.T) {
-	application := New(nil, testLogger)
+	application := New(nil, testLogger, nil)
 	_ = application.Handler()
 
 	seen := make(map[string]bool)

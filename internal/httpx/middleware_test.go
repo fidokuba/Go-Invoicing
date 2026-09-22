@@ -10,6 +10,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"go-invoicing/internal/metrics"
 )
 
 // TestWrapMethodNotAllowed_ConvertsRouterGenerated405 proves the wrapper
@@ -118,7 +120,7 @@ func TestWriteInternalError_LogsUnderlyingErrorOnceAndSkipsDuplicateGeneric5xx(t
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	handler := RequestID(RequestLogging(logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RequestID(RequestLogging(logger, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		WriteInternalError(w, r, "customer lookup", io.ErrUnexpectedEOF)
 	})))
 
@@ -154,7 +156,7 @@ func TestRequestLogging_FallbackGeneric5xxLogsOnceAndCompletesOnce(t *testing.T)
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	handler := RequestID(RequestLogging(logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RequestID(RequestLogging(logger, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusInternalServerError, CodeInternalError, "internal server error")
 	})))
 
@@ -185,7 +187,7 @@ func TestRequestLogging_4xxResponsesDoNotGenerateErrorLogs(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	for _, status := range []int{http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusConflict} {
-		handler := RequestID(RequestLogging(logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler := RequestID(RequestLogging(logger, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			WriteError(w, status, "test_error", "example message")
 		})))
 
@@ -210,7 +212,7 @@ func TestRequestIDMiddleware_GeneratesAndReturnsRequestID(t *testing.T) {
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	handler := RequestID(RequestLogging(logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RequestID(RequestLogging(logger, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := RequestIDFromContext(r.Context()); got == "" {
 			t.Fatal("expected request ID in context")
 		}
@@ -248,7 +250,7 @@ func TestRequestLogging_UsesMatchedRoutePatternAndSuppressesHealthLogs(t *testin
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := RequestID(RequestLogging(logger)(mux))
+	handler := RequestID(RequestLogging(logger, nil)(mux))
 
 	for _, tc := range []struct {
 		name string
@@ -281,7 +283,7 @@ func TestRequestLogging_RecordsStatusAndSizeAndDoesNotLogSecrets(t *testing.T) {
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	handler := RequestID(RequestLogging(logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RequestID(RequestLogging(logger, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":"bad"}`))
@@ -322,7 +324,7 @@ func TestRecover_LogsRequestIDAndSafeRouteForPanics(t *testing.T) {
 		panic("boom")
 	})
 
-	handler := RequestID(RequestLogging(logger)(Recover(logger)(mux)))
+	handler := RequestID(RequestLogging(logger, nil)(Recover(logger)(mux)))
 
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/orders/123", nil))
@@ -346,4 +348,128 @@ func TestRecover_LogsRequestIDAndSafeRouteForPanics(t *testing.T) {
 	if strings.Contains(logText, "http request failed") {
 		t.Fatal("expected panic path to avoid a duplicate generic 5xx error event")
 	}
+}
+
+// --- Milestone 10 Part 4: metrics integration ---
+
+// TestRequestLogging_RecordsHTTPMetricsWithBoundedLabels proves
+// RequestLogging feeds ObserveHTTPRequest exactly the method/route/status
+// this middleware already computes for logging — never the raw path —
+// and that the duration histogram receives an observation too.
+func TestRequestLogging_RecordsHTTPMetricsWithBoundedLabels(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := metrics.New(nil)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/invoices/{id}", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := RequestID(RequestLogging(logger, m)(mux))
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/invoices/550e8400-e29b-41d4-a716-446655440000", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, recorder.Code)
+	}
+
+	body := scrapeMetrics(t, m)
+
+	if !strings.Contains(body, `go_invoicing_http_requests_total{method="GET",route="GET /api/v1/invoices/{id}",status="200"} 1`) {
+		t.Fatalf("expected a bounded-label counter sample, got:\n%s", body)
+	}
+	if strings.Contains(body, "550e8400-e29b-41d4-a716-446655440000") {
+		t.Fatal("expected the raw UUID path segment never to appear as a metric label")
+	}
+	if !strings.Contains(body, "go_invoicing_http_request_duration_seconds_bucket") {
+		t.Fatal("expected the duration histogram to have received an observation")
+	}
+}
+
+// TestRequestLogging_UnmatchedRouteUsesBoundedFallbackLabel proves a
+// request that never matches any registered pattern is recorded under
+// the fixed "unmatched" route label, not the raw request path.
+func TestRequestLogging_UnmatchedRouteUsesBoundedFallbackLabel(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := metrics.New(nil)
+
+	// A bare handler run directly (as app.go's own final net/http.ServeMux
+	// 404 path effectively is): r.Pattern is never populated because
+	// nothing routed through a matched net/http.ServeMux pattern.
+	handler := RequestID(RequestLogging(logger, m)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})))
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/no/such/route", nil))
+
+	body := scrapeMetrics(t, m)
+	if !strings.Contains(body, `go_invoicing_http_requests_total{method="GET",route="unmatched",status="404"} 1`) {
+		t.Fatalf("expected the bounded \"unmatched\" fallback route label, got:\n%s", body)
+	}
+	if strings.Contains(body, "/no/such/route") {
+		t.Fatal("expected the raw unmatched path never to appear as a metric label")
+	}
+}
+
+// TestRequestLogging_MetricsScrapeItselfIsExcludedFromHTTPMetrics proves
+// GET /metrics is never counted in its own http_requests_total series —
+// section 13's self-observation exclusion.
+func TestRequestLogging_MetricsScrapeItselfIsExcludedFromHTTPMetrics(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := metrics.New(nil)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /metrics", m.Handler().ServeHTTP)
+
+	handler := RequestID(RequestLogging(logger, m)(mux))
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, recorder.Code)
+	}
+
+	body := scrapeMetrics(t, m)
+	if strings.Contains(body, `route="/metrics"`) {
+		t.Fatal("expected a /metrics scrape not to appear in http_requests_total at all")
+	}
+}
+
+// TestRequestLogging_NilMetricsIsANoOp proves passing nil for m (metrics
+// disabled) never panics and every existing logging behaviour is
+// unaffected — already exercised implicitly by every other test in this
+// file passing nil, but asserted explicitly here as its own guarantee.
+func TestRequestLogging_NilMetricsIsANoOp(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	handler := RequestID(RequestLogging(logger, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})))
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/fine", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, recorder.Code)
+	}
+}
+
+// scrapeMetrics renders m's exposition body as a string, for substring
+// assertions — deliberately not a full-output equality assertion (see
+// this milestone's own section 38 guidance to avoid over-asserting the
+// entire exposition).
+func scrapeMetrics(t *testing.T, m *metrics.Metrics) string {
+	t.Helper()
+
+	recorder := httptest.NewRecorder()
+	m.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("scrape /metrics: expected status %d, got %d", http.StatusOK, recorder.Code)
+	}
+
+	return recorder.Body.String()
 }

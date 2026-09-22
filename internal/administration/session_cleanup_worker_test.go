@@ -5,10 +5,15 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"go-invoicing/internal/metrics"
 )
 
 func testWorkerLogger() *slog.Logger {
@@ -27,7 +32,7 @@ func TestSessionCleanupWorker_RunsImmediatelyOnStartup(t *testing.T) {
 		return 0, nil
 	}
 
-	worker := NewSessionCleanupWorker(repository, time.Hour, 10, testWorkerLogger())
+	worker := NewSessionCleanupWorker(repository, time.Hour, 10, testWorkerLogger(), nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -57,7 +62,7 @@ func TestSessionCleanupWorker_RunsOnEachTick(t *testing.T) {
 	}
 
 	const interval = 20 * time.Millisecond
-	worker := NewSessionCleanupWorker(repository, interval, 10, testWorkerLogger())
+	worker := NewSessionCleanupWorker(repository, interval, 10, testWorkerLogger(), nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -96,7 +101,7 @@ func TestSessionCleanupWorker_DrainsMultipleBatchesPerIteration(t *testing.T) {
 		return result, nil
 	}
 
-	worker := NewSessionCleanupWorker(repository, time.Hour, batchSize, testWorkerLogger())
+	worker := NewSessionCleanupWorker(repository, time.Hour, batchSize, testWorkerLogger(), nil)
 	worker.runIteration(context.Background())
 
 	mu.Lock()
@@ -126,7 +131,7 @@ func TestSessionCleanupWorker_CancellationDuringBacklogStopsFurtherBatches(t *te
 		return int64(batchSize), nil
 	}
 
-	worker := NewSessionCleanupWorker(repository, time.Hour, batchSize, testWorkerLogger())
+	worker := NewSessionCleanupWorker(repository, time.Hour, batchSize, testWorkerLogger(), nil)
 	worker.runIteration(ctx)
 
 	if got := atomic.LoadInt32(&callCount); got != 1 {
@@ -150,7 +155,7 @@ func TestSessionCleanupWorker_ErrorDoesNotStopTheWorkerPermanently(t *testing.T)
 	}
 
 	const interval = 20 * time.Millisecond
-	worker := NewSessionCleanupWorker(repository, interval, 10, testWorkerLogger())
+	worker := NewSessionCleanupWorker(repository, interval, 10, testWorkerLogger(), nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -178,7 +183,7 @@ func TestSessionCleanupWorker_StopsPromptlyOnContextCancellation(t *testing.T) {
 		return 0, nil
 	}
 
-	worker := NewSessionCleanupWorker(repository, time.Hour, 10, testWorkerLogger())
+	worker := NewSessionCleanupWorker(repository, time.Hour, 10, testWorkerLogger(), nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -195,6 +200,113 @@ func TestSessionCleanupWorker_StopsPromptlyOnContextCancellation(t *testing.T) {
 
 	cancel()
 	waitForClose(t, done, time.Second)
+}
+
+// --- Milestone 10 Part 4: metrics integration ---
+
+// scrapeWorkerMetrics renders m's exposition body as a string for
+// substring assertions.
+func scrapeWorkerMetrics(t *testing.T, m *metrics.Metrics) string {
+	t.Helper()
+
+	recorder := httptest.NewRecorder()
+	m.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+
+	return recorder.Body.String()
+}
+
+// TestSessionCleanupWorker_SuccessfulRunIncrementsRunAndDurationMetrics
+// proves one scheduled iteration (one runIteration call) increments the
+// run counter exactly once and records a duration observation —
+// regardless of how many DeleteExpired batches it drained internally.
+func TestSessionCleanupWorker_SuccessfulRunIncrementsRunAndDurationMetrics(t *testing.T) {
+	repository := newFakeSessionRepository()
+	responses := []int64{5, 5, 3} // two full batches, then a short one
+	var callCount int
+	repository.deleteExpiredFunc = func(ctx context.Context, now time.Time, limit int) (int64, error) {
+		result := responses[callCount]
+		callCount++
+		return result, nil
+	}
+
+	m := metrics.New(nil)
+	worker := NewSessionCleanupWorker(repository, time.Hour, 5, testWorkerLogger(), m)
+	worker.runIteration(context.Background())
+
+	body := scrapeWorkerMetrics(t, m)
+	if !strings.Contains(body, "go_invoicing_session_cleanup_runs_total 1") {
+		t.Fatalf("expected exactly one recorded run for one runIteration call, got:\n%s", body)
+	}
+	if !strings.Contains(body, "go_invoicing_session_cleanup_run_duration_seconds_bucket") {
+		t.Fatal("expected a run-duration histogram observation")
+	}
+	// 5 + 5 + 3 = 13 sessions deleted across the three batches this one
+	// run drained.
+	if !strings.Contains(body, "go_invoicing_session_cleanup_sessions_deleted_total 13") {
+		t.Fatalf("expected 13 cumulative sessions deleted across every batch of the run, got:\n%s", body)
+	}
+	if strings.Contains(body, "session_cleanup_failures_total 1") {
+		t.Fatal("expected no failure to be recorded for a successful run")
+	}
+}
+
+// TestSessionCleanupWorker_GenuineFailureIncrementsFailureMetric proves a
+// real DeleteExpired error (not a shutdown cancellation) increments the
+// failure counter.
+func TestSessionCleanupWorker_GenuineFailureIncrementsFailureMetric(t *testing.T) {
+	repository := newFakeSessionRepository()
+	repository.deleteExpiredFunc = func(ctx context.Context, now time.Time, limit int) (int64, error) {
+		return 0, errors.New("simulated database failure")
+	}
+
+	m := metrics.New(nil)
+	worker := NewSessionCleanupWorker(repository, time.Hour, 10, testWorkerLogger(), m)
+	worker.runIteration(context.Background())
+
+	body := scrapeWorkerMetrics(t, m)
+	if !strings.Contains(body, "go_invoicing_session_cleanup_failures_total 1") {
+		t.Fatalf("expected the failure counter to be incremented, got:\n%s", body)
+	}
+	// The run itself still counts — it did execute, it just failed.
+	if !strings.Contains(body, "go_invoicing_session_cleanup_runs_total 1") {
+		t.Fatalf("expected the run counter to still be incremented for a failed run, got:\n%s", body)
+	}
+}
+
+// TestSessionCleanupWorker_GracefulCancellationDoesNotCountAsFailure is
+// Milestone 10 Part 4 section 18's explicit requirement: a DeleteExpired
+// error caused by ctx already being cancelled (ordinary shutdown, not a
+// genuine database problem) must never increment the failure metric.
+func TestSessionCleanupWorker_GracefulCancellationDoesNotCountAsFailure(t *testing.T) {
+	repository := newFakeSessionRepository()
+	ctx, cancel := context.WithCancel(context.Background())
+	repository.deleteExpiredFunc = func(ctx context.Context, now time.Time, limit int) (int64, error) {
+		cancel()
+		return 0, context.Canceled
+	}
+
+	m := metrics.New(nil)
+	worker := NewSessionCleanupWorker(repository, time.Hour, 10, testWorkerLogger(), m)
+	worker.runIteration(ctx)
+
+	body := scrapeWorkerMetrics(t, m)
+	if strings.Contains(body, "session_cleanup_failures_total 1") {
+		t.Fatalf("expected graceful shutdown cancellation not to be counted as a failure, got:\n%s", body)
+	}
+}
+
+// TestSessionCleanupWorker_NilMetricsIsANoOp proves passing nil for m
+// (metrics disabled) never panics — already exercised implicitly by
+// every other test in this file passing nil, but asserted explicitly
+// here as its own guarantee.
+func TestSessionCleanupWorker_NilMetricsIsANoOp(t *testing.T) {
+	repository := newFakeSessionRepository()
+	repository.deleteExpiredFunc = func(ctx context.Context, now time.Time, limit int) (int64, error) {
+		return 0, nil
+	}
+
+	worker := NewSessionCleanupWorker(repository, time.Hour, 10, testWorkerLogger(), nil)
+	worker.runIteration(context.Background())
 }
 
 func waitForCondition(t *testing.T, timeout time.Duration, condition func() bool) {

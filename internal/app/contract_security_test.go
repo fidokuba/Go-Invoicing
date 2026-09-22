@@ -58,7 +58,7 @@ func concretePath(pattern string) string {
 // at all, and a nil *pgxpool.Pool is safe here for exactly the same
 // reason RoutePatterns() is (see App.New's own doc comment).
 func TestSecurity_RuntimeAuthenticationMatchesPublicRouteList(t *testing.T) {
-	application := New(nil, testLogger)
+	application := New(nil, testLogger, nil)
 	handler := application.Handler()
 
 	for _, r := range application.RoutePatterns() {

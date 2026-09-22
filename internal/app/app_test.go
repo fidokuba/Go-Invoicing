@@ -60,7 +60,7 @@ func newTestApp(t *testing.T) (http.Handler, *pgxpool.Pool) {
 	t.Helper()
 
 	db := newTestPool(t)
-	return New(db, testLogger).Handler(), db
+	return New(db, testLogger, nil).Handler(), db
 }
 
 // TestApp_OpenAPISpecRoute_PublicAndMatchesEmbeddedSource is Milestone 8

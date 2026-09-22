@@ -20,6 +20,20 @@ type Config struct {
 	WorkerEnabled   bool
 	WorkerInterval  time.Duration
 	WorkerBatchSize int
+
+	// MetricsEnabled (Milestone 10 Part 4) controls whether GET /metrics
+	// is registered at all (see app.New's own doc comment: a nil
+	// *metrics.Metrics means the route is never mounted, and every
+	// metrics recording call elsewhere becomes a no-op). Defaults to
+	// enabled, matching WorkerEnabled's own "on unless explicitly turned
+	// off" convention: nothing this milestone exposes carries a request
+	// ID, tenant/user/invoice identifier, or any other sensitive value
+	// (see the metrics package's own cardinality-policy doc comment), so
+	// there is no data-sensitivity reason to default it off the way, say,
+	// a debug/pprof endpoint would be. Operators who genuinely need
+	// /metrics unreachable (no network-level restriction available at
+	// all) can still set METRICS_ENABLED=false.
+	MetricsEnabled bool
 }
 
 func Load() (Config, error) {
@@ -52,6 +66,12 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("WORKER_BATCH_SIZE must be greater than 0, got %d", workerBatchSize)
 	}
 	cfg.WorkerBatchSize = workerBatchSize
+
+	metricsEnabled, err := getBoolEnv("METRICS_ENABLED", true)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.MetricsEnabled = metricsEnabled
 
 	return cfg, nil
 }

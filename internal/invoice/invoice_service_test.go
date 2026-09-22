@@ -766,6 +766,7 @@ func (f *testFixture) pdfService() *InvoicePDFService {
 		f.addressRepository,
 		f.settingsRepository,
 		NewInvoicePDFRenderer(),
+		nil,
 	)
 }
 

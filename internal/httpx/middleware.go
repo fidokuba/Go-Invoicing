@@ -13,6 +13,8 @@ import (
 	"runtime/debug"
 	"strings"
 	"time"
+
+	"go-invoicing/internal/metrics"
 )
 
 const requestIDHeader = "X-Request-ID"
@@ -69,6 +71,23 @@ func isHealthRequest(r *http.Request) bool {
 	}
 
 	return r.URL != nil && (r.URL.Path == "/health" || r.URL.Path == "/health/db")
+}
+
+// metricsScrapePath is GET /metrics itself (see app.go's own comment on
+// why it is mounted outside the versioned route table). It is excluded
+// from ObserveHTTPRequest below (Milestone 10 Part 4 section 13: a scrape
+// of the metrics endpoint is not a business HTTP request, and counting it
+// as one would create pointless, ever-growing self-referential traffic
+// every time something scrapes this exact endpoint) and, like /health,
+// kept out of the ordinary per-request INFO log on success.
+const metricsScrapePath = "/metrics"
+
+func isMetricsRequest(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+
+	return r.URL != nil && r.URL.Path == metricsScrapePath
 }
 
 type internalErrorRecord struct {
@@ -142,7 +161,15 @@ func (r *statusRecorder) Push(target string, opts *http.PushOptions) error {
 	return http.ErrNotSupported
 }
 
-func RequestLogging(logger *slog.Logger) func(http.Handler) http.Handler {
+// RequestLogging returns the request-logging middleware. m records the
+// bounded HTTP request-count/duration metrics (Milestone 10 Part 4) from
+// exactly the same status/route/duration this middleware already computes
+// for logging — a second ResponseWriter wrapper solely for metrics would
+// just duplicate statusRecorder above, so this reuses it instead. m may
+// be nil (metrics disabled — see config.Config.MetricsEnabled): every
+// *metrics.Metrics method is a nil-safe no-op, so no "if enabled" branch
+// is needed here.
+func RequestLogging(logger *slog.Logger, m *metrics.Metrics) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
@@ -155,13 +182,25 @@ func RequestLogging(logger *slog.Logger) func(http.Handler) http.Handler {
 			}
 			requestID := RequestIDFromContext(r.Context())
 			route := requestRoute(r)
-			durationMS := time.Since(start).Milliseconds()
+			duration := time.Since(start)
+			durationMS := duration.Milliseconds()
 
-			if isHealthRequest(r) && status < http.StatusBadRequest {
+			// A /metrics scrape is excluded from the business HTTP
+			// metrics entirely (see metricsScrapePath's own comment) but
+			// every other request — /health and /health/db included, on
+			// the theory that request-rate/latency/status data for the
+			// two liveness/readiness probes is itself useful availability
+			// signal, not noise — is recorded regardless of status.
+			if !isMetricsRequest(r) {
+				m.ObserveHTTPRequest(r.Method, route, status, duration)
+			}
+
+			quiet := isHealthRequest(r) || isMetricsRequest(r)
+			if quiet && status < http.StatusBadRequest {
 				return
 			}
 
-			if status >= http.StatusInternalServerError && !isHealthRequest(r) {
+			if status >= http.StatusInternalServerError && !quiet {
 				if recorder.internalErr != nil {
 					logger.Error(
 						"internal request error",

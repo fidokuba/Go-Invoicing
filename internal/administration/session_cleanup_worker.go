@@ -2,8 +2,11 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
+
+	"go-invoicing/internal/metrics"
 )
 
 // SessionCleanupWorker periodically removes session rows that are no
@@ -24,22 +27,27 @@ type SessionCleanupWorker struct {
 	interval   time.Duration
 	batchSize  int
 	logger     *slog.Logger
+	metrics    *metrics.Metrics
 }
 
 // NewSessionCleanupWorker constructs a worker. interval and batchSize are
 // expected to already be validated by the caller (see config.Load) —
-// this constructor does not re-validate them.
+// this constructor does not re-validate them. m may be nil (metrics
+// disabled — see config.Config.MetricsEnabled): every *metrics.Metrics
+// method runIteration calls is a nil-safe no-op.
 func NewSessionCleanupWorker(
 	repository SessionRepository,
 	interval time.Duration,
 	batchSize int,
 	logger *slog.Logger,
+	m *metrics.Metrics,
 ) *SessionCleanupWorker {
 	return &SessionCleanupWorker{
 		repository: repository,
 		interval:   interval,
 		batchSize:  batchSize,
 		logger:     logger,
+		metrics:    m,
 	}
 }
 
@@ -77,16 +85,34 @@ func (w *SessionCleanupWorker) Run(ctx context.Context) {
 // than starting another one. ctx is also passed straight through to
 // DeleteExpired: a cleanup DELETE is maintenance work, not a transaction
 // that must be allowed to outlive a shutdown request.
+//
+// One call to runIteration is exactly one Milestone 10 Part 4 "run" — the
+// immediate pass Run performs at startup, or the pass one ticker tick
+// triggers — regardless of how many DeleteExpired batches it drains
+// internally below; RecordWorkerRun/RecordSessionsDeleted's own doc
+// comments carry the same distinction. Metrics only ever observe this
+// existing behaviour (scheduling, batch draining, and shutdown handling
+// are all unchanged) — nothing here adds a retry or otherwise changes
+// what runIteration already did before this milestone.
 func (w *SessionCleanupWorker) runIteration(ctx context.Context) {
+	start := time.Now()
+	defer func() {
+		w.metrics.RecordWorkerRun(time.Since(start))
+	}()
+
 	for {
 		deleted, err := w.repository.DeleteExpired(ctx, time.Now().UTC(), w.batchSize)
 		if err != nil {
 			w.logger.Error("session cleanup failed", "error", err)
+			if !isShutdownCancellation(ctx, err) {
+				w.metrics.RecordWorkerFailure()
+			}
 			return
 		}
 
 		if deleted > 0 {
 			w.logger.Info("session cleanup removed expired sessions", "count", deleted)
+			w.metrics.RecordSessionsDeleted(deleted)
 		}
 
 		if deleted < int64(w.batchSize) {
@@ -97,4 +123,23 @@ func (w *SessionCleanupWorker) runIteration(ctx context.Context) {
 			return
 		}
 	}
+}
+
+// isShutdownCancellation reports whether err is (or is caused by) ctx
+// having already been cancelled or timed out — i.e. this is graceful
+// shutdown in progress, not a genuine database/query failure. Milestone
+// 10 Part 4 section 18's explicit requirement: a normal context
+// cancellation during shutdown must never increment the worker failure
+// metric, or every ordinary shutdown would look like an operational
+// incident on a dashboard. ctx.Err() is checked first because it is the
+// authoritative, synchronous signal for the very context this call was
+// made with; errors.Is is also checked in case the repository's own
+// error wraps context.Canceled/DeadlineExceeded without ctx.Err() having
+// been re-read.
+func isShutdownCancellation(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return true
+	}
+
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }

@@ -11,6 +11,7 @@ import (
 
 	admin "go-invoicing/internal/administration"
 	"go-invoicing/internal/customer"
+	"go-invoicing/internal/metrics"
 )
 
 // PDF-specific business-data-incompleteness sentinels (Milestone 7 Part
@@ -60,8 +61,11 @@ type InvoicePDFService struct {
 	addressRepository      customer.AddressRepository
 	settingsRepository     admin.SettingsRepository
 	renderer               *InvoicePDFRenderer
+	metrics                *metrics.Metrics
 }
 
+// m may be nil (metrics disabled — see config.Config.MetricsEnabled):
+// every *metrics.Metrics method Generate calls below is a nil-safe no-op.
 func NewInvoicePDFService(
 	invoiceRepository InvoiceRepository,
 	paymentRepository PaymentRepository,
@@ -70,6 +74,7 @@ func NewInvoicePDFService(
 	addressRepository customer.AddressRepository,
 	settingsRepository admin.SettingsRepository,
 	renderer *InvoicePDFRenderer,
+	m *metrics.Metrics,
 ) *InvoicePDFService {
 	return &InvoicePDFService{
 		invoiceRepository:      invoiceRepository,
@@ -79,6 +84,7 @@ func NewInvoicePDFService(
 		addressRepository:      addressRepository,
 		settingsRepository:     settingsRepository,
 		renderer:               renderer,
+		metrics:                m,
 	}
 }
 
@@ -92,11 +98,30 @@ func NewInvoicePDFService(
 // The returned invoiceNumber lets the HTTP handler build a
 // Content-Disposition filename without a second, redundant invoice
 // lookup — BuildData already fetched the invoice once to assemble data.
+//
+// This is the Milestone 10 Part 4 PDF-metrics boundary: it measures
+// PDF-specific work (data assembly plus rendering) only, not the HTTP
+// request GetPDF serves it from — http_request_duration_seconds already
+// covers that endpoint's full latency (auth, routing, header/body
+// writes included), and a second metric that just re-measured the same
+// span wouldn't answer any question the first doesn't already answer.
+// result is always the fixed two-value "success"/"error" enum, never
+// err.Error() or anything derived from the invoice/customer/organisation
+// data BuildData loaded — see RecordPDFGeneration's own doc comment.
 func (s *InvoicePDFService) Generate(
 	ctx context.Context,
 	organisationID uuid.UUID,
 	invoiceID uuid.UUID,
 ) (pdfBytes []byte, invoiceNumber string, err error) {
+	start := time.Now()
+	defer func() {
+		result := "success"
+		if err != nil {
+			result = "error"
+		}
+		s.metrics.RecordPDFGeneration(result, time.Since(start))
+	}()
+
 	data, err := s.BuildData(ctx, organisationID, invoiceID)
 	if err != nil {
 		return nil, "", err

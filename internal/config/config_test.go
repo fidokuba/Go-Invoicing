@@ -37,6 +37,10 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.WorkerBatchSize != 500 {
 		t.Errorf("expected WorkerBatchSize to default to 500, got %d", cfg.WorkerBatchSize)
 	}
+
+	if !cfg.MetricsEnabled {
+		t.Error("expected MetricsEnabled to default to true")
+	}
 }
 
 func TestLoad_WorkerOverrides(t *testing.T) {
@@ -105,6 +109,54 @@ func TestLoad_InvalidWorkerEnabled(t *testing.T) {
 
 	if _, err := Load(); err == nil {
 		t.Fatal("expected an error for a malformed WORKER_ENABLED value")
+	}
+}
+
+// TestLoad_MetricsEnabledTrueVariants and TestLoad_MetricsEnabledFalseVariants
+// mirror the WORKER_ENABLED variant sweeps above — same strconv.ParseBool
+// parsing (see getBoolEnv), just a second, independent boolean flag.
+func TestLoad_MetricsEnabledTrueVariants(t *testing.T) {
+	for _, value := range []string{"1", "t", "T", "TRUE", "true", "True"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("METRICS_ENABLED", value)
+
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("load config: %v", err)
+			}
+
+			if !cfg.MetricsEnabled {
+				t.Errorf("expected MetricsEnabled true for %q", value)
+			}
+		})
+	}
+}
+
+func TestLoad_MetricsEnabledFalseVariants(t *testing.T) {
+	for _, value := range []string{"0", "f", "F", "FALSE", "false", "False"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("METRICS_ENABLED", value)
+
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("load config: %v", err)
+			}
+
+			if cfg.MetricsEnabled {
+				t.Errorf("expected MetricsEnabled false for %q", value)
+			}
+		})
+	}
+}
+
+// TestLoad_InvalidMetricsEnabled proves a malformed METRICS_ENABLED value
+// is rejected outright rather than silently falling back to the default —
+// consistent with TestLoad_InvalidWorkerEnabled above.
+func TestLoad_InvalidMetricsEnabled(t *testing.T) {
+	t.Setenv("METRICS_ENABLED", "not-a-bool")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected an error for a malformed METRICS_ENABLED value")
 	}
 }
 
