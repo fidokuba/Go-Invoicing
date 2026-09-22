@@ -311,5 +311,11 @@ func (a *App) Handler() http.Handler {
 	// plain text) — the documented exception this section's own
 	// instructions anticipate ("if doing so would require ... fighting
 	// ServeMux semantics, leave router-generated 404 ... alone").
-	return httpx.Recover(a.logger)(httpx.WrapMethodNotAllowed(mux))
+	return httpx.RequestID(
+		httpx.RequestLogging(a.logger)(
+			httpx.Recover(a.logger)(
+				httpx.WrapMethodNotAllowed(mux),
+			),
+		),
+	)
 }

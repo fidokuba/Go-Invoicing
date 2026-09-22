@@ -1,6 +1,8 @@
 package httpx
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -109,5 +111,144 @@ func TestRecover_DoesNotInterfereWithNormalRequests(t *testing.T) {
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, recorder.Code)
+	}
+}
+
+func TestRequestIDMiddleware_GeneratesAndReturnsRequestID(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	handler := RequestID(RequestLogging(logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := RequestIDFromContext(r.Context()); got == "" {
+			t.Fatal("expected request ID in context")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/invoices/550e8400-e29b-41d4-a716-446655440000", nil)
+	req.Header.Set("X-Request-ID", "attacker-controlled-value")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if got := recorder.Header().Get("X-Request-ID"); got == "" || got == "attacker-controlled-value" {
+		t.Fatalf("expected generated request ID in response header, got %q", got)
+	}
+
+	if !strings.Contains(logs.String(), "http request completed") {
+		t.Fatal("expected request completion log output")
+	}
+
+	if strings.Contains(logs.String(), "attacker-controlled-value") {
+		t.Fatal("expected incoming request ID to be ignored in logs")
+	}
+}
+
+func TestRequestLogging_UsesMatchedRoutePatternAndSuppressesHealthLogs(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/invoices/{id}", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := RequestID(RequestLogging(logger)(mux))
+
+	for _, tc := range []struct {
+		name string
+		url  string
+	}{
+		{name: "invoice", url: "/api/v1/invoices/550e8400-e29b-41d4-a716-446655440000"},
+		{name: "health", url: "/health"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, tc.url, nil))
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected status %d, got %d", http.StatusOK, recorder.Code)
+			}
+		})
+	}
+
+	if !strings.Contains(logs.String(), "/api/v1/invoices/{id}") {
+		t.Fatal("expected matched route pattern in request log output")
+	}
+	if strings.Contains(logs.String(), "550e8400-e29b-41d4-a716-446655440000") {
+		t.Fatal("expected raw path identifier not to appear in request logs")
+	}
+	if strings.Contains(logs.String(), "level=INFO") && strings.Contains(logs.String(), "http request completed") && strings.Contains(logs.String(), "/health") {
+		t.Fatal("expected successful health check request logs to be suppressed from Info level")
+	}
+}
+
+func TestRequestLogging_RecordsStatusAndSizeAndDoesNotLogSecrets(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	handler := RequestID(RequestLogging(logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"bad"}`))
+		if got := RequestIDFromContext(context.Background()); got != "" {
+			t.Fatal("context request ID should not be leaked from an unrelated context")
+		}
+	})))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/organisation", nil)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	req.URL.RawQuery = "email=alice@example.com&token=super-secret"
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d", http.StatusUnauthorized, recorder.Code)
+	}
+
+	logText := logs.String()
+	if !strings.Contains(logText, "status=401") && !strings.Contains(logText, "status=\"401\"") {
+		t.Fatal("expected request log to include captured status")
+	}
+	if !strings.Contains(logText, "response_size=") {
+		t.Fatal("expected request log to include response size")
+	}
+	if strings.Contains(logText, "secret-token") || strings.Contains(logText, "super-secret") || strings.Contains(logText, "alice@example.com") {
+		t.Fatal("expected request log to avoid logging auth, query, and user-supplied secret values")
+	}
+}
+
+func TestRecover_LogsRequestIDAndSafeRouteForPanics(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/orders/{id}", func(w http.ResponseWriter, r *http.Request) {
+		panic("boom")
+	})
+
+	handler := RequestID(RequestLogging(logger)(Recover(logger)(mux)))
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/orders/123", nil))
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status %d, got %d", http.StatusInternalServerError, recorder.Code)
+	}
+	logText := logs.String()
+	if !strings.Contains(logText, "panic recovered in HTTP handler") {
+		t.Fatal("expected panic log output")
+	}
+	if !strings.Contains(logText, "request_id=") {
+		t.Fatal("expected panic log to include request_id")
+	}
+	if !strings.Contains(logText, "/api/v1/orders/{id}") {
+		t.Fatal("expected panic log to use safe route pattern")
+	}
+	if strings.Contains(logText, "/api/v1/orders/123") {
+		t.Fatal("expected panic log to avoid raw path values")
 	}
 }

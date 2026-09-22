@@ -1,11 +1,159 @@
 package httpx
 
 import (
+	"bufio"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"runtime/debug"
+	"strings"
+	"time"
 )
+
+const requestIDHeader = "X-Request-ID"
+
+type requestIDContextKey struct{}
+
+func RequestIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+
+	value, _ := ctx.Value(requestIDContextKey{}).(string)
+	return value
+}
+
+func generateRequestID() string {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "request-id-unavailable"
+	}
+
+	return hex.EncodeToString(buf)
+}
+
+func RequestID(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestID := generateRequestID()
+		w.Header().Set(requestIDHeader, requestID)
+		r = r.WithContext(context.WithValue(r.Context(), requestIDContextKey{}, requestID))
+		next.ServeHTTP(w, r)
+	})
+}
+
+func requestRoute(r *http.Request) string {
+	if r == nil {
+		return "unmatched"
+	}
+
+	if r.Pattern != "" {
+		return r.Pattern
+	}
+
+	path := strings.TrimSpace(r.URL.Path)
+	if path == "" {
+		return "unmatched"
+	}
+
+	return "unmatched"
+}
+
+func isHealthRequest(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+
+	return r.URL != nil && (r.URL.Path == "/health" || r.URL.Path == "/health/db")
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status     int
+	size       int
+	wroteHeader bool
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	if r.wroteHeader {
+		return
+	}
+	if status == 0 {
+		status = http.StatusOK
+	}
+	r.status = status
+	r.wroteHeader = true
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	if !r.wroteHeader {
+		r.WriteHeader(http.StatusOK)
+	}
+	n, err := r.ResponseWriter.Write(b)
+	r.size += n
+	return n, err
+}
+
+func (r *statusRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
+}
+
+func (r *statusRecorder) Flush() {
+	if flusher, ok := r.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if hijacker, ok := r.ResponseWriter.(http.Hijacker); ok {
+		return hijacker.Hijack()
+	}
+	return nil, nil, fmt.Errorf("response writer does not support hijacking")
+}
+
+func (r *statusRecorder) Push(target string, opts *http.PushOptions) error {
+	if pusher, ok := r.ResponseWriter.(http.Pusher); ok {
+		return pusher.Push(target, opts)
+	}
+	return http.ErrNotSupported
+}
+
+func RequestLogging(logger *slog.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
+			recorder := &statusRecorder{ResponseWriter: w}
+			next.ServeHTTP(recorder, r)
+
+			status := recorder.status
+			if status == 0 {
+				status = http.StatusOK
+			}
+			requestID := RequestIDFromContext(r.Context())
+			route := requestRoute(r)
+			durationMS := time.Since(start).Milliseconds()
+
+			if isHealthRequest(r) && status < http.StatusBadRequest {
+				return
+			}
+
+			logger.Info(
+				"http request completed",
+				"request_id", requestID,
+				"method", r.Method,
+				"route", route,
+				"status", status,
+				"duration_ms", durationMS,
+				"response_size", recorder.size,
+			)
+		})
+	}
+}
 
 // methodNotAllowedInterceptor is a thin http.ResponseWriter decorator
 // that rewrites a 405 response's body/Content-Type into the standard
@@ -91,14 +239,19 @@ func Recover(logger *slog.Logger) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if recovered := recover(); recovered != nil {
+					requestID := RequestIDFromContext(r.Context())
 					logger.Error(
 						"panic recovered in HTTP handler",
-						"panic", recovered,
+						"request_id", requestID,
 						"method", r.Method,
-						"path", r.URL.Path,
+						"route", requestRoute(r),
+						"panic", recovered,
 						"stack", string(debug.Stack()),
 					)
 
+					if requestID != "" {
+						w.Header().Set(requestIDHeader, requestID)
+					}
 					WriteError(w, http.StatusInternalServerError, CodeInternalError, "internal server error")
 				}
 			}()
