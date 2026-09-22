@@ -7,7 +7,10 @@
 # builds and boots.
 #
 # This workflow does not push/publish an image, cut a release, or deploy
-# anything — that is later Milestone 11 work.
+# anything — that is .github/workflows/release.yml's job (tag-triggered
+# only) and, for actual deployment, an operator's own responsibility
+# (see README's "Self-hosted Docker Compose"/"Cloud" sections). Deploying
+# a release is never automated by anything in this repository.
 name: CI
 
 on:
@@ -57,10 +60,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -100,7 +103,9 @@ jobs:
       # version validation, linker-injected metadata, and checksum
       # generation. Artifacts are discarded (dist/ is gitignored and this
       # runner is ephemeral) — nothing here is uploaded or retained. The
-      # actual publishing pipeline is later Milestone 11 work.
+      # actual publishing pipeline lives in .github/workflows/release.yml,
+      # triggered only by a version tag — this step never publishes
+      # anything itself.
       - name: Release build smoke test (all 5 targets, discarded)
         run: |
           go run ./cmd/release -version v0.0.0-ci -build-time 1970-01-01T00:00:00Z
@@ -147,10 +152,10 @@ jobs:
       REQUIRE_DATABASE_TESTS: "true"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -209,10 +214,10 @@ jobs:
       REQUIRE_DATABASE_TESTS: "true"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -236,8 +241,9 @@ jobs:
   # This job gets its OWN, separate PostgreSQL service — never shared
   # with integration/race above — specifically so this container's
   # from-empty migration run can never race against either of those
-  # jobs' own preflight-driven ones. Never pushes/publishes anything;
-  # publishing an image is later Milestone 11 work.
+  # jobs' own preflight-driven ones. Never pushes/publishes anything —
+  # that only ever happens from a version tag, in
+  # .github/workflows/release.yml's own "container" job.
   docker:
     name: Docker image build + smoke test
     runs-on: ubuntu-latest
@@ -258,7 +264,7 @@ jobs:
           --health-retries=10
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # No Go toolchain/actions/setup-go here at all — the image build
       # below does its own compilation entirely inside the Dockerfile's
@@ -366,7 +372,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Write a disposable test env file (never committed)
         run: |

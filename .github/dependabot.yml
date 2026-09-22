@@ -1,0 +1,42 @@
+# Milestone 11 Part 7. Chosen over manually SHA-pinning every `uses:` in
+# the workflows: SHA-pinning without automated update tooling just
+# freezes a workflow on whatever code happened to be at that commit
+# forever, silently missing future security patches unless a human
+# remembers to bump it by hand — worse, not better, supply-chain hygiene
+# for a project with no existing bot/renovate setup. Dependabot is
+# GitHub-native, needs no extra secret/permission beyond what's already
+# implicit for a public repo, and opens an ordinary PR (reviewed and
+# merged through the same CI this repository already runs) for each
+# update rather than pushing anything directly.
+#
+# Two ecosystems, matching the two places this repository's supply chain
+# actually has versioned dependencies: the workflow actions themselves,
+# and this module's own go.mod/go.sum (see Milestone 11 Part 7's own
+# report — golang.org/x/crypto and golang.org/x/mod were found stale by
+# hand during this exact audit; this prevents that from being a manual,
+# occasional exercise going forward).
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # Tracks the Dockerfile's own pinned-by-digest base images (see the
+  # Dockerfile's own comments on why they're pinned at all). Deliberately
+  # NOT applied to compose.yaml/compose.prod.yaml's `postgres:18` —
+  # PostgreSQL's official image is designed to be tracked by its floating
+  # major-version tag so a container recreation picks up patch-level
+  # security fixes automatically; pinning it by digest would work against
+  # that upstream-recommended pattern for no benefit this project needs
+  # yet (data compatibility is already guaranteed within one major
+  # version).
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"

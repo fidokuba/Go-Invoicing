@@ -22,7 +22,16 @@
 # whatever architecture is doing the build, never under emulation — Go
 # cross-compiles to the real target (see TARGETOS/TARGETARCH below)
 # faster and more reliably than QEMU-emulating the compiler itself would.
-FROM --platform=$BUILDPLATFORM golang:1.25-bookworm AS builder
+#
+# Pinned by digest (Milestone 11 Part 7), not just the floating
+# "1.25-bookworm" tag: reproducibility for a given Dockerfile revision —
+# the same source + the same digest always produces the same builder
+# environment, regardless of what "1.25-bookworm" happens to point at on
+# a later date. Dependabot (.github/dependabot.yml) tracks this digest's
+# docker ecosystem entry and opens an ordinary, CI-reviewed PR when the
+# upstream tag moves (e.g. a Debian security patch) — pinning without
+# that would just freeze this image forever instead.
+FROM --platform=$BUILDPLATFORM golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437 AS builder
 
 WORKDIR /src
 
@@ -81,7 +90,11 @@ RUN --mount=type=cache,target=/root/go/pkg/mod \
 # to UID/GID 65532 ("nonroot"); USER below is still set explicitly so
 # this Dockerfile documents that fact itself rather than relying on
 # knowledge of one specific tag's default.
-FROM gcr.io/distroless/static-debian12:nonroot AS runtime
+#
+# Pinned by digest (Milestone 11 Part 7) for the same reproducibility
+# reason as the builder stage above — see its own comment, including why
+# Dependabot (not a permanent freeze) is what keeps this current.
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS runtime
 
 ARG VERSION=dev
 ARG COMMIT=unknown

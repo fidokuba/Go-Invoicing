@@ -1,21 +1,20 @@
-| Milestone | What we'll build                         | Main Go/backend skills                             |
-| --------- | ---------------------------------------- | -------------------------------------------------- |
-| **1**     | Project + PostgreSQL + basic HTTP server | Go tooling, modules, HTTP, config, Docker          |
-| **2**     | Customers API                            | Handlers, routing, JSON, validation                |
-| **3**     | Products/services API                    | Repository pattern, PostgreSQL, pgx                |
-| **4**     | Invoice creation                         | Transactions, business logic, SQL                  |
-| **5**     | Invoice lifecycle                        | State transitions, validation                      |
-| **6**     | Payments                                 | Financial/business logic                           |
-| **7**     | Reports                                  | SQL aggregation and API design                     |
-| **8**     | Testing                                  | Unit, integration and database tests               |
-| **9**     | Error handling + logging                 | Production-style API engineering                   |
-| **10**    | Authentication                           | Middleware, password hashing, JWT/session concepts |
-| **11**    | PDF invoices                             | File generation and HTTP responses                 |
-| **12**    | Emailing                                 | External services and background work              |
-| **13**    | Background workers                       | Goroutines, channels, graceful shutdown            |
-| **14**    | Dockerised application                   | Multi-stage builds                                 |
-| **15**    | GitHub Actions                           | CI, test/build/lint                                |
-| **16**    | Advanced architecture                    | Concurrency, queues, potential service separation  |
+| Milestone | What it built                                    | Status |
+| --------- | ------------------------------------------------- | ------ |
+| **1**     | Project & database foundations (Go tooling, PostgreSQL, config, basic HTTP server) | Done |
+| **2**     | Application architecture & layering (handlers/services/repositories) | Done |
+| **3**     | Core invoicing (customers, products, invoices, transactions) | Done |
+| **4**     | Authentication, authorization & tenant security (Argon2id password hashing, login, opaque PostgreSQL-backed sessions, Bearer auth, admin/manager/user roles, tenant isolation) | Done |
+| **5**     | Invoice lifecycle (state transitions, immutable party snapshots on Send) | Done |
+| **6**     | Background processing (session-cleanup worker, graceful shutdown) | Done |
+| **7**     | Invoice documents / PDF generation (embedded-font rendering, pagination, payment summary, `GET /invoices/{id}/pdf`) | Done |
+| **8**     | API quality & OpenAPI (`api/openapi.yaml`, contract tests) | Done |
+| **9**     | Reliability & advanced testing (error handling, structured logging, race/DB test coverage) | Done |
+| **10**    | Observability (structured logs, `/health`, `/health/db`, Prometheus `/metrics`) | Done |
+| **11**    | CI/CD & deployment (Docker, Docker Compose, GitHub Actions CI, `cmd/release`, tagged-release workflow publishing to GHCR) | Done |
+| **12**    | Advanced backend engineering | Not started |
+| **13**    | Frontend | Not started |
+
+> **Note:** this table reflects the project's actual roadmap, not the original teaching-plan draft. Earlier drafts of this README numbered milestones differently (e.g. describing an early "Milestone 10" as authentication and "Milestone 11" as PDF invoices); those numbers were superseded once the project's real scope diverged from that draft, and this table is the corrected, current source of truth. Emailing (invoice delivery, payment/overdue reminders, scheduled delivery, templates, delivery tracking) was deliberately removed from the core roadmap — it is a potential future/commercial feature, not a gap in Milestones 1–11's own scope. See "Production readiness" below for what "done" through Milestone 11 does and doesn't mean for the complete product.
 
 ## Configuration
 
@@ -106,6 +105,18 @@ The release build only compiles — it never opens a database connection, runs a
 4. Watch the "Release" workflow run in the Actions tab.
 5. Once it succeeds, verify the GitHub Release page and (if you use the image) `docker pull ghcr.io/<owner>/go-invoicing:v1.2.3`.
 
+If a release run fails partway through, or you need to correct a bad tag, see [`docs/releases.md`](docs/releases.md) for the recovery procedure — do not just re-push the same tag.
+
+**Supply-chain hardening — explicit decisions (Milestone 11 Part 7):**
+
+- **Base images**: the Dockerfile's `golang` and `distroless` base images are pinned by digest, not floating tag, for build reproducibility; `.github/dependabot.yml` keeps those digests current automatically. `postgres:18` (Compose) is deliberately left on a floating major-version tag — see the Dockerfile's and `.github/dependabot.yml`'s own comments for why.
+- **GitHub Actions**: pinned by version tag (`@v7`, etc.), kept current by Dependabot's `github-actions` ecosystem — not pinned by commit SHA. SHA-pinning without an update bot just freezes a workflow forever; a version tag plus Dependabot gets the same supply-chain benefit (an auditable, reviewed PR for every change) without that risk.
+- **SBOM**: not generated. Deferred — no consumer of one exists yet (no enterprise/compliance customer, no internal vulnerability-management pipeline ingesting it), and generating one nobody reads is complexity without benefit. Revisit if a real consumer appears.
+- **Container signing (Cosign/sigstore)**: not implemented. Deferred for the same reason as SBOM — signature verification only has value once something downstream actually checks it (e.g. an admission controller), and nothing in this project's current deployment story (Compose, a single cloud container) does. `checksums.txt` plus GitHub's own release/commit provenance is the current integrity story for native binaries; the GHCR image's integrity relies on GHCR/registry TLS and the `@sha256:` digest a puller can pin to.
+- **SLSA provenance / build attestations**: not implemented, for the same reason — no consumer verifies them today, and GitHub Actions' attestation tooling adds real workflow complexity for a project at this stage. The workflow's own source (this public repository) and its immutable Actions run history are the current substitute for "how was this built."
+- **Native binary signing (Authenticode/notarization)**: not implemented — see "Release builds" above. This is the one item on this list with a real, felt user-facing cost today (OS trust warnings), but Authenticode/notarization require a paid certificate and Apple Developer Program enrollment respectively, which is a business decision, not an engineering one, and out of scope for this Part.
+- **Container vulnerability scanning**: not added as a CI gate. `govulncheck` (Go's own dependency-vulnerability scanner) already runs as part of this audit's dependency review (see below) and catches what actually matters for a `CGO_ENABLED=0` static binary — the Go module graph. A container-layer scanner (Trivy/Grype) would mostly be re-reporting the same base-image CVEs Dependabot's `docker` ecosystem already surfaces through routine base-image bumps; adding a second, redundant scanning gate isn't a genuine gap at this project's current size.
+
 ## Operations
 
 Basic observability, added in Milestone 10.
@@ -183,7 +194,7 @@ A backup taken on an older application version restores safely under a *newer* o
 4. The new container runs its own startup migrations automatically (see cmd/api/main.go) before it starts serving.
 5. Verify with the health checks above.
 
-**Exposure**: `compose.prod.yaml` publishes the app directly on port 8080 (plain HTTP) and PostgreSQL on no host port at all (reachable only from `app`, over the Compose network). Direct port 8080 publication is appropriate for a trusted LAN or an evaluation deployment — it is **not** internet-production-ready as-is. Anything internet-facing needs a reverse proxy/TLS terminator in front (Caddy, nginx, a cloud load balancer, ...); this Part deliberately doesn't add one — see Milestone 11 Part 7 for hardening the final topology. `METRICS_ENABLED` defaults to `false` in this file specifically, because there's no reverse proxy yet to keep `/metrics` off whatever publishes port 8080; turn it on only once there's an actual monitoring consumer and a network boundary for it.
+**Exposure**: `compose.prod.yaml` publishes the app directly on port 8080 (plain HTTP) and PostgreSQL on no host port at all (reachable only from `app`, over the Compose network). Direct port 8080 publication is appropriate for a trusted LAN or an evaluation deployment — it is **not** internet-production-ready as-is. Anything internet-facing needs a reverse proxy/TLS terminator in front (Caddy, nginx, a cloud load balancer, ...) — this remains a deliberate, permanent operator/deployment-topology decision, not something this project's own Compose file should choose on every self-hoster's behalf. `METRICS_ENABLED` defaults to `false` in this file specifically, because there's no reverse proxy in front to keep `/metrics` off whatever publishes port 8080; turn it on only once there's an actual monitoring consumer and a network boundary for it.
 
 **Horizontal scaling boundary**: this Compose file assumes exactly one `app` instance. It performs its own startup migrations on every start (fine for one instance; see Milestone 11 Part 1's own note on why concurrent migration races become a real concern once there's more than one). Running multiple `app` replicas against the same database is not supported by this Part — that needs migrations to become an explicit, separate deployment step first.
 
@@ -205,12 +216,13 @@ Internet → managed TLS / load balancer / PaaS edge → Go Invoicing container 
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every pull request and every push to `main`, as four jobs:
+`.github/workflows/ci.yml` runs on every pull request and every push to `main`, as five jobs:
 
 - **quality** — `gofmt`, `go vet`, `go build`, a `go mod tidy` cleanliness check, the non-database test suite, and a smoke test of the canonical release build tool (below) across all five release targets, with the resulting artifacts discarded. No database involved.
 - **integration** — the complete test suite, including every PostgreSQL-backed test, against a real, ephemeral `postgres:18` service container (disposable CI-only credentials, health-checked before anything runs).
 - **race** — the same complete suite again under `-race`.
 - **docker** — builds the production image (`Dockerfile`) with throwaway metadata, then boots the real container against its own dedicated ephemeral PostgreSQL service and polls `/health`/`/health/db` over HTTP, proving the actual container startup path (including its real startup migrations) works — not just that `docker build` succeeds. Never pushes or publishes the image.
+- **compose** — validates `compose.prod.yaml` with real `docker compose` (config rendering, required-variable enforcement), then starts the full stack with disposable test credentials and verifies health, `/metrics` staying disabled, the container's security settings (non-root, read-only, dropped capabilities), and that data survives a `down`/`up` cycle. Torn down (including its own disposable volume) at the end of the job.
 
 **PostgreSQL-backed tests are mandatory in CI, not best-effort.** Locally, without `DATABASE_URL` set, those tests skip (as they always have) — that's expected and fine for day-to-day development. In CI, `REQUIRE_DATABASE_TESTS=true` makes a dedicated preflight test (`internal/database/ci_preflight_test.go`) fail the build outright if the database is missing or unreachable, so CI can never go green because every DB test silently skipped. That same preflight step also applies migrations for real before the suite runs.
 
@@ -232,3 +244,42 @@ DATABASE_URL=postgres://go_invoicing:go_invoicing_dev@localhost:5432/go_invoicin
 REQUIRE_DATABASE_TESTS=true DATABASE_URL=postgres://go_invoicing:go_invoicing_dev@localhost:5432/go_invoicing?sslmode=disable \
   go test ./internal/database/ -run TestRequireDatabaseTests_CIPreflight -v -count=1
 ```
+
+## Security boundaries
+
+What this project provides, and what it deliberately leaves to an operator or a future milestone. Not a claim that anything unlisted is unsafe — only that it isn't this project's job yet.
+
+**Provided today:**
+
+- Application-level authentication and authorization (Milestone 4): Argon2id password hashing, login, opaque PostgreSQL-backed sessions, Bearer authentication, admin/manager/user role-based authorization, tenant resolution and tenant-isolated data access enforced at the repository layer (`internal/administration`, `internal/invoice/repository_tenant_isolation_test.go`). Every business endpoint under `/api/v1` requires a valid session via `authMiddleware.RequireAuth` (see `internal/app/app.go`); only login/registration/health/metrics are unauthenticated, as is conventional.
+- Non-root container (`USER 65532:65532`), minimal distroless runtime image (no shell, no package manager), read-only root filesystem and dropped Linux capabilities in `compose.prod.yaml`.
+- Secrets (`DATABASE_URL`, `POSTGRES_PASSWORD`, ...) supplied only at container start from an untracked `.env.production`; never baked into an image or committed (`.gitignore`/`.dockerignore`).
+- `DATABASE_URL` never logged, in full or in part, including on a malformed-value startup failure.
+- Structured logs/metrics contain no request bodies, tokens, passwords, or tenant/customer/invoice data (see "Operations" above).
+- `/metrics` is disabled by default in the self-hosted Compose file specifically because there's no reverse proxy in front of it yet.
+- Checksummed native release artifacts (`checksums.txt`), an immutable release process (never overwrites an existing tag/GitHub Release/container tag), and release identity tied directly to a Git commit/tag.
+- Base container images pinned by digest with automated (Dependabot) currency; GitHub Actions dependencies and Go module dependencies likewise kept current by Dependabot.
+- Least-privilege GitHub Actions workflow permissions (`contents: read` by default; `packages: write`/`contents: write` granted only to the specific jobs that need them).
+
+**Not provided (by design, at this project's current stage):**
+
+- No customer-facing frontend yet (Milestone 13) — the API is the only interface today.
+- No email delivery (invoice emailing, payment/overdue reminders, scheduled delivery, templates, delivery tracking) — deliberately deferred, a potential future/commercial feature rather than a core-roadmap gap (see the milestone-table note above).
+- No native binary signing (Authenticode/notarization) — see "Supply-chain hardening" above.
+- No container image signing, SBOM, or build provenance/attestation — see the same section.
+- No secrets manager integration (Vault, cloud KMS, ...) — secrets are plain environment variables, as is conventional for a container at this scale.
+- No WAF, rate limiting, or DDoS protection — expected to come from whatever sits in front (reverse proxy, cloud load balancer), not this application.
+- No automated backups — `pg_dump`/restore is a documented manual procedure (see "Self-hosted Docker Compose" above), not a scheduled job.
+- No horizontal-scaling support — see the "Horizontal scaling boundary" note above; the application performs its own startup migrations, which is only safe with exactly one instance.
+
+## Production readiness
+
+Deliberately **not** a single "production ready: yes/no" claim — that question means different things depending on which of the following is being asked. Each is classified independently, and a higher letter is not "more done" than a lower one; they're different products.
+
+| # | Scope | Status | Notes |
+| - | --- | --- | --- |
+| **A** | Backend application runtime (the Go process itself: authentication, authorization, tenant isolation, invoice lifecycle, PDF generation, HTTP handlers, business logic, DB access, graceful shutdown, logging, metrics) | **Ready**, for what it currently implements | Full engineering fundamentals (tests, race detection, structured errors, observability) *and* a functionally complete core feature set through Milestone 7: real login/session auth, role-based authorization, tenant-isolated data, invoice lifecycle, and PDF invoice generation. Email delivery is deliberately out of the core roadmap (see the milestone-table note above), not a missing backend capability. |
+| **B** | Self-hosted technical deployment (an operator who can run `docker compose`, edit `.env` files, and read this README) | **Ready** | `compose.prod.yaml` plus this README's walkthrough is a complete, workable path for a technically competent self-hoster on a LAN or behind their own reverse proxy. |
+| **C** | Cloud container deployment (a managed PaaS/container platform + managed PostgreSQL) | **Architecturally ready, not yet executed** | The "Cloud" section above describes a coherent target shape and the app image is stateless and cloud-portable, but no specific provider has actually been deployed to or verified end-to-end (deliberately out of scope — see this Part's prohibitions). |
+| **D** | Native Windows/macOS commercial distribution (a non-technical end user double-clicking an installer) | **Not ready, and explicitly out of scope for this milestone** | Unsigned/unnotarized binaries trigger OS trust warnings; there is no installer, no Windows Service wrapper, no auto-update. This requires real business decisions (code-signing certificate, Apple Developer Program enrollment) this Part does not make. |
+| **E** | Complete end-user invoicing product (something a small business could actually adopt and rely on) | **Not ready** | The backend (authentication, invoice lifecycle, PDF generation, deployment/release infrastructure) exists and works — what's missing is a customer-facing **frontend** (Milestone 13, not started). Email delivery and related commercial polish (reminders, scheduled delivery, templates, delivery tracking) remain deliberately deferred as well. This is a frontend/product-completeness gap, not a backend defect. |

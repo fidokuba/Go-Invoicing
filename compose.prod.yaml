@@ -69,10 +69,15 @@ services:
       # an evaluation deployment; NOT appropriate as-is for direct
       # internet exposure — see README's "reverse proxy" note. This
       # Compose file deliberately does not include a reverse proxy/TLS
-      # terminator (Milestone 11 Part 7 owns hardening the final
-      # topology); putting one in front of this app service is an
-      # operator's own responsibility once this is reachable from
-      # anything less trusted than a LAN.
+      # terminator — that decision was reconsidered and confirmed during
+      # Milestone 11 Part 7's final hardening audit, not merely deferred:
+      # a reverse proxy is genuinely an operator/deployment-topology
+      # decision (which proxy, which certificate strategy, which
+      # additional headers) rather than something this project's own
+      # Compose file should choose on every self-hoster's behalf. Putting
+      # one in front of this app service remains an operator's own
+      # responsibility once this is reachable from anything less trusted
+      # than a LAN.
       - "8080:8080"
     # The application writes no local state at all (embedded assets,
     # stdout-only logging — see Milestone 11 Part 1's own audit); a
