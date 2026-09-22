@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 )
 
 // TestInvoiceService_Send_PersistsStatusAndSentAt proves a successful
@@ -46,8 +47,20 @@ func TestInvoiceService_Send_PersistsStatusAndSentAt(t *testing.T) {
 		t.Fatal("expected persisted SentAt to be populated")
 	}
 
-	if !persisted.SentAt.Equal(*inv.SentAt) {
-		t.Errorf("expected persisted SentAt %v, got %v", *inv.SentAt, *persisted.SentAt)
+	// PostgreSQL's timestamptz column only stores microsecond precision,
+	// while Go's time.Now() (see InvoiceService.Send's sentAt :=
+	// time.Now().UTC()) carries nanosecond precision — the same
+	// round-trip-precision fact this package's own
+	// administration-package Postgres tests already account for (see
+	// e.g. session_repository_postgres_test.go's own
+	// time.Now().UTC().Truncate(time.Microsecond)). Truncating the
+	// in-memory value before comparing is correct, not a weakened
+	// assertion: persisted.SentAt (read back from the database) can
+	// never carry more precision than Postgres itself stores, so
+	// asserting exact nanosecond equality against it would be asserting
+	// something no successful Send could ever actually satisfy.
+	if !persisted.SentAt.Equal(inv.SentAt.Truncate(time.Microsecond)) {
+		t.Errorf("expected persisted SentAt %v, got %v", inv.SentAt.Truncate(time.Microsecond), *persisted.SentAt)
 	}
 }
 
@@ -85,8 +98,10 @@ func TestInvoiceService_Send_RepeatedSendLeavesStateUnchanged(t *testing.T) {
 		t.Errorf("expected status to remain %q, got %q", InvoiceStatusSent, persisted.Status)
 	}
 
-	if !persisted.SentAt.Equal(*first.SentAt) {
-		t.Errorf("expected SentAt to remain %v, got %v", *first.SentAt, *persisted.SentAt)
+	// See the truncation comment on the same comparison in
+	// TestInvoiceService_Send_PersistsStatusAndSentAt above.
+	if !persisted.SentAt.Equal(first.SentAt.Truncate(time.Microsecond)) {
+		t.Errorf("expected SentAt to remain %v, got %v", first.SentAt.Truncate(time.Microsecond), *persisted.SentAt)
 	}
 }
 

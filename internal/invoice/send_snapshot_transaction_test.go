@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -324,8 +325,14 @@ func TestInvoiceService_Send_RepeatedSendPreservesOriginalSnapshot(t *testing.T)
 	if *persisted.Currency != "GBP" {
 		t.Errorf("expected snapshot Currency to remain %q, got %q", "GBP", *persisted.Currency)
 	}
-	if !persisted.SentAt.Equal(*first.SentAt) {
-		t.Errorf("expected SentAt to remain %v, got %v", *first.SentAt, *persisted.SentAt)
+	// PostgreSQL's timestamptz column only stores microsecond precision,
+	// while Go's time.Now() (see InvoiceService.Send's sentAt :=
+	// time.Now().UTC()) carries nanosecond precision — see
+	// send_transaction_test.go's own comment on the identical comparison
+	// for the full explanation. Truncating first.SentAt before comparing
+	// is correct, not a weakened assertion.
+	if !persisted.SentAt.Equal(first.SentAt.Truncate(time.Microsecond)) {
+		t.Errorf("expected SentAt to remain %v, got %v", first.SentAt.Truncate(time.Microsecond), *persisted.SentAt)
 	}
 }
 
