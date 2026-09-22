@@ -57,7 +57,7 @@ func (h *CustomerHandler) Create(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to create customer")
+		httpx.WriteInternalError(w, r, "customer.create", err)
 		return
 	}
 
@@ -135,7 +135,7 @@ func (h *CustomerHandler) List(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to list customers")
+		httpx.WriteInternalError(w, r, "customer.list", err)
 		return
 	}
 
@@ -169,7 +169,7 @@ func (h *CustomerHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to get customer")
+		httpx.WriteInternalError(w, r, "customer.get_by_id", err)
 		return
 	}
 
@@ -198,7 +198,7 @@ func (h *CustomerHandler) GetBillingAddress(w http.ResponseWriter, r *http.Reque
 			return
 		}
 
-		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to get billing address")
+		httpx.WriteInternalError(w, r, "customer.get_billing_address", err)
 		return
 	}
 
@@ -239,7 +239,7 @@ func (h *CustomerHandler) UpsertBillingAddress(w http.ResponseWriter, r *http.Re
 			return
 		}
 
-		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to save billing address")
+		httpx.WriteInternalError(w, r, "customer.upsert_billing_address", err)
 		return
 	}
 

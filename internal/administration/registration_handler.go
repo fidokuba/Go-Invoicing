@@ -57,7 +57,7 @@ func (h *RegistrationHandler) Register(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to register")
+		httpx.WriteInternalError(w, r, "registration.register", err)
 		return
 	}
 

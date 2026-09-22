@@ -64,7 +64,7 @@ func (h *InvoiceHandler) Create(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to create invoice")
+		httpx.WriteInternalError(w, r, "invoice.create", err)
 		return
 	}
 
@@ -100,7 +100,7 @@ func (h *InvoiceHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to get invoice")
+		httpx.WriteInternalError(w, r, "invoice.get_by_id", err)
 		return
 	}
 
@@ -226,7 +226,7 @@ func (h *InvoiceHandler) List(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to list invoices")
+		httpx.WriteInternalError(w, r, "invoice.list", err)
 		return
 	}
 
@@ -303,7 +303,7 @@ func (h *InvoiceHandler) Send(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to send invoice")
+		httpx.WriteInternalError(w, r, "invoice.send", err)
 		return
 	}
 
@@ -317,7 +317,7 @@ func (h *InvoiceHandler) Send(w http.ResponseWriter, r *http.Request) {
 	// Send itself, so GetByID's resolution can't fail here in practice.
 	inv, lines, amountPaid, currency, err := h.service.GetByID(r.Context(), identity.OrganisationID, id)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to get invoice")
+		httpx.WriteInternalError(w, r, "invoice.send_after_send_get", err)
 		return
 	}
 
@@ -378,7 +378,7 @@ func (h *InvoiceHandler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to create payment")
+		httpx.WriteInternalError(w, r, "invoice.create_payment", err)
 		return
 	}
 
@@ -407,7 +407,7 @@ func (h *InvoiceHandler) GetPayments(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to get payments")
+		httpx.WriteInternalError(w, r, "invoice.get_payments", err)
 		return
 	}
 
@@ -464,7 +464,7 @@ func (h *InvoiceHandler) GetPDF(w http.ResponseWriter, r *http.Request) {
 		// problems — mapped to a single generic message so no gopdf
 		// error, SQL detail, or filesystem path is ever exposed to the
 		// client.
-		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to generate invoice pdf")
+		httpx.WriteInternalError(w, r, "invoice.generate_pdf", err)
 		return
 	}
 

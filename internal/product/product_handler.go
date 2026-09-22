@@ -65,7 +65,7 @@ func (h *ProductHandler) Create(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to create product")
+		httpx.WriteInternalError(w, r, "product.create", err)
 		return
 	}
 
@@ -145,7 +145,7 @@ func (h *ProductHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	products, total, err := h.service.List(r.Context(), identity.OrganisationID, filter)
 	if err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to list products")
+		httpx.WriteInternalError(w, r, "product.list", err)
 		return
 	}
 
@@ -179,7 +179,7 @@ func (h *ProductHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to get product")
+		httpx.WriteInternalError(w, r, "product.get_by_id", err)
 		return
 	}
 

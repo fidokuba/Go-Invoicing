@@ -71,11 +71,30 @@ func isHealthRequest(r *http.Request) bool {
 	return r.URL != nil && (r.URL.Path == "/health" || r.URL.Path == "/health/db")
 }
 
+type internalErrorRecord struct {
+	operation string
+	err       error
+}
+
 type statusRecorder struct {
 	http.ResponseWriter
-	status      int
-	size        int
-	wroteHeader bool
+	status           int
+	size             int
+	wroteHeader      bool
+	internalErr      *internalErrorRecord
+	diagnosticLogged bool
+}
+
+func (r *statusRecorder) recordInternalError(operation string, err error) {
+	if err == nil || r.internalErr != nil {
+		return
+	}
+
+	r.internalErr = &internalErrorRecord{operation: operation, err: err}
+}
+
+func (r *statusRecorder) recordDiagnosticLogged() {
+	r.diagnosticLogged = true
 }
 
 func (r *statusRecorder) WriteHeader(status int) {
@@ -143,15 +162,31 @@ func RequestLogging(logger *slog.Logger) func(http.Handler) http.Handler {
 			}
 
 			if status >= http.StatusInternalServerError && !isHealthRequest(r) {
-				logger.Error(
-					"http request failed",
-					"request_id", requestID,
-					"method", r.Method,
-					"route", route,
-					"status", status,
-					"duration_ms", durationMS,
-					"response_size", recorder.size,
-				)
+				if recorder.internalErr != nil {
+					logger.Error(
+						"internal request error",
+						"request_id", requestID,
+						"method", r.Method,
+						"route", route,
+						"status", status,
+						"duration_ms", durationMS,
+						"response_size", recorder.size,
+						"operation", recorder.internalErr.operation,
+						"error", recorder.internalErr.err,
+					)
+					recorder.recordDiagnosticLogged()
+				} else if !recorder.diagnosticLogged {
+					logger.Error(
+						"http request failed",
+						"request_id", requestID,
+						"method", r.Method,
+						"route", route,
+						"status", status,
+						"duration_ms", durationMS,
+						"response_size", recorder.size,
+					)
+					recorder.recordDiagnosticLogged()
+				}
 			}
 
 			logger.Info(
@@ -261,6 +296,9 @@ func Recover(logger *slog.Logger) func(http.Handler) http.Handler {
 						"stack", string(debug.Stack()),
 					)
 
+					if recorder, ok := w.(interface{ recordDiagnosticLogged() }); ok {
+						recorder.recordDiagnosticLogged()
+					}
 					if requestID != "" {
 						w.Header().Set(requestIDHeader, requestID)
 					}

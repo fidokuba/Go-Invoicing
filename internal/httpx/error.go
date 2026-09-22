@@ -66,3 +66,15 @@ func WriteJSON(w http.ResponseWriter, status int, value any) {
 func WriteError(w http.ResponseWriter, status int, code, message string) {
 	WriteJSON(w, status, ErrorBody{Error: ErrorDetail{Code: code, Message: message}})
 }
+
+// WriteInternalError records the underlying server-side error at the HTTP
+// boundary and emits the standard generic 500 JSON envelope to the client.
+// The detailed error remains server-side only and is logged once by the
+// request middleware using the request-scoped recorder attached to the
+// wrapped ResponseWriter.
+func WriteInternalError(w http.ResponseWriter, r *http.Request, operation string, err error) {
+	if recorder, ok := w.(interface{ recordInternalError(string, error) }); ok && err != nil {
+		recorder.recordInternalError(operation, err)
+	}
+	WriteError(w, http.StatusInternalServerError, CodeInternalError, "internal server error")
+}

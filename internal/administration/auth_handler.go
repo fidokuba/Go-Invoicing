@@ -49,7 +49,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to log in")
+		httpx.WriteInternalError(w, r, "auth.login", err)
 		return
 	}
 
@@ -76,7 +76,7 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.service.Logout(r.Context(), identity.SessionID); err != nil {
-		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to log out")
+		httpx.WriteInternalError(w, r, "auth.logout", err)
 		return
 	}
 

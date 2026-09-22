@@ -41,7 +41,7 @@ func (h *OrganisationHandler) GetCurrent(w http.ResponseWriter, r *http.Request)
 			return
 		}
 
-		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to get organisation")
+		httpx.WriteInternalError(w, r, "organisation.get_current", err)
 		return
 	}
 
@@ -79,7 +79,7 @@ func (h *OrganisationHandler) Update(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to update organisation")
+		httpx.WriteInternalError(w, r, "organisation.update", err)
 		return
 	}
 

@@ -37,7 +37,7 @@ func (h *SettingsHandler) GetCurrent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to get settings")
+		httpx.WriteInternalError(w, r, "settings.get_current", err)
 		return
 	}
 
@@ -75,7 +75,7 @@ func (h *SettingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to update settings")
+		httpx.WriteInternalError(w, r, "settings.update", err)
 		return
 	}
 

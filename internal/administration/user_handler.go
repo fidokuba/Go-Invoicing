@@ -80,7 +80,7 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to create user")
+		httpx.WriteInternalError(w, r, "user.create", err)
 		return
 	}
 
@@ -125,7 +125,7 @@ func (h *UserHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to get user")
+		httpx.WriteInternalError(w, r, "user.get_by_id", err)
 		return
 	}
 
@@ -214,7 +214,7 @@ func (h *UserHandler) List(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "failed to list users")
+		httpx.WriteInternalError(w, r, "user.list", err)
 		return
 	}
 

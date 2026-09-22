@@ -67,7 +67,7 @@ func (m *AuthMiddleware) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 				return
 			}
 
-			httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "internal server error")
+			httpx.WriteInternalError(w, r, "auth.require_auth.session_lookup", err)
 			return
 		}
 
@@ -83,7 +83,7 @@ func (m *AuthMiddleware) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 				return
 			}
 
-			httpx.WriteError(w, http.StatusInternalServerError, httpx.CodeInternalError, "internal server error")
+			httpx.WriteInternalError(w, r, "auth.require_auth.user_lookup", err)
 			return
 		}
 

@@ -114,6 +114,42 @@ func TestRecover_DoesNotInterfereWithNormalRequests(t *testing.T) {
 	}
 }
 
+func TestWriteInternalError_LogsUnderlyingErrorOnceAndSkipsDuplicateGeneric5xx(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	handler := RequestID(RequestLogging(logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		WriteInternalError(w, r, "customer lookup", io.ErrUnexpectedEOF)
+	})))
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/customers/123", nil))
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status %d, got %d", http.StatusInternalServerError, recorder.Code)
+	}
+	if got := recorder.Header().Get("X-Request-ID"); got == "" {
+		t.Fatal("expected X-Request-ID response header")
+	}
+
+	logText := logs.String()
+	if !strings.Contains(logText, "customer lookup") {
+		t.Fatal("expected diagnostic log to contain the internal operation name")
+	}
+	if !strings.Contains(logText, "unexpected EOF") {
+		t.Fatal("expected diagnostic log to contain the underlying error")
+	}
+	if !strings.Contains(logText, "request_id=") {
+		t.Fatal("expected diagnostic log to include request_id")
+	}
+	if strings.Count(logText, "http request failed") > 0 {
+		t.Fatal("expected no duplicate generic 5xx error event when a detailed internal error has already been logged")
+	}
+	if strings.Contains(logText, "internal server error") && !strings.Contains(logText, "unexpected EOF") {
+		t.Fatal("expected the detailed underlying error to be the diagnostic log, not just the generic client message")
+	}
+}
+
 func TestRequestIDMiddleware_GeneratesAndReturnsRequestID(t *testing.T) {
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -250,5 +286,8 @@ func TestRecover_LogsRequestIDAndSafeRouteForPanics(t *testing.T) {
 	}
 	if strings.Contains(logText, "/api/v1/orders/123") {
 		t.Fatal("expected panic log to avoid raw path values")
+	}
+	if strings.Contains(logText, "http request failed") {
+		t.Fatal("expected panic path to avoid a duplicate generic 5xx error event")
 	}
 }
