@@ -51,7 +51,9 @@ jobs:
   quality:
     name: Quality (format, vet, build, tests, cross-compile)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Bumped from 10 to 15 minutes in Milestone 11 Part 4: the release
+    # build smoke test below compiles all five targets in one step.
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -85,19 +87,25 @@ jobs:
       - name: Test (non-DB — PostgreSQL-backed tests skip without DATABASE_URL)
         run: go test ./... -count=1
 
-      # Milestone 11 Part 1 proved this application is CGO-free and
-      # cross-compiles cleanly for five targets; this is a lightweight,
-      # every-PR subset (not the full release matrix, which belongs to a
-      # later release-build part) that catches an accidental
-      # platform-specific regression without retaining any binaries.
-      - name: Cross-platform compile check
+      # Milestone 11 Part 4's canonical release build tool (cmd/release)
+      # now owns the five-target release matrix — linux/amd64,
+      # linux/arm64, windows/amd64, darwin/amd64, darwin/arm64 — so this
+      # one step both replaces Part 3's smaller 3-target manual compile
+      # check (superseded: a real cmd/release invocation already compiles
+      # every target CGO_ENABLED=0, which is strictly more thorough) and
+      # smoke-tests the release tool itself on every PR. v0.0.0-ci is
+      # never a real release — it exists only so this step exercises
+      # exactly the same code path a real release would, including
+      # version validation, linker-injected metadata, and checksum
+      # generation. Artifacts are discarded (dist/ is gitignored and this
+      # runner is ephemeral) — nothing here is uploaded or retained. The
+      # actual publishing pipeline is later Milestone 11 work.
+      - name: Release build smoke test (all 5 targets, discarded)
         run: |
-          echo "--- linux/amd64 ---"
-          CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 go build -o /dev/null ./cmd/api
-          echo "--- windows/amd64 ---"
-          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o /dev/null ./cmd/api
-          echo "--- darwin/arm64 ---"
-          CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 go build -o /dev/null ./cmd/api
+          go run ./cmd/release -version v0.0.0-ci -build-time 1970-01-01T00:00:00Z
+          ls -la dist/
+          (cd dist && sha256sum -c checksums.txt)
+          rm -rf dist
 
   # integration: the full suite, for real, against an ephemeral
   # PostgreSQL service container. -p 1 is intentional, not a mistake —

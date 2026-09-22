@@ -1,0 +1,138 @@
+// Command release is Milestone 11 Part 4's canonical production build
+// tool: it cross-compiles ./cmd/api for this project's five release
+// targets (see releaseTargets), injects version/commit/build-time into
+// internal/buildinfo via linker flags (see releaseLDFlags), and writes a
+// SHA-256 checksums.txt alongside the resulting binaries.
+//
+// It is a plain Go program under cmd/, not a shell script or Makefile:
+// this project's release targets include Windows and macOS, but the
+// tool itself will typically run on whatever CI's Linux runner provides
+// (see .github/workflows/ci.yml) as well as any contributor's own
+// machine — a single `go run ./cmd/release ...` behaves identically on
+// all three host platforms, where a Bash script would need a separate
+// Windows story and a Makefile would add a dependency (`make`) this
+// project doesn't otherwise have. It stays a small, direct program
+// (flag parsing plus a handful of testable helper functions in this
+// same package, mirroring cmd/api/main.go's own newLogger/parseLogLevel/
+// versionRequested pattern) rather than a framework: there is exactly
+// one release process to support, so there is nothing yet to generalize
+// over.
+//
+// Usage:
+//
+//	go run ./cmd/release -version v1.2.3
+//
+// See this package's own flag definitions below for every accepted
+// input, and the project README's "Release builds" section for the
+// full walkthrough.
+package main
+
+import (
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"time"
+)
+
+func main() {
+	if err := run(os.Args[1:], os.Stdout); err != nil {
+		fmt.Fprintln(os.Stderr, "release build failed:", err)
+		os.Exit(1)
+	}
+}
+
+// run does the actual work; separated from main so it can be exercised
+// with an explicit args slice and output writer without touching
+// os.Args/os.Exit (mirroring cmd/api's own runServerLifecycle
+// extraction). It is not itself unit-tested with real cross-compiles —
+// see this package's own *_test.go files for the pure logic that is unit
+// tested, and the milestone's own report for the separate, explicit
+// smoke test that actually invokes this end to end.
+func run(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("release", flag.ContinueOnError)
+	version := fs.String("version", "", "release version, e.g. v1.2.3 (required — a plain `go build ./cmd/api` remains available for development builds)")
+	commit := fs.String("commit", "", "git commit SHA to embed (default: `git rev-parse HEAD`)")
+	buildTime := fs.String("build-time", "", "RFC3339 UTC build timestamp to embed (default: the current time) — pass this so CI can supply one deterministic value instead of each build minting its own")
+	distDir := fs.String("dist", "dist", "output directory for release artifacts (cleared and recreated on each run)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if *version == "" {
+		return errors.New("-version is required, e.g. -version v1.2.3 (a plain `go build ./cmd/api` continues to work for development builds, using internal/buildinfo's dev/unknown defaults)")
+	}
+	if err := validateReleaseVersion(*version); err != nil {
+		return err
+	}
+
+	resolvedCommit := *commit
+	if resolvedCommit == "" {
+		c, err := gitHeadCommit()
+		if err != nil {
+			return fmt.Errorf("determine git commit (pass -commit to override): %w", err)
+		}
+		resolvedCommit = c
+	}
+
+	// Milestone 11 Part 4's explicit decision: a dirty working tree does
+	// not fail a local release build (Part 6 owns actual publishing, and
+	// can enforce a clean tree there) — it is only ever reported, never
+	// silently ignored.
+	if dirty, err := gitIsDirty(); err != nil {
+		fmt.Fprintln(out, "warning: could not determine git working-tree status:", err)
+	} else if dirty {
+		fmt.Fprintln(out, "warning: git working tree has uncommitted changes — embedded commit metadata reflects HEAD, not the dirty state")
+	}
+
+	resolvedBuildTime := *buildTime
+	if resolvedBuildTime == "" {
+		resolvedBuildTime = time.Now().UTC().Format(time.RFC3339)
+	}
+
+	if err := os.RemoveAll(*distDir); err != nil {
+		return fmt.Errorf("clear %s: %w", *distDir, err)
+	}
+	if err := os.MkdirAll(*distDir, 0o755); err != nil {
+		return fmt.Errorf("create %s: %w", *distDir, err)
+	}
+
+	ldflags := releaseLDFlags(*version, resolvedCommit, resolvedBuildTime)
+
+	targets := releaseTargets()
+	entries := make([]checksumEntry, 0, len(targets))
+	for _, t := range targets {
+		name := t.artifactName(*version)
+		fmt.Fprintf(out, "building %s...\n", name)
+
+		outPath, err := buildTarget(t, *distDir, ldflags, *version)
+		if err != nil {
+			return err
+		}
+
+		info, err := os.Stat(outPath)
+		if err != nil {
+			return fmt.Errorf("stat %s: %w", outPath, err)
+		}
+
+		sum, err := sha256File(outPath)
+		if err != nil {
+			return fmt.Errorf("checksum %s: %w", outPath, err)
+		}
+
+		entries = append(entries, checksumEntry{hash: sum, filename: name})
+		fmt.Fprintf(out, "  ok (%d bytes)\n", info.Size())
+	}
+
+	checksumsPath := filepath.Join(*distDir, "checksums.txt")
+	if err := writeChecksums(checksumsPath, entries); err != nil {
+		return fmt.Errorf("write checksums: %w", err)
+	}
+
+	fmt.Fprintf(out, "\nrelease %s: %d artifacts + checksums.txt written to %s\n", *version, len(entries), *distDir)
+	fmt.Fprintf(out, "commit=%s build_time=%s\n", resolvedCommit, resolvedBuildTime)
+
+	return nil
+}

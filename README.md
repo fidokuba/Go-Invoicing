@@ -38,6 +38,47 @@ An invalid value for any of the above fails startup immediately with a descripti
 
 **Build metadata**: `go run ./cmd/api --version` (or a built binary's own `--version`) prints version/commit/build-time without touching configuration, the database, or starting anything. An ordinary build not produced by a release pipeline reports `dev`/`unknown`/`unknown` — real values are injected at build time via linker flags (`internal/buildinfo`), not read from Git at runtime.
 
+## Release builds
+
+**Ordinary development build** — no version required, uses `internal/buildinfo`'s `dev`/`unknown` defaults:
+
+```sh
+go build ./cmd/api
+# or
+go run ./cmd/api
+```
+
+**Canonical release build** — cross-compiles all five supported platforms (`linux/amd64`, `linux/arm64`, `windows/amd64`, `darwin/amd64`, `darwin/arm64`) with `CGO_ENABLED=0`, injects version/commit/build-time, strips debug symbols (`-s -w`), and writes a `checksums.txt`:
+
+```sh
+go run ./cmd/release -version v1.2.3
+```
+
+`-version` is **required** and must be a fully-specified semantic version with a leading `v` (`v1.2.3`, or `v1.2.3-rc.1` for a prerelease) — the build refuses to run without one, so a release can never accidentally ship with `internal/buildinfo`'s `dev` placeholder. Commit defaults to `git rev-parse HEAD` (the full SHA) and build time defaults to the current UTC time in RFC 3339 — both can be overridden (`-commit`, `-build-time`) so CI can supply one deterministic value instead of every invocation minting its own; given the same explicit version/commit/build-time, the build is byte-for-byte reproducible. A dirty working tree does not fail the build — it prints a warning, since the embedded commit always refers to `HEAD`, not any uncommitted changes.
+
+Output (gitignored, never committed):
+
+```
+dist/
+  go-invoicing_v1.2.3_linux_amd64
+  go-invoicing_v1.2.3_linux_arm64
+  go-invoicing_v1.2.3_windows_amd64.exe
+  go-invoicing_v1.2.3_darwin_amd64
+  go-invoicing_v1.2.3_darwin_arm64
+  checksums.txt
+```
+
+Verify an artifact against `checksums.txt`:
+
+```sh
+cd dist && sha256sum -c checksums.txt   # Linux
+cd dist && shasum -a 256 -c checksums.txt   # macOS
+```
+
+The Linux/Windows/macOS-amd64/macOS-arm64 artifacts are unsigned and unnotarized — appropriate for development, testing, and technical/self-hosted distribution today, not yet a polished non-technical commercial macOS/Windows install experience (that remains later Milestone 11 work). Raw binaries + a checksum file are all this stage produces; there is no `.tar.gz`/`.zip` packaging and no GitHub Release yet.
+
+The release build only compiles — it never opens a database connection, runs a migration, or reads application configuration, and needs no secret of any kind.
+
 ## Operations
 
 Basic observability, added in Milestone 10.
@@ -52,7 +93,7 @@ Basic observability, added in Milestone 10.
 
 `.github/workflows/ci.yml` runs on every pull request and every push to `main`, as three jobs:
 
-- **quality** — `gofmt`, `go vet`, `go build`, a `go mod tidy` cleanliness check, the non-database test suite, and a lightweight cross-platform compile check (linux/amd64, windows/amd64, darwin/arm64). No database involved.
+- **quality** — `gofmt`, `go vet`, `go build`, a `go mod tidy` cleanliness check, the non-database test suite, and a smoke test of the canonical release build tool (below) across all five release targets, with the resulting artifacts discarded. No database involved.
 - **integration** — the complete test suite, including every PostgreSQL-backed test, against a real, ephemeral `postgres:18` service container (disposable CI-only credentials, health-checked before anything runs).
 - **race** — the same complete suite again under `-race`.
 

@@ -10,6 +10,10 @@ Thumbs.db
 *.test
 coverage.out
 
+# Release build output (Milestone 11 Part 4) — cmd/release writes
+# artifacts/checksums here; never committed.
+/dist/
+
 # IDEs
 .vscode/
 .idea/

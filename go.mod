@@ -11,6 +11,7 @@ require (
 	github.com/prometheus/client_golang v1.24.1
 	github.com/signintech/gopdf v0.38.1
 	golang.org/x/crypto v0.31.0
+	golang.org/x/mod v0.37.0
 )
 
 require (
