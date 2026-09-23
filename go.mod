@@ -6,7 +6,7 @@ require (
 	github.com/getkin/kin-openapi v0.149.0
 	github.com/golang-migrate/migrate/v4 v4.20.1
 	github.com/google/uuid v1.6.0
-	github.com/jackc/pgx/v5 v5.10.0
+	github.com/jackc/pgx/v5 v5.11.0
 	github.com/ledongthuc/pdf v0.0.0-20260907135840-6c8c28e0e8a0
 	github.com/prometheus/client_golang v1.24.1
 	github.com/signintech/gopdf v0.38.1
