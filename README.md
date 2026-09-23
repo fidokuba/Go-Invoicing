@@ -11,10 +11,10 @@
 | **9**     | Reliability & advanced testing (error handling, structured logging, race/DB test coverage) | Done |
 | **10**    | Observability (structured logs, `/health`, `/health/db`, Prometheus `/metrics`) | Done |
 | **11**    | CI/CD & deployment (Docker, Docker Compose, GitHub Actions CI, `cmd/release`, tagged-release workflow publishing to GHCR) | Done |
-| **12**    | Advanced backend engineering | Not started |
-| **13**    | Frontend | Not started |
+| **12**    | Frontend & usable application (React/TypeScript/Vite browser app, embedded into the production Go binary) | Done |
+| **13**    | Advanced backend engineering | Not started |
 
-> **Note:** this table reflects the project's actual roadmap, not the original teaching-plan draft. Earlier drafts of this README numbered milestones differently (e.g. describing an early "Milestone 10" as authentication and "Milestone 11" as PDF invoices); those numbers were superseded once the project's real scope diverged from that draft, and this table is the corrected, current source of truth. Emailing (invoice delivery, payment/overdue reminders, scheduled delivery, templates, delivery tracking) was deliberately removed from the core roadmap — it is a potential future/commercial feature, not a gap in Milestones 1–11's own scope. See "Production readiness" below for what "done" through Milestone 11 does and doesn't mean for the complete product.
+> **Note:** this table reflects the project's actual roadmap, not the original teaching-plan draft. Earlier drafts of this README numbered milestones differently (e.g. describing an early "Milestone 10" as authentication and "Milestone 11" as PDF invoices, and at one point swapping Milestones 12/13's own descriptions); those numbers were superseded once the project's real scope diverged from that draft, and this table is the corrected, current source of truth. Emailing (invoice delivery, payment/overdue reminders, scheduled delivery, templates, delivery tracking) was deliberately removed from the core roadmap — it is a potential future/commercial feature, not a gap in this project's own scope. See "Production readiness" below for what "done" through Milestone 12 does and doesn't mean for the complete product.
 
 ## Configuration
 
@@ -36,6 +36,66 @@ All configuration is environment variables (see `.env.example` for a documented 
 An invalid value for any of the above fails startup immediately with a descriptive error — never a silent fallback to the default.
 
 **Build metadata**: `go run ./cmd/api --version` (or a built binary's own `--version`) prints version/commit/build-time without touching configuration, the database, or starting anything. An ordinary build not produced by a release pipeline reports `dev`/`unknown`/`unknown` — real values are injected at build time via linker flags (`internal/buildinfo`), not read from Git at runtime.
+
+## Frontend
+
+Milestone 12 adds a browser-based application under `/web`: React, TypeScript, Vite, and Tailwind CSS, talking to the existing `/api/v1` REST API with no backend redesign. Frontend engineering is intentionally not this project's primary focus — the dependency set is kept small, and conventional patterns are preferred over cleverness throughout.
+
+**Stack**: React 19 + TypeScript (strict) + Vite + Tailwind CSS v4. Server state (loading/caching/mutations) is handled by TanStack Query; routing by React Router. A handful of accessible unstyled primitives (`@radix-ui/react-dialog`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-slot`) back a small set of hand-written UI components (button, input, table, badge, dialog, ...) rather than a generated component library — the same approach shadcn/ui popularized, without its CLI/scaffolding step.
+
+**Typed API client**: `web/src/api/schema.d.ts` is generated from `api/openapi.yaml` via `openapi-typescript` (`npm run gen:api`, from `/web`) — the backend's own OpenAPI document is the single source of truth for every request/response type; nothing is hand-typed in a way that could silently drift from it. `openapi-fetch` (a ~1 KB runtime) provides a thin, fully-typed `fetch` wrapper over those types; a small `unwrap()` helper turns its `{data, error}` result into either a value or a typed `ApiError` every query/mutation hook can branch on. This is deliberately lighter than a full client-generation pipeline (no generated SDK, no generated hooks) while still keeping types synchronized with the contract — CI fails if `schema.d.ts` is regenerated and differs from what's committed.
+
+**Authentication/token storage**: the existing opaque Bearer-token API is used as-is — no cookies, no backend redesign. The token and last-known user are kept in `localStorage` (`web/src/lib/authStore.ts`), the simplest browser-storage option, restoring the session automatically on refresh. **Trade-off**: unlike an httpOnly cookie, this token is readable by any JavaScript running on the page, so a successful XSS against this frontend could exfiltrate it — mitigated (not eliminated) by this codebase never using `dangerouslySetInnerHTML` or any other raw-HTML injection point. A 401 from any request clears the local session; a shared `ProtectedRoute` reacts to that and redirects to `/login`, which cannot loop (the login page itself isn't behind that guard). Revisiting this as a cookie-based session is a reasonable candidate for a future milestone, not this one.
+
+**Development** (three processes, same as any Vite-in-front-of-an-API setup):
+
+```sh
+# 1. Database
+docker compose up -d postgres
+
+# 2. Go API (from the repository root)
+go run ./cmd/api
+
+# 3. Frontend dev server (from web/)
+cd web
+npm install
+npm run dev          # http://localhost:5173
+```
+
+The Vite dev server proxies `/api/*` and `/health*` to `http://localhost:8080` (see `web/vite.config.ts`), so the browser only ever talks to one origin in development — **no CORS configuration exists anywhere in this project**, in development or production, because neither setup ever needs it.
+
+**Frontend commands** (run from `web/`):
+
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Vite dev server with the API proxy above. |
+| `npm run build` | Production build, written directly into `../internal/webui/dist` (see "Production architecture" below) — `tsc -b` first, so a type error fails the build. |
+| `npm run lint` | ESLint. |
+| `npm run typecheck` | `tsc -b --noEmit`. |
+| `npm test` | Vitest (unit/component tests). |
+| `npm run e2e` | Playwright, against a real running API — see "End-to-end testing" below. |
+| `npm run gen:api` | Regenerates `src/api/schema.d.ts` from `api/openapi.yaml`. |
+
+**Production architecture — one binary serves everything:**
+
+```
+npm run build (web/)  →  internal/webui/dist  →  go:embed  →  one Go binary
+                                                                (API + frontend + migrations + OpenAPI + PDF assets)
+```
+
+`internal/webui` embeds `internal/webui/dist` via `go:embed` — the same pattern `api/openapi.go` already used for the OpenAPI document. A minimal placeholder `index.html` is committed there specifically so `go build ./...`/`go test ./...` never require Node — `go:embed` needs *something* on disk at compile time, and this project's Go quality gates must keep working without a frontend toolchain installed. `npm run build` overwrites that placeholder with the real build before the Go binary is compiled for packaging (Docker, `cmd/release`, or a manual `go build ./cmd/api` after building the frontend); `internal/webui/dist`'s contents (other than the placeholder) are git-ignored.
+
+Serving is handled without registering any new route on the API's `net/http.ServeMux` at all: `internal/httpx.FrontendFallback` intercepts only a GET/HEAD request that the router found *no registered pattern for whatsoever*, and hands it to `internal/webui.Serve`, which serves a real static asset, falls back to `index.html` for a recognised client-side route (so a refreshed/deep-linked URL like `/invoices/<id>` renders the SPA), or reproduces net/http's own plain-text 404 for anything else. `/api/v1/*`, `/health`, `/health/db`, and `/metrics` are never affected — every one of them either has its own real route (which always takes precedence) or, if genuinely unmatched, gets the same plain-text 404 it always did, never the frontend shell. (An earlier version of this registered a `GET /` pattern directly on the mux; that was reverted after proving — via this project's own pre-Milestone-12 test suite — that it corrupts `net/http.ServeMux`'s 405-vs-404 distinction for *every other unmatched path in the application*. See `internal/webui`'s and `internal/httpx.FrontendFallback`'s own doc comments for the full explanation.)
+
+Hashed build assets (`/assets/*`, content-hashed filenames from Vite) are served with `Cache-Control: public, max-age=31536000, immutable`; `index.html` and everything else is `no-cache`, so a deployment is never masked by a stale cached shell.
+
+**Browser access**: once running (locally, in Docker, or from a native release binary), the whole application — API and frontend — is reachable at the server's own address, e.g. `http://localhost:8080/`.
+
+**Docker/native releases**: the `Dockerfile` gained a `frontend-builder` stage (`node:22-bookworm-slim`, pinned by digest like every other base image here) that runs `npm ci && npm run build` before the existing Go builder stage compiles the binary; the runtime image is unchanged — still distroless, non-root, no shell, and now also **no Node runtime**, since only the already-built static files cross into the Go builder stage, never the frontend source or `node_modules`. `cmd/release`'s five native binaries embed whatever is on disk at `internal/webui/dist` when it runs — the release workflow (`.github/workflows/release.yml`) builds the frontend first; a local `go run ./cmd/release` without doing so still works, but prints a warning (mirroring the existing dirty-git-tree warning) rather than silently shipping the placeholder.
+
+**Frontend testing**: Vitest + Testing Library, focused on behaviour over coverage percentage — money/date conversion and formatting, API error mapping, the auth store's session/persistence behaviour, invoice-line calculation/serialization, and lifecycle-based action visibility (`web/src/**/*.test.ts(x)`).
+
+**End-to-end testing**: Playwright (`web/e2e/workflow.spec.ts`) drives the real built frontend against a real Go API and real PostgreSQL — nothing about the backend is mocked. It covers registration → login → session restoration after refresh → organisation details → customer → product → invoice (using a product to help populate a line, which stays editable) → send → PDF (verified via the authenticated API response directly, since asserting on a browser-native PDF viewer's contents isn't practical) → payment → Paid → logout. See `web/e2e/README.md` for exactly how to run it locally; CI runs it automatically in its own job.
 
 ## Release builds
 
@@ -216,13 +276,16 @@ Internet → managed TLS / load balancer / PaaS edge → Go Invoicing container 
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every pull request and every push to `main`, as five jobs:
+`.github/workflows/ci.yml` runs on every pull request and every push to `main`, as eight jobs:
 
-- **quality** — `gofmt`, `go vet`, `go build`, a `go mod tidy` cleanliness check, the non-database test suite, and a smoke test of the canonical release build tool (below) across all five release targets, with the resulting artifacts discarded. No database involved.
+- **quality** — `gofmt`, `go vet`, `go build`, a `go mod tidy` cleanliness check, the non-database test suite, and a smoke test of the canonical release build tool (below) across all five release targets, with the resulting artifacts discarded. No database, and no Node — this job only ever embeds the committed `internal/webui/dist` placeholder, exactly as it did before Milestone 12.
 - **integration** — the complete test suite, including every PostgreSQL-backed test, against a real, ephemeral `postgres:18` service container (disposable CI-only credentials, health-checked before anything runs).
 - **race** — the same complete suite again under `-race`.
-- **docker** — builds the production image (`Dockerfile`) with throwaway metadata, then boots the real container against its own dedicated ephemeral PostgreSQL service and polls `/health`/`/health/db` over HTTP, proving the actual container startup path (including its real startup migrations) works — not just that `docker build` succeeds. Never pushes or publishes the image.
-- **compose** — validates `compose.prod.yaml` with real `docker compose` (config rendering, required-variable enforcement), then starts the full stack with disposable test credentials and verifies health, `/metrics` staying disabled, the container's security settings (non-root, read-only, dropped capabilities), and that data survives a `down`/`up` cycle. Torn down (including its own disposable volume) at the end of the job.
+- **frontend** (Milestone 12) — the frontend's own toolchain, no Go/database involved: frozen `npm ci`, a freshness check on the generated OpenAPI types, lint, type-check, unit/component tests, production build, and a production-dependency vulnerability audit (`npm audit --omit=dev`).
+- **embedded** (Milestone 12) — builds the *real* frontend, compiles the Go binary with it embedded, boots it against a real PostgreSQL service, and verifies the frontend is actually served (not the placeholder), a hashed asset gets long-lived caching, `/api/v1`/`/health`/`/metrics` are unaffected, a client-side deep link (e.g. `/invoices/<id>`) renders the SPA, and an unmatched API path never returns HTML. Also runs `cmd/release` with the real frontend present and confirms no "placeholder" warning appears.
+- **e2e** (Milestone 12) — the Playwright workflow (`web/e2e/workflow.spec.ts`) against the real built frontend, a real compiled binary, and a real PostgreSQL service.
+- **docker** — builds the production image (`Dockerfile`, including its frontend-builder stage) with throwaway metadata, then boots the real container against its own dedicated ephemeral PostgreSQL service and polls `/health`/`/health/db` over HTTP, proving the actual container startup path (including its real startup migrations) works — not just that `docker build` succeeds. Also verifies the embedded frontend is served and that the runtime image contains no Node runtime binary. Never pushes or publishes the image.
+- **compose** — validates `compose.prod.yaml` with real `docker compose` (config rendering, required-variable enforcement), then starts the full stack with disposable test credentials and verifies health, the embedded frontend, `/metrics` staying disabled, the container's security settings (non-root, read-only, dropped capabilities), and that data survives a `down`/`up` cycle. Torn down (including its own disposable volume) at the end of the job.
 
 **PostgreSQL-backed tests are mandatory in CI, not best-effort.** Locally, without `DATABASE_URL` set, those tests skip (as they always have) — that's expected and fine for day-to-day development. In CI, `REQUIRE_DATABASE_TESTS=true` makes a dedicated preflight test (`internal/database/ci_preflight_test.go`) fail the build outright if the database is missing or unreachable, so CI can never go green because every DB test silently skipped. That same preflight step also applies migrations for real before the suite runs.
 
@@ -263,7 +326,7 @@ What this project provides, and what it deliberately leaves to an operator or a 
 
 **Not provided (by design, at this project's current stage):**
 
-- No customer-facing frontend yet (Milestone 13) — the API is the only interface today.
+- Frontend authentication uses a `localStorage`-held bearer token, not an httpOnly cookie — see "Frontend" above for the trade-off and why this milestone deliberately doesn't redesign backend authentication to change it.
 - No email delivery (invoice emailing, payment/overdue reminders, scheduled delivery, templates, delivery tracking) — deliberately deferred, a potential future/commercial feature rather than a core-roadmap gap (see the milestone-table note above).
 - No native binary signing (Authenticode/notarization) — see "Supply-chain hardening" above.
 - No container image signing, SBOM, or build provenance/attestation — see the same section.
@@ -278,8 +341,8 @@ Deliberately **not** a single "production ready: yes/no" claim — that question
 
 | # | Scope | Status | Notes |
 | - | --- | --- | --- |
-| **A** | Backend application runtime (the Go process itself: authentication, authorization, tenant isolation, invoice lifecycle, PDF generation, HTTP handlers, business logic, DB access, graceful shutdown, logging, metrics) | **Ready**, for what it currently implements | Full engineering fundamentals (tests, race detection, structured errors, observability) *and* a functionally complete core feature set through Milestone 7: real login/session auth, role-based authorization, tenant-isolated data, invoice lifecycle, and PDF invoice generation. Email delivery is deliberately out of the core roadmap (see the milestone-table note above), not a missing backend capability. |
-| **B** | Self-hosted technical deployment (an operator who can run `docker compose`, edit `.env` files, and read this README) | **Ready** | `compose.prod.yaml` plus this README's walkthrough is a complete, workable path for a technically competent self-hoster on a LAN or behind their own reverse proxy. |
+| **A** | Backend application runtime (the Go process itself: authentication, authorization, tenant isolation, invoice lifecycle, PDF generation, HTTP handlers, business logic, DB access, graceful shutdown, logging, metrics) | **Ready**, for what it currently implements | Full engineering fundamentals (tests, race detection, structured errors, observability) *and* a functionally complete core feature set: real login/session auth, role-based authorization, tenant-isolated data, invoice lifecycle, and PDF invoice generation. Email delivery is deliberately out of the core roadmap (see the milestone-table note above), not a missing backend capability. |
+| **B** | Self-hosted technical deployment (an operator who can run `docker compose`, edit `.env` files, and read this README) | **Ready** | `compose.prod.yaml` plus this README's walkthrough is a complete, workable path for a technically competent self-hoster on a LAN or behind their own reverse proxy — including its now-embedded browser frontend. |
 | **C** | Cloud container deployment (a managed PaaS/container platform + managed PostgreSQL) | **Architecturally ready, not yet executed** | The "Cloud" section above describes a coherent target shape and the app image is stateless and cloud-portable, but no specific provider has actually been deployed to or verified end-to-end (deliberately out of scope — see this Part's prohibitions). |
-| **D** | Native Windows/macOS commercial distribution (a non-technical end user double-clicking an installer) | **Not ready, and explicitly out of scope for this milestone** | Unsigned/unnotarized binaries trigger OS trust warnings; there is no installer, no Windows Service wrapper, no auto-update. This requires real business decisions (code-signing certificate, Apple Developer Program enrollment) this Part does not make. |
-| **E** | Complete end-user invoicing product (something a small business could actually adopt and rely on) | **Not ready** | The backend (authentication, invoice lifecycle, PDF generation, deployment/release infrastructure) exists and works — what's missing is a customer-facing **frontend** (Milestone 13, not started). Email delivery and related commercial polish (reminders, scheduled delivery, templates, delivery tracking) remain deliberately deferred as well. This is a frontend/product-completeness gap, not a backend defect. |
+| **D** | Native Windows/macOS/Linux server binary (an operator runs the binary and reaches it through a browser — not a signed desktop GUI application) | **Technically runnable, not a polished signed desktop app** | Each of the five release binaries serves the complete application (API + frontend) with no separate download — but they remain unsigned/unnotarized (OS trust warnings), with no installer, no OS service wrapper, and no auto-update. This requires real business decisions (code-signing certificate, Apple Developer Program enrollment) not made here. There is deliberately no Electron/Tauri/Wails wrapper — this is server software, reached over HTTP, on every platform. |
+| **E** | Complete end-user invoicing product (something a small business could actually adopt and rely on) | **A first usable version now exists — an early release candidate, not a polished commercial product** | Milestone 12 adds a usable browser application (dashboard, customers, products, invoices with lines/lifecycle/payments/PDF, settings, user management) on top of the existing backend, in one deployable binary/image. Email delivery and related commercial polish (reminders, scheduled delivery, templates, delivery tracking) remain deliberately deferred, and the frontend itself has known rough edges (see the milestone's own report for deferred polish) — this is now a completeness/polish gap, not a missing-frontend gap. |

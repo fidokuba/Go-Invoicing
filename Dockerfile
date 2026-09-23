@@ -16,6 +16,36 @@
 # there is only ever one build-info implementation.
 
 # ---------------------------------------------------------------------
+# Frontend builder (Milestone 12)
+# ---------------------------------------------------------------------
+# --platform=$BUILDPLATFORM: the frontend build produces the same
+# platform-independent static assets regardless of the final image's
+# target OS/architecture, so — like the Go builder below — it always
+# runs natively on the build host, never under emulation.
+#
+# Pinned by digest (matching every other base image in this file — see
+# the Go builder/runtime stages' own comments); Dependabot's existing
+# "docker" ecosystem entry (.github/dependabot.yml) already covers every
+# FROM in this file, this one included.
+#
+# Only web/ is copied in — this stage never touches the Go source tree —
+# and its own package.json/package-lock.json are copied first, in their
+# own layer, so an ordinary frontend source change never invalidates the
+# `npm ci` layer. The build writes directly into internal/webui/dist
+# (see web/vite.config.ts's build.outDir); the Go builder stage below
+# copies that output over the committed placeholder before compiling.
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim@sha256:48e4b67d85f87bd551df43704e24d252f56cc5f8e9718841aace50f19948f0f9 AS frontend-builder
+
+WORKDIR /src/web
+
+COPY web/package.json web/package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci
+
+COPY web/ ./
+RUN npm run build
+
+# ---------------------------------------------------------------------
 # Builder
 # ---------------------------------------------------------------------
 # --platform=$BUILDPLATFORM: always run the Go toolchain natively on
@@ -44,6 +74,14 @@ RUN --mount=type=cache,target=/root/go/pkg/mod \
     go mod download
 
 COPY . .
+
+# Overwrite the committed dist/index.html placeholder (see
+# internal/webui/webui.go) with the real production frontend build —
+# the ONLY thing this build ever embeds into the final binary. No
+# frontend source, no node_modules, and no Node runtime itself cross
+# into this stage or the runtime image below; only these already-built,
+# static files do.
+COPY --from=frontend-builder /src/internal/webui/dist ./internal/webui/dist
 
 # BuildKit populates these automatically from the --platform requested
 # at build time (e.g. "docker buildx build --platform linux/amd64,linux/arm64").

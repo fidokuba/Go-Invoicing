@@ -99,6 +99,23 @@ func run(args []string, out io.Writer) error {
 		fmt.Fprintln(out, "warning: git working tree has uncommitted changes — embedded commit metadata reflects HEAD, not the dirty state")
 	}
 
+	// Milestone 12: every one of the five targets below embeds whatever
+	// is currently on disk at internal/webui/dist (see that package's own
+	// doc comment and go:embed directive) — this tool does not, and
+	// should not, invoke npm itself (see this milestone's own report for
+	// why: a release build tool's job is reliable Go cross-compilation,
+	// not frontend tooling). If that directory still looks like the
+	// committed placeholder (no assets/ subdirectory — see
+	// internal/webui/dist/index.html's own comment), every released
+	// binary would ship without a real frontend. This is only ever a
+	// warning, matching the dirty-tree check just above: a genuine
+	// development build of cmd/release (e.g. this project's own CI smoke
+	// test, which intentionally never builds the frontend — see
+	// .github/workflows/ci.yml) has no reason to fail over this.
+	if !frontendLooksBuilt() {
+		fmt.Fprintln(out, "warning: internal/webui/dist appears to be the placeholder — the frontend may not be built; run `cd web && npm ci && npm run build` first for a real release")
+	}
+
 	resolvedBuildTime := *buildTime
 	if resolvedBuildTime == "" {
 		resolvedBuildTime = time.Now().UTC().Format(time.RFC3339)

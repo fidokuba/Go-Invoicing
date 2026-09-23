@@ -37,3 +37,22 @@ Thumbs.db
 
 # Documentation — not needed to compile the binary.
 README.md
+
+# Milestone 12: frontend dev-only artifacts. The frontend-builder stage
+# copies web/ and runs its own `npm ci` inside the image — none of this
+# local, potentially-stale tooling state should ever be part of the
+# build context.
+web/node_modules
+web/dist
+web/coverage
+web/playwright-report
+web/test-results
+web/.vite
+
+# Milestone 12: the placeholder-or-real internal/webui/dist on the
+# BUILD HOST is irrelevant here — the frontend-builder stage produces
+# its own, real copy from source inside the image (see the Dockerfile),
+# which then overwrites whatever this directory holds on disk. Excluding
+# it from the context avoids ever accidentally baking in a stale local
+# build.
+internal/webui/dist

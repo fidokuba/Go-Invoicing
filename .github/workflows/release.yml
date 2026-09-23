@@ -164,6 +164,27 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Milestone 12: every native artifact below embeds whatever is on
+      # disk at internal/webui/dist (see that package's go:embed
+      # directive) — without this, cmd/release would silently ship the
+      # committed placeholder in every real release binary. See
+      # cmd/release's own frontendLooksBuilt warning, asserted against
+      # explicitly below, as a second, independent guard on top of this.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install frontend dependencies (frozen)
+        working-directory: web
+        run: npm ci
+
+      - name: Build the production frontend (writes into internal/webui/dist)
+        working-directory: web
+        run: npm run build
+
       # The canonical tool itself — never five hand-written build
       # commands duplicated in YAML (see cmd/release's own doc comment).
       - name: Build all five native release artifacts
@@ -171,7 +192,12 @@ jobs:
           go run ./cmd/release \
             -version "${{ needs.validate.outputs.version }}" \
             -commit "${{ needs.validate.outputs.commit }}" \
-            -build-time "${{ needs.validate.outputs.build_time }}"
+            -build-time "${{ needs.validate.outputs.build_time }}" \
+            | tee /tmp/release-output.txt
+          if grep -q 'internal/webui/dist appears to be the placeholder' /tmp/release-output.txt; then
+            echo "refusing to release: the frontend was not built before cmd/release ran"
+            exit 1
+          fi
 
       # Fails closed on anything unexpected: exactly the five named
       # binaries plus checksums.txt, nothing else, every checksum valid.
@@ -210,6 +236,22 @@ jobs:
             *"${{ needs.validate.outputs.version }}"*"${{ needs.validate.outputs.commit }}"*"${{ needs.validate.outputs.build_time }}"*) ;;
             *) echo "unexpected --version output — linker metadata injection may be broken"; exit 1 ;;
           esac
+
+      # Milestone 12: a downloaded native binary must serve the complete
+      # application without separately downloading frontend files.
+      # Checked by scanning the compiled binary's own embedded bytes
+      # directly — go:embed stores file contents verbatim in the binary
+      # — rather than actually running it: this job has no PostgreSQL
+      # service (see this job's own header comment on deliberately not
+      # re-proving what ci.yml's "embedded"/"e2e" jobs already cover
+      # against this same commit with a real database), and a real
+      # startup would fail on the migration step long before reaching
+      # any HTTP handler without one.
+      - name: Verify the native binary's embedded frontend is the real build
+        run: |
+          bin="dist/go-invoicing_${{ needs.validate.outputs.version }}_linux_amd64"
+          strings "$bin" | grep -q '<div id="root">' || { echo "expected the frontend shell embedded in the binary"; exit 1; }
+          strings "$bin" | grep -q 'assets/index-' || { echo "expected a real hashed asset reference — this looks like the placeholder, not a real build"; exit 1; }
 
       # Staging only, not the public release — a short retention is
       # enough since "publish" consumes this within the same workflow

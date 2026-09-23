@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Build output — the real production build target is ../internal/webui/dist
+# (see vite.config.ts's build.outDir), not a local web/dist at all; this
+# entry stays as a safety net in case a script is ever run with a
+# different outDir.
+dist/
+dist-ssr/
+
+# Local env files that may hold secrets — never committed (see
+# .env.example if one is added later for frontend-specific config).
+.env.local
+.env.*.local
+
+# Generated/cache
+.vite/
+coverage/
+*.tsbuildinfo
+
+# Playwright
+playwright-report/
+test-results/
+blob-report/
+playwright/.cache/
+
+# Editor/OS
+.DS_Store
+*.local

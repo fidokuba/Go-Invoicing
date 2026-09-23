@@ -234,6 +234,266 @@ jobs:
       - name: Race detector — full PostgreSQL-backed suite (serial)
         run: go test -race -p 1 ./... -count=1
 
+  # frontend: Milestone 12 — everything the frontend's own toolchain can
+  # verify without a Go/PostgreSQL backend at all: frozen dependency
+  # install, lint, type-check, unit/component tests, production build,
+  # generated-OpenAPI-types freshness, and a production-dependency
+  # vulnerability audit. Kept separate from `quality` (which stays
+  # entirely Node-free, exactly as before this milestone — see
+  # internal/webui's own doc comment on why `go build`/`go test` only
+  # ever need the committed dist/index.html placeholder) so a
+  # frontend-only failure is unambiguous in the job list.
+  frontend:
+    name: Frontend (lint, typecheck, test, build, audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies (frozen — npm ci, never npm install)
+        working-directory: web
+        run: npm ci
+
+      - name: Verify generated OpenAPI types are up to date (api/openapi.yaml is authoritative)
+        working-directory: web
+        run: |
+          npm run gen:api
+          git diff --exit-code src/api/schema.d.ts
+
+      - name: Lint
+        working-directory: web
+        run: npm run lint
+
+      - name: Type-check
+        working-directory: web
+        run: npm run typecheck
+
+      - name: Unit/component tests
+        working-directory: web
+        run: npm test
+
+      - name: Production build
+        working-directory: web
+        run: npm run build
+
+      # --omit=dev: distinguishes production dependency vulnerabilities
+      # (gating) from dev-only tooling findings (not gating here — see
+      # the milestone's own report for the one known dev-only, moderate
+      # vitest advisory this deliberately does not fail CI over).
+      - name: Dependency vulnerability audit (production dependencies only)
+        working-directory: web
+        run: npm audit --omit=dev --audit-level=high
+
+  # embedded: Milestone 12 — proves the full "frontend build -> Go build
+  # with go:embed -> real PostgreSQL" pipeline end to end. This is the
+  # one job that builds the REAL frontend before compiling Go (unlike
+  # `quality`, which only ever embeds the committed placeholder, by
+  # design). Also exercises cmd/release with a real frontend build
+  # present, and boots this runner's own native binary — a superset of
+  # this milestone's "production binary smoke test."
+  embedded:
+    name: Embedded frontend (Go build + smoke test + native release)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: ${{ env.CI_POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ env.CI_POSTGRES_PASSWORD }}
+          POSTGRES_DB: ${{ env.CI_POSTGRES_DB }}
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U ci_test -d go_invoicing_test"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      APP_ENV: test
+      DATABASE_URL: postgres://ci_test:ci_test_disposable@localhost:5432/go_invoicing_test?sslmode=disable
+      METRICS_ENABLED: "false"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install frontend dependencies (frozen)
+        working-directory: web
+        run: npm ci
+
+      - name: Build the real production frontend (writes into internal/webui/dist)
+        working-directory: web
+        run: npm run build
+
+      - name: Build the API binary with the real frontend embedded
+        run: go build -o /tmp/go-invoicing ./cmd/api
+
+      - name: Start the binary against real PostgreSQL
+        run: |
+          APP_PORT=8080 /tmp/go-invoicing &
+          echo $! > /tmp/go-invoicing.pid
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/health >/dev/null; then break; fi
+            sleep 1
+          done
+          curl -sf http://localhost:8080/health >/dev/null || { echo "server never became ready"; exit 1; }
+
+      - name: Verify the real frontend (not the placeholder) is served at /
+        run: |
+          body="$(curl -sf http://localhost:8080/)"
+          echo "$body" | grep -q '<div id="root">' || { echo "expected the real frontend shell, got:"; echo "$body"; exit 1; }
+          echo "$body" | grep -q 'assets/' || { echo "expected a hashed asset reference — this looks like the placeholder, not a real build"; exit 1; }
+
+      - name: Verify a hashed static asset is served with long-lived caching
+        run: |
+          asset="$(curl -sf http://localhost:8080/ | grep -o '/assets/[A-Za-z0-9_.-]*\.js' | head -1)"
+          [ -n "$asset" ] || { echo "could not find an asset reference"; exit 1; }
+          headers="$(curl -sf -D - -o /dev/null "http://localhost:8080$asset")"
+          echo "$headers" | grep -qi '^cache-control: public, max-age=31536000, immutable' || { echo "expected long-lived immutable caching, got:"; echo "$headers"; exit 1; }
+
+      - name: Verify API/health/openapi/auth routes are unaffected by frontend serving
+        run: |
+          curl -sf http://localhost:8080/api/v1/openapi.yaml >/dev/null
+          curl -sf http://localhost:8080/health >/dev/null
+          curl -sf http://localhost:8080/health/db >/dev/null
+          status="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/v1/organisation)"
+          [ "$status" = "401" ] || { echo "expected 401 without a token, got $status"; exit 1; }
+
+      - name: Verify SPA deep-link works and an unmatched API path never returns HTML
+        run: |
+          status="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/invoices/some-id)"
+          [ "$status" = "200" ] || { echo "expected the SPA shell for a deep link, got $status"; exit 1; }
+
+          headers="$(curl -s -D - -o /dev/null http://localhost:8080/api/v1/this-does-not-exist)"
+          if echo "$headers" | grep -qi '^content-type: text/html'; then
+            echo "an unmatched API path must never return HTML"; exit 1
+          fi
+          echo "$headers" | head -1 | grep -q ' 404 ' || { echo "expected 404, got:"; echo "$headers"; exit 1; }
+
+      - name: Stop the server
+        if: always()
+        run: kill "$(cat /tmp/go-invoicing.pid)" 2>/dev/null || true
+
+      # Proves a native release binary built after the real frontend
+      # exists actually embeds it (no placeholder warning) — see
+      # cmd/release's own frontendLooksBuilt check. v0.0.0-ci is
+      # discarded, never a real release.
+      - name: Release build with the real frontend embedded (discarded)
+        run: |
+          go run ./cmd/release -version v0.0.0-ci -build-time 1970-01-01T00:00:00Z 2>&1 | tee /tmp/release-output.txt
+          if grep -q 'internal/webui/dist appears to be the placeholder' /tmp/release-output.txt; then
+            echo "expected no placeholder warning — the real frontend was built above"; exit 1
+          fi
+          (cd dist && sha256sum -c checksums.txt)
+          rm -rf dist
+
+  # e2e: Milestone 12 section 39 — the one high-value Playwright workflow
+  # (web/e2e/workflow.spec.ts), run against a real Go API, real
+  # PostgreSQL, and the real, built, embedded frontend. Nothing about the
+  # backend is mocked.
+  e2e:
+    name: End-to-end (Playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: ${{ env.CI_POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ env.CI_POSTGRES_PASSWORD }}
+          POSTGRES_DB: ${{ env.CI_POSTGRES_DB }}
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U ci_test -d go_invoicing_test"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      APP_ENV: test
+      DATABASE_URL: postgres://ci_test:ci_test_disposable@localhost:5432/go_invoicing_test?sslmode=disable
+      METRICS_ENABLED: "false"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install frontend dependencies (frozen)
+        working-directory: web
+        run: npm ci
+
+      - name: Build the production frontend
+        working-directory: web
+        run: npm run build
+
+      - name: Install Playwright's Chromium browser
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+
+      - name: Build the API binary with the real frontend embedded
+        run: go build -o /tmp/go-invoicing ./cmd/api
+
+      - name: Start the API server
+        run: |
+          APP_PORT=8080 /tmp/go-invoicing &
+          echo $! > /tmp/go-invoicing.pid
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/health >/dev/null; then break; fi
+            sleep 1
+          done
+          curl -sf http://localhost:8080/health >/dev/null || { echo "server never became ready"; exit 1; }
+
+      - name: Run the Playwright workflow
+        working-directory: web
+        env:
+          E2E_BASE_URL: http://localhost:8080
+        run: npm run e2e
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: web/playwright-report/
+          retention-days: 7
+
+      - name: Stop the server
+        if: always()
+        run: kill "$(cat /tmp/go-invoicing.pid)" 2>/dev/null || true
+
   # docker: Milestone 11 Part 5 — builds the production image (Dockerfile)
   # and proves it actually boots against a real PostgreSQL service,
   # running its own genuine startup migrations through the exact path
@@ -341,6 +601,38 @@ jobs:
             exit 1
           fi
           echo "/health/db OK — real startup migrations applied successfully"
+
+      # Milestone 12: the image build above now includes a frontend
+      # builder stage (see the Dockerfile) — proves the running
+      # container actually serves the real embedded frontend, not just
+      # the API, and that an unmatched API path still never returns it.
+      - name: Verify the embedded frontend is served
+        run: |
+          body="$(curl -sf http://localhost:8080/)"
+          echo "$body" | grep -q '<div id="root">' || { echo "expected the frontend shell at /"; exit 1; }
+
+          status="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/customers)"
+          [ "$status" = "200" ] || { echo "expected the SPA shell for a frontend route, got $status"; exit 1; }
+
+          headers="$(curl -s -D - -o /dev/null http://localhost:8080/api/v1/this-does-not-exist)"
+          if echo "$headers" | grep -qi '^content-type: text/html'; then
+            echo "an unmatched API path must never return the frontend"; exit 1
+          fi
+
+      # Milestone 12 section 34: proves the runtime image genuinely has
+      # no Node runtime — the frontend builder stage's output never
+      # crosses into it (see the Dockerfile), only the already-built
+      # static files do.
+      - name: Verify the runtime image contains no Node runtime
+        run: |
+          docker create --name node-check go-invoicing:ci >/dev/null
+          if docker export node-check | tar -tf - | grep -Ei '(^|/)(node|npm|npx)$'; then
+            echo "unexpected: found a node/npm/npx binary in the runtime image"
+            docker rm -f node-check >/dev/null
+            exit 1
+          fi
+          docker rm -f node-check >/dev/null
+          echo "confirmed: no Node runtime binary in the image"
 
       - name: Show container logs
         if: always()
@@ -460,6 +752,16 @@ jobs:
           echo "/health OK"
           curl -sf http://localhost:8080/health/db
           echo "/health/db OK — real startup migrations applied via the full Compose stack"
+
+      # Milestone 12: the same embedded-frontend check as the `docker`
+      # job's own, run once more here against the full Compose stack
+      # specifically (a different build/run path — `docker compose build`
+      # rather than a bare `docker build` — worth confirming
+      # independently).
+      - name: Verify the embedded frontend is served through the full stack
+        run: |
+          body="$(curl -sf http://localhost:8080/)"
+          echo "$body" | grep -q '<div id="root">' || { echo "expected the frontend shell at /"; exit 1; }
 
       - name: Verify /metrics is unavailable (METRICS_ENABLED=false default)
         run: |

@@ -367,6 +367,95 @@ func WrapMethodNotAllowed(next http.Handler) http.Handler {
 	})
 }
 
+// FrontendFallback (Milestone 12) intercepts net/http.ServeMux's own
+// default, pattern-less 404 for a GET or HEAD request only, and hands it
+// to serve instead of net/http's stdlib body — this is how the embedded
+// frontend (internal/webui) renders its SPA shell for a client-side
+// route, or a real static asset, without this application ever
+// registering a route/pattern for the frontend on the mux itself.
+//
+// That last point is deliberate, not an implementation detail: an
+// earlier version of this feature registered a "GET /" pattern directly,
+// and it was reverted after proving (via this project's own pre-existing
+// test suite) that doing so corrupts net/http.ServeMux's automatic
+// 405-vs-404 distinction for *every other unmatched path in the entire
+// application* — once any pattern rooted at "/" exists, ServeMux treats
+// it as a path match for every otherwise-unregistered path, silently
+// turning a wrong-method request against a genuinely nonexistent route
+// (e.g. POST to a long-removed unversioned bootstrap path — see
+// internal/app's TestApp_UnversionedRoutes_NoLongerWork) from a plain
+// 404 into a 405.
+//
+// This middleware avoids that entirely by never touching the mux's
+// routing table. It relies on r.Pattern (Go 1.22+'s ServeMux sets this
+// on the request itself, before invoking whatever it decided to route
+// to — including its own internal NotFoundHandler, which leaves it
+// empty; see requestRoute's own doc comment for the same signal used
+// elsewhere) to distinguish "no registered pattern matched this path at
+// all" from every other case:
+//
+//   - r.Pattern != "" (a real route matched, whatever its status) →
+//     passed through completely unmodified;
+//   - status != 404 (including ServeMux's own synthetic 405, which
+//     WrapMethodNotAllowed already owns) → passed through unmodified;
+//   - method is neither GET nor HEAD → passed through unmodified, so a
+//     POST/PUT/DELETE/etc. against a genuinely unmatched path keeps
+//     getting the exact same plain 404 it always did;
+//   - otherwise (r.Pattern == "", status 404, GET/HEAD) → serve is
+//     called instead, and whatever net/http's own NotFoundHandler was
+//     about to write is discarded.
+func FrontendFallback(serve http.HandlerFunc) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(&frontendFallbackInterceptor{ResponseWriter: w, request: r, serve: serve}, r)
+		})
+	}
+}
+
+type frontendFallbackInterceptor struct {
+	http.ResponseWriter
+	request      *http.Request
+	serve        http.HandlerFunc
+	handled      bool
+	intercepting bool
+}
+
+func (i *frontendFallbackInterceptor) WriteHeader(status int) {
+	if i.handled {
+		return
+	}
+	i.handled = true
+
+	if status != http.StatusNotFound || i.request.Pattern != "" || !isGetOrHead(i.request.Method) {
+		i.ResponseWriter.WriteHeader(status)
+		return
+	}
+
+	i.intercepting = true
+	i.serve(i.ResponseWriter, i.request)
+}
+
+func (i *frontendFallbackInterceptor) Write(b []byte) (int, error) {
+	if !i.handled {
+		// Writing without an explicit prior WriteHeader implicitly means
+		// 200 OK (matching statusRecorder's own equivalent handling
+		// above) — go through the same decision path either way.
+		i.WriteHeader(http.StatusOK)
+	}
+	if i.intercepting {
+		// Discard whatever net/http's own NotFoundHandler was about to
+		// send — Serve already wrote its own response directly to the
+		// real ResponseWriter above.
+		return len(b), nil
+	}
+
+	return i.ResponseWriter.Write(b)
+}
+
+func isGetOrHead(method string) bool {
+	return method == http.MethodGet || method == http.MethodHead
+}
+
 // Recover wraps next so a panic inside any handler is caught, logged
 // (message and stack trace, server-side only), and turned into the
 // standard generic 500 JSON response instead of the stdlib default

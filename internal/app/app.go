@@ -11,6 +11,7 @@ import (
 	"go-invoicing/internal/invoice"
 	"go-invoicing/internal/metrics"
 	"go-invoicing/internal/product"
+	"go-invoicing/internal/webui"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -334,24 +335,27 @@ func (a *App) Handler() http.Handler {
 
 	// Section 9 (Milestone 8 Part 2): router-generated 404 is
 	// deliberately NOT brought into the JSON envelope, unlike 405 below.
-	// A catch-all "/" pattern was tried and rejected: net/http.ServeMux
-	// treats any registered pattern — including a maximally general "/"
-	// — as a valid handler for a method that pattern accepts, which is
-	// every method for an unrestricted "/". That makes ServeMux prefer
-	// falling through to "/" over synthesizing its own 405 for a
-	// wrong-method request against any OTHER, more specific route in
-	// this file — verified empirically: registering a "/" catch-all
-	// silently turned every wrong-method request mux-wide from a 405
-	// into a 404. Since correct 405/Allow-header behaviour matters more
-	// than a JSON body on a genuinely-unmatched path, an unmatched route
-	// is left to ServeMux's stdlib default ("404 page not found",
-	// plain text) — the documented exception this section's own
-	// instructions anticipate ("if doing so would require ... fighting
-	// ServeMux semantics, leave router-generated 404 ... alone").
+	// A catch-all "/" mux pattern was tried and rejected: net/http.
+	// ServeMux treats any registered pattern rooted at "/" as a path
+	// match for every otherwise-unregistered path, which corrupts its
+	// own 405-vs-404 distinction application-wide — verified empirically
+	// against this exact test suite. Since correct 405/Allow-header
+	// behaviour matters more than a nicer body on a genuinely-unmatched
+	// path, an unmatched route is left to ServeMux's stdlib default
+	// ("404 page not found", plain text) for every case except one:
+	// FrontendFallback below, which reuses that same r.Pattern signal to
+	// let the embedded frontend (internal/webui) render its SPA shell —
+	// or a real static asset — for a GET/HEAD request specifically,
+	// without ever registering anything on mux itself. See
+	// httpx.FrontendFallback's own doc comment for the full reasoning,
+	// including why it cannot reintroduce the "/" catch-all problem this
+	// paragraph describes.
 	return httpx.RequestID(
 		httpx.RequestLogging(a.logger, a.metrics)(
 			httpx.Recover(a.logger)(
-				httpx.WrapMethodNotAllowed(mux),
+				httpx.FrontendFallback(webui.Serve)(
+					httpx.WrapMethodNotAllowed(mux),
+				),
 			),
 		),
 	)

@@ -40,3 +40,9 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+
+  # Milestone 12: the frontend's own package.json/package-lock.json.
+  - package-ecosystem: "npm"
+    directory: "/web"
+    schedule:
+      interval: "weekly"

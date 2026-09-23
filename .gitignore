@@ -21,3 +21,19 @@ coverage.out
 # IDEs
 .vscode/
 .idea/
+
+# Frontend production build output (Milestone 12) — internal/webui embeds
+# this directory via go:embed; `cd web && npm run build` writes here
+# directly (see web/vite.config.ts's build.outDir). Only the committed
+# placeholder index.html stays tracked, so `go build ./...`/`go test
+# ./...` never require Node — see internal/webui/webui.go and the
+# README's frontend section. Never commit a real build's output here.
+/internal/webui/dist/*
+!/internal/webui/dist/index.html
+
+# Frontend toolchain (Milestone 12) — see web/.gitignore for the rest of
+# the frontend-specific ignores (node_modules, coverage, Playwright
+# output, etc.); these two matter at the repo root because a lockfile
+# integrity/build check can be run from either location.
+/web/node_modules/
+/web/dist/
