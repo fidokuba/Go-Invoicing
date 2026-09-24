@@ -35,6 +35,16 @@ describe("friendlyMessage", () => {
     );
   });
 
+  it("uses a 429's Retry-After to say how long to wait", () => {
+    expect(friendlyMessage(new ApiError(429, "rate_limited", "too many requests", 6))).toBe(
+      "Too many attempts. Please wait 6 seconds and try again.",
+    );
+    expect(friendlyMessage(new ApiError(429, "rate_limited", "too many requests", 120))).toBe(
+      "Too many attempts. Please wait 2 minutes and try again.",
+    );
+    expect(friendlyMessage(new ApiError(429, "rate_limited", "too many requests"))).toMatch(/wait a moment/);
+  });
+
   it("gives a generic message for 500, never exposing raw detail", () => {
     expect(friendlyMessage(new ApiError(500, "internal_error", "internal server error"))).toMatch(
       /went wrong on our end/i,

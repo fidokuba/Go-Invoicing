@@ -80,6 +80,7 @@ func TestNilMetrics_EveryMethodIsANoOp(t *testing.T) {
 	m.RecordSessionsDeleted(5)
 	m.RecordPDFGeneration("success", time.Millisecond)
 	m.RecordPaymentIdempotency(PaymentIdempotencyCreated)
+	m.RecordRateLimited(RateLimiterLogin)
 }
 
 // TestObserveHTTPRequest_BoundedLabelsAndHistogram proves the HTTP
@@ -266,5 +267,28 @@ func TestRecordPaymentIdempotency_OutcomeLabelIsBoundedEnum(t *testing.T) {
 	}
 	if strings.Contains(body, "some-raw-idempotency-key-value") {
 		t.Error("expected an unrecognised outcome never to become a label value")
+	}
+}
+
+// TestRecordRateLimited_LimiterLabelIsBoundedEnum proves the Milestone 13
+// Part 4 counter only ever carries the three fixed limiter names.
+func TestRecordRateLimited_LimiterLabelIsBoundedEnum(t *testing.T) {
+	m := New(nil)
+
+	m.RecordRateLimited(RateLimiterLogin)
+	m.RecordRateLimited(RateLimiterPDF)
+	m.RecordRateLimited("203.0.113.7")
+
+	body := scrape(t, m)
+	for _, want := range []string{
+		`go_invoicing_rate_limited_requests_total{limiter="login"} 1`,
+		`go_invoicing_rate_limited_requests_total{limiter="pdf"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected %q", want)
+		}
+	}
+	if strings.Contains(body, "203.0.113.7") {
+		t.Error("expected an unrecognised limiter name never to become a label value")
 	}
 }

@@ -11,12 +11,15 @@
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
+  /** Seconds from a 429's Retry-After header (Milestone 13 Part 4), if sent. */
+  readonly retryAfterSeconds?: number;
 
-  constructor(status: number, code: string, message: string) {
+  constructor(status: number, code: string, message: string, retryAfterSeconds?: number) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
+    this.retryAfterSeconds = retryAfterSeconds;
   }
 }
 
@@ -54,7 +57,9 @@ export function friendlyMessage(err: unknown): string {
       case 415:
         return "Unsupported request format.";
       case 429:
-        return "You're doing that too much right now — please wait a moment and try again.";
+        return err.retryAfterSeconds
+          ? `Too many attempts. Please wait ${formatWait(err.retryAfterSeconds)} and try again.`
+          : "You're doing that too much right now — please wait a moment and try again.";
       default:
         return "Something went wrong on our end. Please try again.";
     }
@@ -67,6 +72,14 @@ export function friendlyMessage(err: unknown): string {
   }
 
   return "Something went wrong. Please try again.";
+}
+
+/** "1 second", "6 seconds", "2 minutes" — whole minutes (rounded up)
+ * from a minute on. */
+function formatWait(seconds: number): string {
+  if (seconds < 60) return seconds === 1 ? "1 second" : `${seconds} seconds`;
+  const minutes = Math.ceil(seconds / 60);
+  return minutes === 1 ? "1 minute" : `${minutes} minutes`;
 }
 
 /** Milestone 13 Part 2: a PATCH whose If-Match no longer matches — the

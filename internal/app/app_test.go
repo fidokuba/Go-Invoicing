@@ -61,7 +61,19 @@ func newTestApp(t *testing.T) (http.Handler, *pgxpool.Pool) {
 	t.Helper()
 
 	db := newTestPool(t)
-	return New(db, testLogger, nil).Handler(), db
+	application := New(db, testLogger, nil)
+	// Every httptest request comes from the same client address, so the
+	// production login/register limits would trip tests that simply log
+	// in many times. The limits themselves are tested explicitly (see
+	// rate_limit_test.go) against defaultRateLimits.
+	application.rateLimits = relaxedRateLimits
+	return application.Handler(), db
+}
+
+var relaxedRateLimits = rateLimits{
+	login:    rateLimitPolicy{every: time.Millisecond, burst: 1000},
+	register: rateLimitPolicy{every: time.Millisecond, burst: 1000},
+	pdf:      rateLimitPolicy{every: time.Millisecond, burst: 1000},
 }
 
 // TestApp_OpenAPISpecRoute_PublicAndMatchesEmbeddedSource is Milestone 8

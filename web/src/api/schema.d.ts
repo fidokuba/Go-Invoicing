@@ -222,6 +222,7 @@ export interface paths {
                 };
                 413: components["responses"]["PayloadTooLarge"];
                 415: components["responses"]["UnsupportedMediaType"];
+                429: components["responses"]["TooManyRequests"];
                 500: components["responses"]["InternalServerError"];
             };
         };
@@ -357,6 +358,7 @@ export interface paths {
                 };
                 413: components["responses"]["PayloadTooLarge"];
                 415: components["responses"]["UnsupportedMediaType"];
+                429: components["responses"]["TooManyRequests"];
                 500: components["responses"]["InternalServerError"];
             };
         };
@@ -1627,6 +1629,7 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorBody"];
                     };
                 };
+                429: components["responses"]["TooManyRequests"];
                 500: components["responses"]["InternalServerError"];
             };
         };
@@ -2199,6 +2202,28 @@ export interface components {
         };
     };
     responses: {
+        /** @description Too many requests from this client address (login, registration) or this user (PDF generation) in a short time. Nothing was processed; wait for the number of seconds given in Retry-After before trying again. */
+        TooManyRequests: {
+            headers: {
+                /**
+                 * @description Seconds to wait before retrying (a whole number, at least 1).
+                 * @example 6
+                 */
+                "Retry-After"?: number;
+                [name: string]: unknown;
+            };
+            content: {
+                /**
+                 * @example {
+                 *       "error": {
+                 *         "code": "rate_limited",
+                 *         "message": "too many requests; please wait before retrying"
+                 *       }
+                 *     }
+                 */
+                "application/json": components["schemas"]["ErrorBody"];
+            };
+        };
         /** @description The If-Match ETag is no longer the resource's current version — it was changed after you read it. Nothing was written; fetch the resource again, reapply your change, and retry with the new ETag. */
         PreconditionFailed: {
             headers: {

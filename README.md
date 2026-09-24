@@ -331,7 +331,8 @@ What this project provides, and what it deliberately leaves to an operator or a 
 - No native binary signing (Authenticode/notarization) — see "Supply-chain hardening" above.
 - No container image signing, SBOM, or build provenance/attestation — see the same section.
 - No secrets manager integration (Vault, cloud KMS, ...) — secrets are plain environment variables, as is conventional for a container at this scale.
-- No WAF, rate limiting, or DDoS protection — expected to come from whatever sits in front (reverse proxy, cloud load balancer), not this application.
+- No WAF or DDoS protection — expected to come from whatever sits in front (reverse proxy, cloud load balancer), not this application.
+- Rate limiting (Milestone 13 Part 4) is in-process and deliberately narrow: `POST /api/v1/auth/login` (10 at once, then 1 per 6 s) and `POST /api/v1/register` (5 at once, then 1 per 2 min) per client address, and `GET /api/v1/invoices/{id}/pdf` (20 at once, then 1 per 2 s) per user; a limited request gets `429` with `Retry-After`. The client address is always the direct peer (`RemoteAddr`) — `X-Forwarded-For` is never trusted, since there's no trusted-proxy configuration. **Behind a reverse proxy, every client therefore shares the proxy's login/register limits**, so a burst of logins from many people (or an attacker) can briefly lock out everyone; apply per-client limits at the proxy as well if that matters. Limits are per process: several instances each enforce their own, and a restart resets them.
 - No automated backups — `pg_dump`/restore is a documented manual procedure (see "Self-hosted Docker Compose" above), not a scheduled job.
 - No horizontal-scaling support — see the "Horizontal scaling boundary" note above; the application performs its own startup migrations, which is only safe with exactly one instance.
 

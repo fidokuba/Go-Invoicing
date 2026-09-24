@@ -3,6 +3,7 @@ package app
 import (
 	"log/slog"
 	"net/http"
+	"time"
 
 	"go-invoicing/api"
 	admin "go-invoicing/internal/administration"
@@ -11,6 +12,7 @@ import (
 	"go-invoicing/internal/invoice"
 	"go-invoicing/internal/metrics"
 	"go-invoicing/internal/product"
+	"go-invoicing/internal/ratelimit"
 	"go-invoicing/internal/webui"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -31,6 +33,53 @@ type App struct {
 	// RoutePattern's own doc comment for why this exists and how tests
 	// use it.
 	routes []RoutePattern
+
+	// rateLimits (Milestone 13 Part 4) is defaultRateLimits in production;
+	// tests in this package may relax it (every httptest request shares
+	// one client address).
+	rateLimits rateLimits
+}
+
+// rateLimitPolicy is one in-process token bucket per key: a sustained
+// rate of one request per `every`, with bursts of up to `burst`.
+type rateLimitPolicy struct {
+	every time.Duration
+	burst int
+}
+
+type rateLimits struct {
+	login    rateLimitPolicy
+	register rateLimitPolicy
+	pdf      rateLimitPolicy
+}
+
+// defaultRateLimits protects the only three endpoints where repeated
+// requests are a realistic abuse or resource risk (Milestone 13 Part 4);
+// ordinary authenticated CRUD is deliberately not limited.
+//
+//   - login, per client address: 10 attempts at once, then 1 every 6s
+//     (10/min). Ample for a person mistyping a password; slows online
+//     password guessing, and bounds the Argon2id hashing each attempt
+//     costs the server.
+//   - register, per client address: 5 at once, then 1 every 2 minutes.
+//     A real organisation registers once; this stops a script filling the
+//     database with organisations/users (each also an Argon2id hash).
+//   - PDF, per authenticated user: 20 at once, then 1 every 2s. PDF
+//     generation is synchronous and CPU-bound (data assembly plus
+//     rendering); no human clicks faster, but a looping client could
+//     otherwise monopolise the server.
+var defaultRateLimits = rateLimits{
+	login:    rateLimitPolicy{every: 6 * time.Second, burst: 10},
+	register: rateLimitPolicy{every: 2 * time.Minute, burst: 5},
+	pdf:      rateLimitPolicy{every: 2 * time.Second, burst: 20},
+}
+
+// rateLimitMaxKeys bounds each limiter's memory: at most this many
+// per-key buckets (roughly 100 bytes each) — see ratelimit.Limiter.
+const rateLimitMaxKeys = 10_000
+
+func (p rateLimitPolicy) newLimiter() *ratelimit.Limiter {
+	return ratelimit.New(p.every, p.burst, rateLimitMaxKeys)
 }
 
 // New wires an App around an existing database pool, logger, and metrics
@@ -52,7 +101,7 @@ type App struct {
 // method used elsewhere in this package's dependency graph is a nil-safe
 // no-op, so no other conditional is needed.
 func New(db *pgxpool.Pool, logger *slog.Logger, m *metrics.Metrics) *App {
-	return &App{db: db, logger: logger, metrics: m}
+	return &App{db: db, logger: logger, metrics: m, rateLimits: defaultRateLimits}
 }
 
 // RoutePattern is one application route's method and net/http.ServeMux
@@ -125,7 +174,15 @@ func (a *App) Handler() http.Handler {
 	authHandler := admin.NewAuthHandler(authService)
 	authMiddleware := admin.NewAuthMiddleware(sessionRepository, userRepository)
 
-	register("POST", apiV1Prefix+"/auth/login", authHandler.Login)
+	// Milestone 13 Part 4: login and registration are the only public
+	// mutating routes, so they're limited per client address (see
+	// defaultRateLimits and httpx.ClientAddressKey) — before the body is
+	// even decoded, and identically for right and wrong credentials, so a
+	// 429 reveals nothing about any account.
+	loginLimit := httpx.RateLimit(metrics.RateLimiterLogin, a.rateLimits.login.newLimiter(), httpx.ClientAddressKey, a.metrics)
+	registerLimit := httpx.RateLimit(metrics.RateLimiterRegister, a.rateLimits.register.newLimiter(), httpx.ClientAddressKey, a.metrics)
+
+	register("POST", apiV1Prefix+"/auth/login", loginLimit(authHandler.Login))
 	// POST /auth/logout (Milestone 8 Part 3): revokes only the current
 	// session (see AuthHandler.Logout) — authentication required, so it
 	// must go through the same RequireAuth every other protected route
@@ -143,7 +200,7 @@ func (a *App) Handler() http.Handler {
 	registrationService := admin.NewRegistrationService(organisationRepository, settingsRepository, userRepository, a.db)
 	registrationHandler := admin.NewRegistrationHandler(registrationService)
 
-	register("POST", apiV1Prefix+"/register", registrationHandler.Register)
+	register("POST", apiV1Prefix+"/register", registerLimit(registrationHandler.Register))
 
 	// POST /users (Milestone 4 Part 5) is now a protected, role-gated
 	// route for creating additional users within an existing,
@@ -273,7 +330,14 @@ func (a *App) Handler() http.Handler {
 	// GET /invoices/{id}/pdf (Milestone 7 Part 3): synchronous PDF
 	// generation, same open-to-all-authenticated-roles policy as every
 	// other invoice route.
-	register("GET", apiV1Prefix+"/invoices/{id}/pdf", authMiddleware.RequireAuth(invoiceHandler.GetPDF))
+	//
+	// Rate-limited per authenticated user (Milestone 13 Part 4): PDF
+	// rendering is synchronous and CPU-bound. The limiter sits inside
+	// RequireAuth, so an unauthenticated request is a 401 and never
+	// consumes a token, and a user's identity — not their address — is
+	// the key.
+	pdfLimit := httpx.RateLimit(metrics.RateLimiterPDF, a.rateLimits.pdf.newLimiter(), authenticatedUserKey, a.metrics)
+	register("GET", apiV1Prefix+"/invoices/{id}/pdf", authMiddleware.RequireAuth(pdfLimit(invoiceHandler.GetPDF)))
 
 	// /health and /health/db (Milestone 1) stay unversioned and require
 	// no authentication — they are infrastructure probes, not part of the
@@ -359,4 +423,11 @@ func (a *App) Handler() http.Handler {
 			),
 		),
 	)
+}
+
+// authenticatedUserKey keys a request by its authenticated user. Only
+// used behind RequireAuth, which guarantees an identity is present.
+func authenticatedUserKey(r *http.Request) string {
+	identity, _ := admin.AuthenticatedUserFromContext(r.Context())
+	return "user:" + identity.UserID.String()
 }

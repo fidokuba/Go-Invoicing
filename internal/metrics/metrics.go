@@ -54,7 +54,17 @@ type Metrics struct {
 	pdfGenerationDuration prometheus.Histogram
 
 	paymentIdempotencyTotal *prometheus.CounterVec
+
+	rateLimitedTotal *prometheus.CounterVec
 }
+
+// The only limiter label values RecordRateLimited accepts (Milestone 13
+// Part 4).
+const (
+	RateLimiterLogin    = "login"
+	RateLimiterRegister = "register"
+	RateLimiterPDF      = "pdf"
+)
 
 // The only outcome label values RecordPaymentIdempotency accepts
 // (Milestone 13 Part 1).
@@ -167,6 +177,13 @@ func New(pool *pgxpool.Pool) *Metrics {
 			Name:      "payment_idempotency_total",
 			Help:      "Total number of keyed payment-creation requests reaching an idempotency decision, labeled by outcome (created, replayed or conflict).",
 		}, []string{"outcome"}),
+		// limiter is a fixed three-value enum (login/register/pdf) — never
+		// a client address, user ID or route parameter.
+		rateLimitedTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "rate_limited_requests_total",
+			Help:      "Total number of requests rejected with 429 by an in-process rate limiter, labeled by limiter (login, register or pdf).",
+		}, []string{"limiter"}),
 	}
 
 	// buildInfo (Milestone 11 Part 2 — deferred by Milestone 10 Part 4
@@ -201,6 +218,7 @@ func New(pool *pgxpool.Pool) *Metrics {
 		m.pdfGenerationsTotal,
 		m.pdfGenerationDuration,
 		m.paymentIdempotencyTotal,
+		m.rateLimitedTotal,
 		buildInfo,
 		newDBPoolCollector(pool),
 		// Standard Go runtime and process collectors (GC pauses, heap,
@@ -309,5 +327,19 @@ func (m *Metrics) RecordPaymentIdempotency(outcome string) {
 	switch outcome {
 	case PaymentIdempotencyCreated, PaymentIdempotencyReplayed, PaymentIdempotencyConflict:
 		m.paymentIdempotencyTotal.WithLabelValues(outcome).Inc()
+	}
+}
+
+// RecordRateLimited counts one request rejected with 429 by the named
+// limiter, which must be one of the RateLimiter* constants; anything else
+// is ignored rather than becoming a new label value.
+func (m *Metrics) RecordRateLimited(limiter string) {
+	if m == nil {
+		return
+	}
+
+	switch limiter {
+	case RateLimiterLogin, RateLimiterRegister, RateLimiterPDF:
+		m.rateLimitedTotal.WithLabelValues(limiter).Inc()
 	}
 }

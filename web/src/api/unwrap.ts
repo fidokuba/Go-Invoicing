@@ -10,6 +10,14 @@ interface ErrorEnvelope {
   error?: { code?: string; message?: string };
 }
 
+/** A 429's Retry-After as whole seconds, when it's a positive integer
+ * (the only form this API sends). */
+function retryAfterSeconds(response: Response): number | undefined {
+  if (response.status !== 429) return undefined;
+  const seconds = Number(response.headers.get("Retry-After"));
+  return Number.isInteger(seconds) && seconds > 0 ? seconds : undefined;
+}
+
 /** Turn an openapi-fetch result into a plain value or a thrown ApiError,
  * so every query/mutation hook (see src/api/queries) gets one consistent
  * shape: either the typed response body, or an ApiError a component can
@@ -23,6 +31,7 @@ export async function unwrap<T>(result: FetchResult<T> | Promise<FetchResult<T>>
       response.status,
       body.error?.code ?? "unknown",
       body.error?.message ?? (response.statusText || "request failed"),
+      retryAfterSeconds(response),
     );
   }
 
