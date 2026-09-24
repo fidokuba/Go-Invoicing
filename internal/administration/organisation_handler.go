@@ -87,7 +87,9 @@ func (h *OrganisationHandler) Update(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if errors.Is(err, ErrOrganisationNameRequired) || errors.Is(err, ErrOrganisationEmailInvalid) {
+		if errors.Is(err, ErrOrganisationNameRequired) ||
+			errors.Is(err, ErrOrganisationEmailInvalid) ||
+			errors.Is(err, ErrOrganisationVATNumberRequired) {
 			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeValidationFailed, err.Error())
 			return
 		}

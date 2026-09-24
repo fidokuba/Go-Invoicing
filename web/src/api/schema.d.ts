@@ -320,6 +320,7 @@ export interface paths {
                          *       "organisation": {
                          *         "id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
                          *         "name": "Acme Consulting Ltd",
+                         *         "vatRegistered": false,
                          *         "createdAt": "2026-01-15T10:00:00Z",
                          *         "updatedAt": "2026-01-15T10:00:00Z"
                          *       },
@@ -1368,6 +1369,7 @@ export interface paths {
                          *       "issueDate": "2026-09-19",
                          *       "dueDate": "2026-10-19",
                          *       "currency": "GBP",
+                         *       "vatRegistered": true,
                          *       "subtotal": 100000,
                          *       "vatTotal": 20000,
                          *       "total": 120000,
@@ -1917,13 +1919,16 @@ export interface components {
             state?: string;
             postalCode?: string;
             country?: string;
+            /** @description The organisation's VAT registration number. Still returned while vatRegistered is false (so it can be restored on re-registering), but clients should not display it, and it never appears on invoices, in that state. */
             taxId?: string;
+            /** @description Whether the organisation is registered for UK VAT. False for every new organisation. When false, invoices may not charge VAT, and no VAT figures or VAT number are shown on them. */
+            vatRegistered: boolean;
             /** Format: date-time */
             createdAt: string;
             /** Format: date-time */
             updatedAt: string;
         };
-        /** @description Every field is optional — omit a field to leave it unchanged. All fields except name may be cleared by supplying an empty string. */
+        /** @description Every field is optional — omit a field to leave it unchanged. All string fields except name may be cleared by supplying an empty string. The resulting organisation must have a non-blank taxId whenever vatRegistered is true (400 otherwise); its format is not checked. */
         UpdateOrganisationRequest: {
             name?: string;
             email?: string;
@@ -1935,6 +1940,7 @@ export interface components {
             postalCode?: string;
             country?: string;
             taxId?: string;
+            vatRegistered?: boolean;
         };
         SettingsResponse: {
             /** @description A 3-letter code shaped like an ISO 4217 currency code — not validated against an actual currency catalogue. */
@@ -2057,7 +2063,7 @@ export interface components {
              */
             unitPrice: number;
             /**
-             * @description A percentage (e.g. 20 means 20%). Optional; defaults to 0 if omitted.
+             * @description A percentage (e.g. 20 means 20%). Optional; defaults to 0 if omitted. Must be 0 (or omitted) when the organisation is not VAT registered — any other value is rejected with 400.
              * @default 0
              */
             vatRate: number;
@@ -2105,6 +2111,8 @@ export interface components {
             dueDate: string;
             /** @description Draft uses the organisation's current settings currency; Sent/Overdue/Paid use the invoice's own immutable snapshot, unaffected by later settings changes. */
             currency: string;
+            /** @description Whether the organisation was VAT registered when this invoice was created, fixed from then on. When false every VAT figure is 0 and clients should not display VAT for this invoice at all. */
+            vatRegistered: boolean;
             /** Format: int64 */
             subtotal: number;
             /** Format: int64 */

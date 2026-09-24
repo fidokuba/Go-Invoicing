@@ -24,6 +24,12 @@ var ErrOrganisationNameRequired = errors.New("organisation name is required")
 // an explicitly-supplied empty optional field clears it instead.
 var ErrOrganisationEmailInvalid = errors.New("organisation email is not a valid email address")
 
+// ErrOrganisationVATNumberRequired is returned by Update when the result
+// would be a VAT-registered organisation with a blank TaxID — UK VAT
+// invoices must show the seller's VAT registration number. Its format is
+// deliberately not checked.
+var ErrOrganisationVATNumberRequired = errors.New("a VAT registration number is required for a VAT registered organisation")
+
 // OrganisationService sits between the HTTP layer and the repository. It
 // depends on the OrganisationRepository interface, not on any concrete
 // implementation, so it doesn't know or care that organisations happen to
@@ -124,7 +130,8 @@ func (s *OrganisationService) GetByID(
 // .ParseAddress when non-blank — Phone/Website/Address/City/State/
 // PostalCode/Country/TaxID deliberately do not get equivalent format
 // validation (Milestone 7 Part 1 explicitly avoids over-strict validation
-// for those), only whitespace trimming.
+// for those), only whitespace trimming. A VAT-registered organisation must
+// have a non-blank TaxID (ErrOrganisationVATNumberRequired).
 //
 // This reads the current organisation, applies only the supplied fields
 // onto it, and writes the whole merged value back via one repository
@@ -203,6 +210,17 @@ func (s *OrganisationService) Update(
 
 	if request.TaxID != nil {
 		organisation.TaxID = nilIfEmpty(*request.TaxID)
+	}
+
+	if request.VATRegistered != nil {
+		organisation.VATRegistered = *request.VATRegistered
+	}
+
+	// Checked against the merged result, not just this request, so
+	// clearing TaxID on an already-registered organisation is rejected
+	// too. Unticking VAT registration keeps the stored TaxID.
+	if organisation.VATRegistered && organisation.TaxID == nil {
+		return nil, ErrOrganisationVATNumberRequired
 	}
 
 	if err := s.repository.Update(ctx, organisationID, organisation, expectedVersion); err != nil {

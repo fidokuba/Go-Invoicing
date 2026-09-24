@@ -59,7 +59,7 @@ func TestInvoiceService_Send_CapturesAllAvailableSellerFields(t *testing.T) {
 		ID: f.organisationID, Name: "Acme Ltd",
 		Email: &email, Phone: &phone, Website: &website,
 		Address: &address, City: &city, State: &state, PostalCode: &postalCode, Country: &country,
-		TaxID: &taxID,
+		TaxID: &taxID, VATRegistered: true,
 	}
 
 	inv, err := f.service.Send(context.Background(), f.organisationID, invoiceID)

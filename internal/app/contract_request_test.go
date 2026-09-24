@@ -61,6 +61,7 @@ func TestRequestContract_MatchesOpenAPISchema(t *testing.T) {
 	})
 
 	t.Run("UpdateOrganisationRequest", func(t *testing.T) {
+		vatRegistered := true
 		validateAgainstSchema(t, doc, "UpdateOrganisationRequest", admin.UpdateOrganisationRequest{
 			Name:       strPtr("Acme Consulting Ltd"),
 			Email:      strPtr("hello@acme.example"),
@@ -72,6 +73,8 @@ func TestRequestContract_MatchesOpenAPISchema(t *testing.T) {
 			PostalCode: strPtr("SW1A 1AA"),
 			Country:    strPtr("GB"),
 			TaxID:      strPtr("GB123456789"),
+
+			VATRegistered: &vatRegistered,
 		})
 	})
 

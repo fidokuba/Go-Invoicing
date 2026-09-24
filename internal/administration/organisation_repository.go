@@ -31,7 +31,7 @@ type OrganisationRepository interface {
 
 	// Update persists organisation's mutable party-detail fields (Name,
 	// Email, Phone, Website, Address, City, State, PostalCode, Country,
-	// TaxID) — Logo is left untouched (Milestone 7 Part 1 doesn't manage
+	// TaxID, VATRegistered) — Logo is left untouched (Milestone 7 Part 1 doesn't manage
 	// it), and ID/CreatedAt/DeletedAt are never written by this method.
 	//
 	// organisationID is taken explicitly, separately from organisation.ID

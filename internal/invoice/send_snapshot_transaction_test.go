@@ -24,7 +24,7 @@ func TestInvoiceService_Send_PersistsCompleteSnapshot(t *testing.T) {
 	organisationID := createTestOrganisation(t, db)
 	email, taxID := "seller@acme.test", "GB123456789"
 	if err := updateTestOrganisation(ctx, db, organisationID, &admin.Organisation{
-		Name: "Acme Ltd", Email: &email, TaxID: &taxID,
+		Name: "Acme Ltd", Email: &email, TaxID: &taxID, VATRegistered: true,
 	}); err != nil {
 		t.Fatalf("set organisation party data: %v", err)
 	}

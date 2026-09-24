@@ -74,6 +74,10 @@ type InvoiceLineResponse struct {
 // columns stay internal. See toInvoiceResponse's caller for how this
 // value is resolved (live Settings.Currency for a Draft invoice, the
 // immutable Invoice.Currency snapshot for anything else).
+//
+// VATRegistered tells clients whether to show VAT at all for this
+// invoice. When false every VAT figure is zero and must not be displayed;
+// the fields stay on the wire so the response shape never changes.
 type InvoiceResponse struct {
 	ID                string                `json:"id"`
 	OrganisationID    string                `json:"organisationId"`
@@ -82,6 +86,7 @@ type InvoiceResponse struct {
 	IssueDate         string                `json:"issueDate"`
 	DueDate           string                `json:"dueDate"`
 	Currency          string                `json:"currency"`
+	VATRegistered     bool                  `json:"vatRegistered"`
 	Subtotal          int64                 `json:"subtotal"`
 	VATTotal          int64                 `json:"vatTotal"`
 	Total             int64                 `json:"total"`
@@ -217,6 +222,7 @@ func toInvoiceResponse(inv *Invoice, lines []*Line, amountPaid int64, currency s
 		IssueDate:         inv.IssueDate.Format(dateLayout),
 		DueDate:           inv.DueDate.Format(dateLayout),
 		Currency:          currency,
+		VATRegistered:     inv.VATRegistered,
 		Subtotal:          inv.Subtotal,
 		VATTotal:          inv.VATTotal,
 		Total:             inv.Total,

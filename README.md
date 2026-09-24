@@ -322,6 +322,15 @@ REQUIRE_DATABASE_TESTS=true DATABASE_URL=postgres://go_invoicing:go_invoicing_de
   go test ./internal/database/ -run TestRequireDatabaseTests_CIPreflight -v -count=1
 ```
 
+## VAT registration
+
+A UK business that isn't VAT registered (for example a sole trader under the VAT threshold) must not charge or show VAT on its invoices. Each organisation therefore has a **VAT Registered Company?** setting (Settings → Organisation), which is off for every new organisation.
+
+- **Off:** the VAT Registration Number field is hidden, and invoices show no VAT (no VAT rate on lines, no VAT totals, no VAT number, including on the PDF). The API rejects any invoice line with a VAT rate other than 0 (`400 validation_failed`). A stored VAT Registration Number is kept, so ticking the box again restores it.
+- **On:** a VAT Registration Number is required, but its format isn't checked. Invoices work as before.
+
+Each invoice records the organisation's VAT status when it's created (`invoices.vat_registered`) and keeps it. Changing the setting later never changes how existing invoices look. Migration `000018` sets every existing organisation to not registered. It marks existing invoices as VAT registered if they carry any VAT, so they still show it.
+
 ## Security boundaries
 
 What this project provides, and what it deliberately leaves to an operator or a future milestone. Not a claim that anything unlisted is unsafe — only that it isn't this project's job yet.

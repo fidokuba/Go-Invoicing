@@ -27,6 +27,12 @@ type Organisation struct {
 	UpdatedAt  time.Time
 	DeletedAt  *time.Time
 
+	// VATRegistered records whether the organisation is registered for
+	// UK VAT. When false the organisation may not charge VAT, and neither
+	// its TaxID nor any VAT figure appears on its invoices. TaxID is kept
+	// while it's false, so ticking the box again restores it.
+	VATRegistered bool
+
 	// Version (Milestone 13 Part 2) is the optimistic-concurrency token:
 	// incremented on every user-facing Update, exposed only as the HTTP
 	// ETag, never in JSON.

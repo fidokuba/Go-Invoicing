@@ -51,6 +51,11 @@ test("full invoicing workflow: register through paid invoice", async ({ page, re
   // --- Organisation details ----------------------------------------------
   await page.goto("/settings/organisation");
   await page.getByLabel("Phone").fill("+44 20 7946 0958");
+  // New organisations aren't VAT registered, so there's no VAT Registration Number field
+  // (and no VAT on invoices) until the box is ticked.
+  await expect(page.getByLabel("VAT Registration Number")).toHaveCount(0);
+  await page.getByLabel("VAT Registered Company?").check();
+  await page.getByLabel("VAT Registration Number").fill("GB123456789");
   await page.getByRole("button", { name: "Save changes" }).click();
   await expect(page.getByText("Organisation details updated.")).toBeVisible();
 

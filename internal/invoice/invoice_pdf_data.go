@@ -32,6 +32,11 @@ type InvoicePDFData struct {
 
 	Lines []InvoicePDFLine
 
+	// VATRegistered mirrors Invoice.VATRegistered. When false the
+	// renderer shows no VAT columns, no Subtotal/VAT totals rows and no
+	// seller VAT number — a non-VAT-registered business must not show VAT.
+	VATRegistered bool
+
 	Subtotal string
 	VATTotal string
 	Total    string

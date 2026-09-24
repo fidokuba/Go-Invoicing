@@ -74,10 +74,11 @@ func (r *PostgresOrganisationRepository) Create(
 			state,
 			postal_code,
 			country,
-			tax_id
+			tax_id,
+			vat_registered
 		)
 		VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
 		)
 		RETURNING created_at, updated_at, version
 	`
@@ -97,6 +98,7 @@ func (r *PostgresOrganisationRepository) Create(
 		organisation.PostalCode,
 		organisation.Country,
 		organisation.TaxID,
+		organisation.VATRegistered,
 	).Scan(&organisation.CreatedAt, &organisation.UpdatedAt, &organisation.Version)
 	if err != nil {
 		return fmt.Errorf("create organisation: %w", err)
@@ -125,6 +127,7 @@ func (r *PostgresOrganisationRepository) GetByID(
 			postal_code,
 			country,
 			tax_id,
+			vat_registered,
 			created_at,
 			updated_at,
 			deleted_at,
@@ -152,6 +155,7 @@ func (r *PostgresOrganisationRepository) GetByID(
 		&organisation.PostalCode,
 		&organisation.Country,
 		&organisation.TaxID,
+		&organisation.VATRegistered,
 		&organisation.CreatedAt,
 		&organisation.UpdatedAt,
 		&organisation.DeletedAt,
@@ -200,12 +204,13 @@ func (r *PostgresOrganisationRepository) Update(
 			state       = $7,
 			postal_code = $8,
 			country     = $9,
-			tax_id      = $10,
-			updated_at  = NOW(),
-			version     = version + 1
-		WHERE id = $11
+			tax_id         = $10,
+			vat_registered = $11,
+			updated_at     = NOW(),
+			version        = version + 1
+		WHERE id = $12
 			AND deleted_at IS NULL
-			AND version = $12
+			AND version = $13
 		RETURNING version, updated_at
 	`
 
@@ -222,6 +227,7 @@ func (r *PostgresOrganisationRepository) Update(
 		organisation.PostalCode,
 		organisation.Country,
 		organisation.TaxID,
+		organisation.VATRegistered,
 		organisationID,
 		expectedVersion,
 	).Scan(&organisation.Version, &organisation.UpdatedAt)

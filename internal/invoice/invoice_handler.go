@@ -623,6 +623,7 @@ func isInvoiceValidationError(err error) bool {
 		errors.Is(err, ErrInvoiceLineQuantityInvalid),
 		errors.Is(err, ErrInvoiceLineUnitPriceNegative),
 		errors.Is(err, ErrInvoiceLineVATRateNegative),
+		errors.Is(err, ErrInvoiceLineVATNotPermitted),
 		errors.Is(err, ErrInvoiceLineProductIDInvalid):
 		return true
 	default:

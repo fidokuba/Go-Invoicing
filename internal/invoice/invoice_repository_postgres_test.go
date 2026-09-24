@@ -44,7 +44,8 @@ func createTestOrganisation(t *testing.T, db *pgxpool.Pool) uuid.UUID {
 
 	_, err := db.Exec(
 		context.Background(),
-		"INSERT INTO organisations (id, name) VALUES ($1, $2)",
+		// VAT registered, since most tests exercise VAT calculation.
+		"INSERT INTO organisations (id, name, vat_registered) VALUES ($1, $2, TRUE)",
 		organisationID,
 		"Test Organisation",
 	)
@@ -172,6 +173,7 @@ func TestPostgresInvoiceRepository_CreateAndGetByID(t *testing.T) {
 		Total:          3000,
 		Status:         InvoiceStatusDraft,
 		Notes:          &notes,
+		VATRegistered:  true,
 	}
 
 	if err := repository.Create(ctx, inv); err != nil {
@@ -226,6 +228,10 @@ func TestPostgresInvoiceRepository_CreateAndGetByID(t *testing.T) {
 
 	if created.InvoiceNumber != inv.InvoiceNumber {
 		t.Errorf("expected invoice number %q, got %q", inv.InvoiceNumber, created.InvoiceNumber)
+	}
+
+	if !created.VATRegistered {
+		t.Error("expected VAT registered to be persisted")
 	}
 
 	if created.IssueDate.Format(dateLayout) != "2026-01-01" {

@@ -240,7 +240,7 @@ func (s *InvoicePDFService) buildLivePartyData(
 		Email:        trimmedOrEmpty(organisation.Email),
 		Phone:        trimmedOrEmpty(organisation.Phone),
 		Website:      trimmedOrEmpty(organisation.Website),
-		TaxID:        trimmedOrEmpty(organisation.TaxID),
+		TaxID:        trimmedOrEmpty(sellerVATNumber(organisation)),
 	}
 
 	var addressLines []string
@@ -434,6 +434,7 @@ func buildInvoicePDFData(
 		Seller:        seller,
 		Customer:      cust,
 		Lines:         pdfLines,
+		VATRegistered: inv.VATRegistered,
 		Subtotal:      FormatMoney(inv.Subtotal, currency),
 		VATTotal:      FormatMoney(inv.VATTotal, currency),
 		Total:         FormatMoney(inv.Total, currency),

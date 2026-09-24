@@ -33,6 +33,13 @@ export function newLineDraft(): LineDraft {
   };
 }
 
+/** For an organisation that isn't VAT registered: every line's VAT rate
+ * forced to 0, so validation, the preview and the request all ignore
+ * whatever the (hidden) VAT field holds. */
+export function withoutVat(lines: LineDraft[]): LineDraft[] {
+  return lines.map((line) => ({ ...line, vatRate: "0" }));
+}
+
 export interface LineDraftErrors {
   description?: string;
   quantity?: string;

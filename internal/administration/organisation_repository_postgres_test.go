@@ -111,6 +111,12 @@ func TestPostgresOrganisationRepository_Update_PersistsFields(t *testing.T) {
 		PostalCode: &postalCode,
 		Country:    &country,
 		TaxID:      &taxID,
+
+		VATRegistered: true,
+	}
+
+	if organisation.VATRegistered {
+		t.Error("expected a newly created organisation not to be VAT registered")
 	}
 
 	if err := repository.Update(ctx, organisation.ID, updated, organisation.Version); err != nil {
@@ -133,6 +139,9 @@ func TestPostgresOrganisationRepository_Update_PersistsFields(t *testing.T) {
 	}
 	if fetched.TaxID == nil || *fetched.TaxID != taxID {
 		t.Errorf("expected tax ID %q, got %v", taxID, fetched.TaxID)
+	}
+	if !fetched.VATRegistered {
+		t.Error("expected VAT registered to be persisted")
 	}
 }
 

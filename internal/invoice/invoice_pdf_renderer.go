@@ -57,6 +57,31 @@ var (
 	pdfColTotalX     = pdfColVATAmountX + pdfColVATAmountW
 )
 
+// lineColumns is the line-items table geometry for one render. With VAT
+// shown it is exactly the constants above. Without VAT (a non-registered
+// seller) the two VAT columns are dropped and their width goes to
+// Description, shifting Qty and Unit Price right; Total never moves.
+type lineColumns struct {
+	showVAT bool
+	descW   float64
+	qtyX    float64
+	priceX  float64
+}
+
+func newLineColumns(showVAT bool) lineColumns {
+	extra := 0.0
+	if !showVAT {
+		extra = pdfColVATRateW + pdfColVATAmountW
+	}
+
+	return lineColumns{
+		showVAT: showVAT,
+		descW:   pdfColDescW + extra,
+		qtyX:    pdfColQtyX + extra,
+		priceX:  pdfColPriceX + extra,
+	}
+}
+
 // InvoicePDFRenderer turns an already-assembled InvoicePDFData into PDF
 // bytes. It performs layout only — no PostgreSQL access, no HTTP
 // awareness, no authentication or tenant-ownership concerns. Every value
@@ -98,7 +123,7 @@ func (r *InvoicePDFRenderer) Render(data InvoicePDFData) ([]byte, error) {
 		CreationDate: time.Now(),
 	})
 
-	c := &pdfCanvas{pdf: pdf}
+	c := &pdfCanvas{pdf: pdf, cols: newLineColumns(data.VATRegistered)}
 	c.addPage()
 
 	if err := c.setFont(pdfFontSizeBody); err != nil {
@@ -141,7 +166,8 @@ func (r *InvoicePDFRenderer) Render(data InvoicePDFData) ([]byte, error) {
 // general drawing abstraction, and nothing about it survives past one
 // Render call.
 type pdfCanvas struct {
-	pdf *gopdf.GoPdf
+	pdf  *gopdf.GoPdf
+	cols lineColumns
 }
 
 func (c *pdfCanvas) addPage() {
@@ -223,8 +249,8 @@ func (c *pdfCanvas) drawHeader(data InvoicePDFData) error {
 		}
 		y += pdfLineHeight
 	}
-	if data.Seller.TaxID != "" {
-		if err := c.cell(pdfMarginLeft, y, pdfContentWidth*0.5, "Tax ID: "+data.Seller.TaxID); err != nil {
+	if data.VATRegistered && data.Seller.TaxID != "" {
+		if err := c.cell(pdfMarginLeft, y, pdfContentWidth*0.5, "VAT Registration Number: "+data.Seller.TaxID); err != nil {
 			return err
 		}
 		y += pdfLineHeight
@@ -395,20 +421,22 @@ func (c *pdfCanvas) drawTableHeader() error {
 	}
 
 	labelY := y + 5
-	if err := c.cell(pdfColDescX+pdfCellPadding, labelY, pdfColDescW-pdfCellPadding, "Description"); err != nil {
+	if err := c.cell(pdfColDescX+pdfCellPadding, labelY, c.cols.descW-pdfCellPadding, "Description"); err != nil {
 		return err
 	}
-	if err := c.cellRight(pdfColQtyX, labelY, pdfColQtyW-pdfCellPadding, "Qty"); err != nil {
+	if err := c.cellRight(c.cols.qtyX, labelY, pdfColQtyW-pdfCellPadding, "Qty"); err != nil {
 		return err
 	}
-	if err := c.cellRight(pdfColPriceX, labelY, pdfColPriceW-pdfCellPadding, "Unit Price"); err != nil {
+	if err := c.cellRight(c.cols.priceX, labelY, pdfColPriceW-pdfCellPadding, "Unit Price"); err != nil {
 		return err
 	}
-	if err := c.cellRight(pdfColVATRateX, labelY, pdfColVATRateW-pdfCellPadding, "VAT"); err != nil {
-		return err
-	}
-	if err := c.cellRight(pdfColVATAmountX, labelY, pdfColVATAmountW-pdfCellPadding, "VAT Amt"); err != nil {
-		return err
+	if c.cols.showVAT {
+		if err := c.cellRight(pdfColVATRateX, labelY, pdfColVATRateW-pdfCellPadding, "VAT"); err != nil {
+			return err
+		}
+		if err := c.cellRight(pdfColVATAmountX, labelY, pdfColVATAmountW-pdfCellPadding, "VAT Amt"); err != nil {
+			return err
+		}
 	}
 	if err := c.cellRight(pdfColTotalX, labelY, pdfColTotalW-pdfCellPadding, "Total"); err != nil {
 		return err
@@ -423,7 +451,7 @@ func (c *pdfCanvas) drawTableHeader() error {
 // column's value is drawn once, aligned to the top of the (possibly
 // multi-line) row.
 func (c *pdfCanvas) drawLineRow(line InvoicePDFLine) error {
-	wrapped, err := c.pdf.SplitTextWithWordWrap(line.Description, pdfColDescW-2*pdfCellPadding)
+	wrapped, err := c.pdf.SplitTextWithWordWrap(line.Description, c.cols.descW-2*pdfCellPadding)
 	if err != nil {
 		return fmt.Errorf("wrap line description: %w", err)
 	}
@@ -443,24 +471,26 @@ func (c *pdfCanvas) drawLineRow(line InvoicePDFLine) error {
 	textY := top + pdfCellPadding
 
 	for _, w := range wrapped {
-		if err := c.cell(pdfColDescX+pdfCellPadding, textY, pdfColDescW-pdfCellPadding, w); err != nil {
+		if err := c.cell(pdfColDescX+pdfCellPadding, textY, c.cols.descW-pdfCellPadding, w); err != nil {
 			return err
 		}
 		textY += pdfLineHeight
 	}
 
 	valueY := top + pdfCellPadding
-	if err := c.cellRight(pdfColQtyX, valueY, pdfColQtyW-pdfCellPadding, line.Quantity); err != nil {
+	if err := c.cellRight(c.cols.qtyX, valueY, pdfColQtyW-pdfCellPadding, line.Quantity); err != nil {
 		return err
 	}
-	if err := c.cellRight(pdfColPriceX, valueY, pdfColPriceW-pdfCellPadding, line.UnitPrice); err != nil {
+	if err := c.cellRight(c.cols.priceX, valueY, pdfColPriceW-pdfCellPadding, line.UnitPrice); err != nil {
 		return err
 	}
-	if err := c.cellRight(pdfColVATRateX, valueY, pdfColVATRateW-pdfCellPadding, line.VATRate); err != nil {
-		return err
-	}
-	if err := c.cellRight(pdfColVATAmountX, valueY, pdfColVATAmountW-pdfCellPadding, line.VATAmount); err != nil {
-		return err
+	if c.cols.showVAT {
+		if err := c.cellRight(pdfColVATRateX, valueY, pdfColVATRateW-pdfCellPadding, line.VATRate); err != nil {
+			return err
+		}
+		if err := c.cellRight(pdfColVATAmountX, valueY, pdfColVATAmountW-pdfCellPadding, line.VATAmount); err != nil {
+			return err
+		}
 	}
 	if err := c.cellRight(pdfColTotalX, valueY, pdfColTotalW-pdfCellPadding, line.Total); err != nil {
 		return err
@@ -477,14 +507,21 @@ func (c *pdfCanvas) drawLineRow(line InvoicePDFLine) error {
 
 // drawTotals renders the right-aligned Subtotal/VAT/Total block, plus
 // Amount Paid/Balance Due when InvoicePDFData.ShowPaymentSummary is set.
+// A non-VAT-registered invoice shows Total alone: without VAT, Subtotal
+// would only repeat it.
 // The whole block is kept together on one page — Milestone 7 Part 3
 // explicitly asks that totals "appear together where practical" rather
 // than splitting across a page boundary.
 func (c *pdfCanvas) drawTotals(data InvoicePDFData) error {
 	rows := []struct{ label, value string }{
-		{"Subtotal", data.Subtotal},
-		{"VAT", data.VATTotal},
 		{"Total", data.Total},
+	}
+	if data.VATRegistered {
+		rows = []struct{ label, value string }{
+			{"Subtotal", data.Subtotal},
+			{"VAT", data.VATTotal},
+			{"Total", data.Total},
+		}
 	}
 	if data.ShowPaymentSummary {
 		rows = append(rows,

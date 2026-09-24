@@ -4,7 +4,8 @@ import { useAuth, hasRole } from "@/lib/useAuth";
 import { friendlyMessage, isStaleWriteError } from "@/api/errors";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input, Label } from "@/components/ui/input";
+import { Input, Label, FieldError } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Alert } from "@/components/ui/alert";
 import { QueryBoundary } from "@/components/ui/query-boundary";
 import type { components } from "@/api/schema";
@@ -32,7 +33,9 @@ function OrganisationForm({
   const [email, setEmail] = useState(organisation.email ?? "");
   const [phone, setPhone] = useState(organisation.phone ?? "");
   const [website, setWebsite] = useState(organisation.website ?? "");
+  const [vatRegistered, setVatRegistered] = useState(organisation.vatRegistered);
   const [taxId, setTaxId] = useState(organisation.taxId ?? "");
+  const [taxIdError, setTaxIdError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const update = useUpdateOrganisation();
 
@@ -40,8 +43,17 @@ function OrganisationForm({
     event.preventDefault();
     if (update.isPending) return;
     setSaved(false);
+    // A VAT registered business must show its VAT number on invoices; the
+    // server enforces this too.
+    if (vatRegistered && !taxId.trim()) {
+      setTaxIdError("Enter your VAT registration number.");
+      return;
+    }
+    setTaxIdError(null);
     update.mutate(
-      { body: { name, email, phone, website, taxId }, etag },
+      // taxId is only sent while registered, so unticking keeps the stored
+      // number for when the box is ticked again.
+      { body: { name, email, phone, website, vatRegistered, ...(vatRegistered ? { taxId } : {}) }, etag },
       {
         onSuccess: (versioned) => {
           setEtag(versioned.etag);
@@ -94,10 +106,26 @@ function OrganisationForm({
             <Label htmlFor="org-website">Website</Label>
             <Input id="org-website" disabled={!canEdit} value={website} onChange={(e) => setWebsite(e.target.value)} />
           </div>
-          <div>
-            <Label htmlFor="org-taxId">Tax ID</Label>
-            <Input id="org-taxId" disabled={!canEdit} value={taxId} onChange={(e) => setTaxId(e.target.value)} />
-          </div>
+          <Checkbox
+            id="org-vatRegistered"
+            label="VAT Registered Company?"
+            disabled={!canEdit}
+            checked={vatRegistered}
+            onChange={(e) => setVatRegistered(e.target.checked)}
+          />
+          {vatRegistered && (
+            <div>
+              <Label htmlFor="org-taxId">VAT Registration Number</Label>
+              <Input
+                id="org-taxId"
+                disabled={!canEdit}
+                value={taxId}
+                aria-invalid={taxIdError !== null}
+                onChange={(e) => setTaxId(e.target.value)}
+              />
+              <FieldError>{taxIdError}</FieldError>
+            </div>
+          )}
           {canEdit && (
             <div className="flex justify-end">
               <Button type="submit" disabled={update.isPending}>

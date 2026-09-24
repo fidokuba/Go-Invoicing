@@ -6,6 +6,7 @@ import {
   previewLineTotal,
   toCreateInvoiceLine,
   validateLineDraft,
+  withoutVat,
   type LineDraft,
 } from "./invoiceLineDraft";
 
@@ -80,5 +81,20 @@ describe("toCreateInvoiceLine", () => {
   it("omits productId when none was selected", () => {
     const line = makeLine({ productId: "" });
     expect(toCreateInvoiceLine(line, "GBP").productId).toBeUndefined();
+  });
+});
+
+describe("withoutVat", () => {
+  it("forces every line to a 0% VAT rate, leaving everything else alone", () => {
+    const line = makeLine({ vatRate: "20" });
+    const [stripped] = withoutVat([line]);
+    expect(stripped).toEqual({ ...line, vatRate: "0" });
+    expect(previewInvoiceTotals([stripped], "GBP").vatTotal).toBe(0);
+    expect(toCreateInvoiceLine(stripped, "GBP").vatRate).toBe(0);
+  });
+
+  it("ignores an invalid VAT rate left in a hidden field", () => {
+    const [stripped] = withoutVat([makeLine({ vatRate: "-5" })]);
+    expect(validateLineDraft(stripped, "GBP").vatRate).toBeUndefined();
   });
 });

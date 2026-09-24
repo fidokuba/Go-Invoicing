@@ -4,7 +4,7 @@ import { Plus, Trash2 } from "lucide-react";
 import { useCreateInvoice } from "@/api/queries/invoices";
 import { useCustomers } from "@/api/queries/customers";
 import { useProducts } from "@/api/queries/products";
-import { useInvoiceSettings } from "@/api/queries/organisation";
+import { useInvoiceSettings, useOrganisation } from "@/api/queries/organisation";
 import { friendlyMessage } from "@/api/errors";
 import { formatMoney, minorToInputString } from "@/lib/money";
 import { todayDateOnly, addDaysDateOnly } from "@/lib/date";
@@ -17,6 +17,7 @@ import {
   previewLineTotal,
   previewInvoiceTotals,
   toCreateInvoiceLine,
+  withoutVat,
 } from "@/lib/invoiceLineDraft";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
@@ -28,11 +29,15 @@ import { PageLoading } from "@/components/ui/spinner";
 export function InvoiceNewPage() {
   const navigate = useNavigate();
   const settings = useInvoiceSettings();
+  const organisation = useOrganisation();
   const customers = useCustomers({ limit: 200, sort: "name", order: "asc", status: "active" });
   const products = useProducts({ limit: 200, sort: "name", order: "asc", isActive: true });
   const createInvoice = useCreateInvoice();
 
   const currency = settings.data?.currency ?? "GBP";
+  // A business that isn't VAT registered must not charge VAT: the VAT
+  // field and totals are hidden and every line is sent with a 0% rate.
+  const vatRegistered = organisation.data?.vatRegistered ?? false;
 
   const [customerId, setCustomerId] = useState("");
   const [issueDate, setIssueDate] = useState(todayDateOnly());
@@ -45,7 +50,7 @@ export function InvoiceNewPage() {
   const [dateError, setDateError] = useState<string | null>(null);
   const [lineErrors, setLineErrors] = useState<Record<string, LineDraftErrors>>({});
 
-  if (settings.isLoading || customers.isLoading || products.isLoading) {
+  if (settings.isLoading || organisation.isLoading || customers.isLoading || products.isLoading) {
     return <PageLoading label="Loading invoice editor…" />;
   }
 
@@ -70,6 +75,8 @@ export function InvoiceNewPage() {
     setLines((prev) => (prev.length > 1 ? prev.filter((line) => line.key !== key) : prev));
   }
 
+  const effectiveLines = vatRegistered ? lines : withoutVat(lines);
+
   function validate(): boolean {
     let ok = true;
     setCustomerError(null);
@@ -85,7 +92,7 @@ export function InvoiceNewPage() {
     }
 
     const nextLineErrors: Record<string, LineDraftErrors> = {};
-    for (const line of lines) {
+    for (const line of effectiveLines) {
       const errors = validateLineDraft(line, currency);
       if (hasLineDraftErrors(errors)) {
         nextLineErrors[line.key] = errors;
@@ -108,13 +115,13 @@ export function InvoiceNewPage() {
         issueDate,
         dueDate,
         notes: notes || undefined,
-        lines: lines.map((line) => toCreateInvoiceLine(line, currency)),
+        lines: effectiveLines.map((line) => toCreateInvoiceLine(line, currency)),
       },
       { onSuccess: (invoice) => navigate(`/invoices/${invoice.id}`) },
     );
   }
 
-  const totals = previewInvoiceTotals(lines, currency);
+  const totals = previewInvoiceTotals(effectiveLines, currency);
 
   return (
     <div className="max-w-4xl">
@@ -168,7 +175,7 @@ export function InvoiceNewPage() {
         <Card>
           <CardContent>
             <div className="space-y-4">
-              {lines.map((line) => {
+              {effectiveLines.map((line) => {
                 const errors = lineErrors[line.key];
                 const preview = previewLineTotal(line, currency);
                 return (
@@ -221,18 +228,20 @@ export function InvoiceNewPage() {
                         />
                         <FieldError>{errors?.unitPrice}</FieldError>
                       </div>
-                      <div className="sm:col-span-2">
-                        <Label htmlFor={`${line.key}-vatRate`}>VAT %</Label>
-                        <Input
-                          id={`${line.key}-vatRate`}
-                          inputMode="decimal"
-                          value={line.vatRate}
-                          aria-invalid={Boolean(errors?.vatRate)}
-                          onChange={(e) => updateLine(line.key, { vatRate: e.target.value })}
-                        />
-                        <FieldError>{errors?.vatRate}</FieldError>
-                      </div>
-                      <div className="flex items-end justify-between sm:col-span-3">
+                      {vatRegistered && (
+                        <div className="sm:col-span-2">
+                          <Label htmlFor={`${line.key}-vatRate`}>VAT %</Label>
+                          <Input
+                            id={`${line.key}-vatRate`}
+                            inputMode="decimal"
+                            value={line.vatRate}
+                            aria-invalid={Boolean(errors?.vatRate)}
+                            onChange={(e) => updateLine(line.key, { vatRate: e.target.value })}
+                          />
+                          <FieldError>{errors?.vatRate}</FieldError>
+                        </div>
+                      )}
+                      <div className={`flex items-end justify-between ${vatRegistered ? "sm:col-span-3" : "sm:col-span-5"}`}>
                         <div>
                           <p className="text-xs text-slate-500">Line total</p>
                           <p className="text-sm font-medium text-slate-900">
@@ -274,15 +283,21 @@ export function InvoiceNewPage() {
           <Card>
             <CardContent>
               <dl className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <dt className="text-slate-500">Subtotal</dt>
-                  <dd className="text-slate-900">{formatMoney(totals.subtotal, currency)}</dd>
-                </div>
-                <div className="flex justify-between">
-                  <dt className="text-slate-500">VAT</dt>
-                  <dd className="text-slate-900">{formatMoney(totals.vatTotal, currency)}</dd>
-                </div>
-                <div className="flex justify-between border-t border-slate-200 pt-2 text-base font-semibold">
+                {vatRegistered && (
+                  <>
+                    <div className="flex justify-between">
+                      <dt className="text-slate-500">Subtotal</dt>
+                      <dd className="text-slate-900">{formatMoney(totals.subtotal, currency)}</dd>
+                    </div>
+                    <div className="flex justify-between">
+                      <dt className="text-slate-500">VAT</dt>
+                      <dd className="text-slate-900">{formatMoney(totals.vatTotal, currency)}</dd>
+                    </div>
+                  </>
+                )}
+                <div
+                  className={`flex justify-between text-base font-semibold ${vatRegistered ? "border-t border-slate-200 pt-2" : ""}`}
+                >
                   <dt>Total</dt>
                   <dd>{formatMoney(totals.total, currency)}</dd>
                 </div>

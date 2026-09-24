@@ -162,7 +162,7 @@ function InvoiceDetailContent({
                   <Th>Description</Th>
                   <Th className="text-right">Qty</Th>
                   <Th className="text-right">Unit price</Th>
-                  <Th className="text-right">VAT</Th>
+                  {invoice.vatRegistered && <Th className="text-right">VAT</Th>}
                   <Th className="text-right">Total</Th>
                 </Tr>
               </THead>
@@ -172,9 +172,11 @@ function InvoiceDetailContent({
                     <Td>{line.description}</Td>
                     <Td className="text-right">{line.quantity}</Td>
                     <Td className="text-right">{formatMoney(line.unitPrice, invoice.currency)}</Td>
-                    <Td className="text-right">
-                      {line.vatRate}% ({formatMoney(line.vatAmount, invoice.currency)})
-                    </Td>
+                    {invoice.vatRegistered && (
+                      <Td className="text-right">
+                        {line.vatRate}% ({formatMoney(line.vatAmount, invoice.currency)})
+                      </Td>
+                    )}
                     <Td className="text-right">{formatMoney(line.total, invoice.currency)}</Td>
                   </Tr>
                 ))}
@@ -182,14 +184,18 @@ function InvoiceDetailContent({
             </TableContainer>
             <div className="flex justify-end border-t border-slate-200 px-5 py-4">
               <dl className="w-56 space-y-1.5 text-sm">
-                <div className="flex justify-between">
-                  <dt className="text-slate-500">Subtotal</dt>
-                  <dd>{formatMoney(invoice.subtotal, invoice.currency)}</dd>
-                </div>
-                <div className="flex justify-between">
-                  <dt className="text-slate-500">VAT</dt>
-                  <dd>{formatMoney(invoice.vatTotal, invoice.currency)}</dd>
-                </div>
+                {invoice.vatRegistered && (
+                  <>
+                    <div className="flex justify-between">
+                      <dt className="text-slate-500">Subtotal</dt>
+                      <dd>{formatMoney(invoice.subtotal, invoice.currency)}</dd>
+                    </div>
+                    <div className="flex justify-between">
+                      <dt className="text-slate-500">VAT</dt>
+                      <dd>{formatMoney(invoice.vatTotal, invoice.currency)}</dd>
+                    </div>
+                  </>
+                )}
                 <div className="flex justify-between text-base font-semibold">
                   <dt>Total</dt>
                   <dd>{formatMoney(invoice.total, invoice.currency)}</dd>

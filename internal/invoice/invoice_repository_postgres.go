@@ -81,10 +81,11 @@ func (r *PostgresInvoiceRepository) Create(
 			vat_total,
 			total,
 			status,
-			notes
+			notes,
+			vat_registered
 		)
 		VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
 		)
 		RETURNING created_at, updated_at
 	`
@@ -103,6 +104,7 @@ func (r *PostgresInvoiceRepository) Create(
 		invoice.Total,
 		invoice.Status,
 		invoice.Notes,
+		invoice.VATRegistered,
 	).Scan(&invoice.CreatedAt, &invoice.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("create invoice: %w", err)
@@ -181,6 +183,7 @@ func (r *PostgresInvoiceRepository) GetByID(
 			status,
 			sent_at,
 			notes,
+			vat_registered,
 			seller_name, seller_email, seller_phone, seller_website,
 			seller_address, seller_city, seller_state, seller_postal_code,
 			seller_country, seller_tax_id,
@@ -217,6 +220,7 @@ func (r *PostgresInvoiceRepository) GetByID(
 		&inv.Status,
 		&inv.SentAt,
 		&inv.Notes,
+		&inv.VATRegistered,
 		&inv.SellerName, &inv.SellerEmail, &inv.SellerPhone, &inv.SellerWebsite,
 		&inv.SellerAddress, &inv.SellerCity, &inv.SellerState, &inv.SellerPostalCode,
 		&inv.SellerCountry, &inv.SellerTaxID,
@@ -267,6 +271,7 @@ func (r *PostgresInvoiceRepository) GetForUpdate(
 			status,
 			sent_at,
 			notes,
+			vat_registered,
 			seller_name, seller_email, seller_phone, seller_website,
 			seller_address, seller_city, seller_state, seller_postal_code,
 			seller_country, seller_tax_id,
@@ -304,6 +309,7 @@ func (r *PostgresInvoiceRepository) GetForUpdate(
 		&inv.Status,
 		&inv.SentAt,
 		&inv.Notes,
+		&inv.VATRegistered,
 		&inv.SellerName, &inv.SellerEmail, &inv.SellerPhone, &inv.SellerWebsite,
 		&inv.SellerAddress, &inv.SellerCity, &inv.SellerState, &inv.SellerPostalCode,
 		&inv.SellerCountry, &inv.SellerTaxID,
@@ -615,7 +621,7 @@ func (r *PostgresInvoiceRepository) List(
 		`SELECT
 			id, organisation_id, customer_id, invoice_number, issue_date,
 			due_date, subtotal, vat_total, total, status, sent_at, notes,
-			currency, created_at, updated_at
+			vat_registered, currency, created_at, updated_at
 		FROM invoices
 		%s
 		ORDER BY %s %s, id ASC
@@ -647,6 +653,7 @@ func (r *PostgresInvoiceRepository) List(
 			&inv.Status,
 			&inv.SentAt,
 			&inv.Notes,
+			&inv.VATRegistered,
 			&inv.Currency,
 			&inv.CreatedAt,
 			&inv.UpdatedAt,

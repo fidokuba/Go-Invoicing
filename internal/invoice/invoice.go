@@ -83,6 +83,13 @@ type Invoice struct {
 	SentAt         *time.Time
 	Notes          *string
 
+	// VATRegistered is whether the organisation was VAT registered when
+	// this invoice was created — captured once by InvoiceService.Create
+	// and never rewritten. It, not the organisation's current status,
+	// decides whether VAT figures and the seller's VAT number are shown
+	// for this invoice, so an issued invoice never changes appearance.
+	VATRegistered bool
+
 	SellerName       *string
 	SellerEmail      *string
 	SellerPhone      *string

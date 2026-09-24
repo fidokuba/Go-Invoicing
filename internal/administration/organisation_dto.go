@@ -20,27 +20,32 @@ type OrganisationResponse struct {
 	PostalCode *string `json:"postalCode,omitempty"`
 	Country    *string `json:"country,omitempty"`
 	TaxID      *string `json:"taxId,omitempty"`
-	CreatedAt  string  `json:"createdAt"`
-	UpdatedAt  string  `json:"updatedAt"`
+	// VATRegistered is always present. TaxID is still returned while it's
+	// false (so the settings form can restore it when re-ticked); clients
+	// are expected not to display it in that state.
+	VATRegistered bool   `json:"vatRegistered"`
+	CreatedAt     string `json:"createdAt"`
+	UpdatedAt     string `json:"updatedAt"`
 }
 
 // toOrganisationResponse maps the internal domain model onto the API's
 // response shape.
 func toOrganisationResponse(organisation *Organisation) OrganisationResponse {
 	return OrganisationResponse{
-		ID:         organisation.ID.String(),
-		Name:       organisation.Name,
-		Email:      organisation.Email,
-		Phone:      organisation.Phone,
-		Website:    organisation.Website,
-		Address:    organisation.Address,
-		City:       organisation.City,
-		State:      organisation.State,
-		PostalCode: organisation.PostalCode,
-		Country:    organisation.Country,
-		TaxID:      organisation.TaxID,
-		CreatedAt:  organisation.CreatedAt.UTC().Format(time.RFC3339),
-		UpdatedAt:  organisation.UpdatedAt.UTC().Format(time.RFC3339),
+		ID:            organisation.ID.String(),
+		Name:          organisation.Name,
+		Email:         organisation.Email,
+		Phone:         organisation.Phone,
+		Website:       organisation.Website,
+		Address:       organisation.Address,
+		City:          organisation.City,
+		State:         organisation.State,
+		PostalCode:    organisation.PostalCode,
+		Country:       organisation.Country,
+		TaxID:         organisation.TaxID,
+		VATRegistered: organisation.VATRegistered,
+		CreatedAt:     organisation.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:     organisation.UpdatedAt.UTC().Format(time.RFC3339),
 	}
 }
 
@@ -67,4 +72,9 @@ type UpdateOrganisationRequest struct {
 	PostalCode *string `json:"postalCode"`
 	Country    *string `json:"country"`
 	TaxID      *string `json:"taxId"`
+
+	// VATRegistered, like every other field, is left unchanged when
+	// omitted. Setting it to true requires the organisation to end up
+	// with a non-blank TaxID (its VAT registration number).
+	VATRegistered *bool `json:"vatRegistered"`
 }

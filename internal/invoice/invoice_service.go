@@ -38,6 +38,7 @@ var (
 	ErrInvoiceLineQuantityInvalid     = errors.New("invoice line quantity must be greater than zero")
 	ErrInvoiceLineUnitPriceNegative   = errors.New("invoice line unit price cannot be negative")
 	ErrInvoiceLineVATRateNegative     = errors.New("invoice line VAT rate cannot be negative")
+	ErrInvoiceLineVATNotPermitted     = errors.New("invoice line cannot charge VAT because the organisation is not VAT registered")
 	ErrInvoiceLineProductIDInvalid    = errors.New("invoice line product ID is not a valid UUID")
 	ErrInvoiceLineProductNotFound     = errors.New("invoice line product not found")
 
@@ -221,6 +222,23 @@ func (s *InvoiceService) Create(
 		return nil, nil, "", fmt.Errorf("look up invoice customer: %w", err)
 	}
 
+	// The organisation's VAT status is captured onto the invoice here and
+	// never changes afterwards. A business that isn't VAT registered must
+	// not charge VAT, so any non-zero rate is rejected rather than
+	// silently zeroed.
+	organisation, err := s.organisationRepository.GetByID(ctx, organisationID)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("look up invoice organisation: %w", err)
+	}
+
+	if !organisation.VATRegistered {
+		for _, v := range validated {
+			if v.vatRate != 0 {
+				return nil, nil, "", ErrInvoiceLineVATNotPermitted
+			}
+		}
+	}
+
 	for _, v := range validated {
 		if v.productID == nil {
 			continue
@@ -305,6 +323,7 @@ func (s *InvoiceService) Create(
 		Total:          total,
 		Status:         InvoiceStatusDraft,
 		Notes:          nilIfEmpty(request.Notes),
+		VATRegistered:  organisation.VATRegistered,
 	}
 
 	txRepository := s.repository.WithTx(tx)
@@ -675,7 +694,7 @@ func (s *InvoiceService) buildPartySnapshot(
 		SellerState:      organisation.State,
 		SellerPostalCode: organisation.PostalCode,
 		SellerCountry:    organisation.Country,
-		SellerTaxID:      organisation.TaxID,
+		SellerTaxID:      sellerVATNumber(organisation),
 
 		CustomerName:        cust.Name,
 		CustomerCompanyName: cust.CompanyName,
@@ -1037,4 +1056,16 @@ func nilIfEmpty(value string) *string {
 	}
 
 	return &value
+}
+
+// sellerVATNumber returns the organisation's TaxID for the invoice
+// snapshot, or nil when the organisation isn't VAT registered — a stored
+// TaxID is kept on the organisation for when it re-registers, but must
+// never appear on a non-registered organisation's invoices.
+func sellerVATNumber(organisation *admin.Organisation) *string {
+	if !organisation.VATRegistered {
+		return nil
+	}
+
+	return organisation.TaxID
 }

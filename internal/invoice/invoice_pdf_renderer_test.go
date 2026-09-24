@@ -17,9 +17,10 @@ func minimalPDFData() InvoicePDFData {
 		Lines: []InvoicePDFLine{
 			{Description: "Consulting", Quantity: "1", UnitPrice: "£100.00", VATRate: "20%", VATAmount: "£20.00", Total: "£120.00"},
 		},
-		Subtotal: "£100.00",
-		VATTotal: "£20.00",
-		Total:    "£120.00",
+		VATRegistered: true,
+		Subtotal:      "£100.00",
+		VATTotal:      "£20.00",
+		Total:         "£120.00",
 	}
 }
 
@@ -47,6 +48,7 @@ func fullPDFData() InvoicePDFData {
 			{Description: "Consulting services", Quantity: "1", UnitPrice: "£1000.00", VATRate: "20%", VATAmount: "£200.00", Total: "£1200.00"},
 			{Description: "Support", Quantity: "2.5", UnitPrice: "£100.00", VATRate: "0%", VATAmount: "£0.00", Total: "£250.00"},
 		},
+		VATRegistered:      true,
 		Subtotal:           "£1250.00",
 		VATTotal:           "£200.00",
 		Total:              "£1450.00",
@@ -126,6 +128,64 @@ func TestInvoicePDFRenderer_ContentRepresented(t *testing.T) {
 	}
 
 	for _, want := range mustContain {
+		if !strings.Contains(text, want) {
+			t.Errorf("expected PDF text to contain %q, got:\n%s", want, text)
+		}
+	}
+}
+
+// TestInvoicePDFRenderer_NotVATRegisteredShowsNoVAT: a seller that isn't
+// VAT registered must not show VAT anywhere — no VAT columns, no
+// Subtotal/VAT totals rows and no seller VAT number (even if one is
+// somehow present on the data) — while the customer's Tax ID and every
+// non-VAT value still appear.
+func TestInvoicePDFRenderer_NotVATRegisteredShowsNoVAT(t *testing.T) {
+	renderer := NewInvoicePDFRenderer()
+	data := fullPDFData()
+	data.VATRegistered = false
+	data.Lines = []InvoicePDFLine{
+		{Description: "Consulting services", Quantity: "1", UnitPrice: "£1000.00", VATRate: "0%", VATAmount: "£0.00", Total: "£1000.00"},
+	}
+	data.Subtotal = "£1000.00"
+	data.VATTotal = "£0.00"
+	data.Total = "£1000.00"
+	data.ShowPaymentSummary = false
+
+	pdfBytes, err := renderer.Render(data)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+
+	text := extractPDFText(t, pdfBytes)
+
+	for _, unwanted := range []string{"VAT", "Subtotal", data.Seller.TaxID, "£0.00"} {
+		if strings.Contains(text, unwanted) {
+			t.Errorf("expected PDF text not to contain %q, got:\n%s", unwanted, text)
+		}
+	}
+
+	for _, want := range []string{"Description", "Qty", "Unit Price", "Consulting services", "£1000.00", "Total", data.Customer.TaxID} {
+		if !strings.Contains(text, want) {
+			t.Errorf("expected PDF text to contain %q, got:\n%s", want, text)
+		}
+	}
+}
+
+// TestInvoicePDFRenderer_VATRegisteredShowsVAT is the counterpart: a VAT
+// registered seller's PDF shows the VAT columns, the VAT total and its
+// VAT number.
+func TestInvoicePDFRenderer_VATRegisteredShowsVAT(t *testing.T) {
+	renderer := NewInvoicePDFRenderer()
+	data := fullPDFData()
+
+	pdfBytes, err := renderer.Render(data)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+
+	text := extractPDFText(t, pdfBytes)
+
+	for _, want := range []string{"VAT", "VAT Amt", "Subtotal", "VAT Registration Number: " + data.Seller.TaxID, data.VATTotal} {
 		if !strings.Contains(text, want) {
 			t.Errorf("expected PDF text to contain %q, got:\n%s", want, text)
 		}

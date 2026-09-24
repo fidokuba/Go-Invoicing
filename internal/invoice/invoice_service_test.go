@@ -721,7 +721,9 @@ func newTestFixture() *testFixture {
 	settingsRepository.add(organisationID)
 
 	organisations := newFakeOrganisationRepository()
-	organisations.organisations[organisationID] = admin.Organisation{ID: organisationID, Name: "Test Organisation"}
+	// VAT registered, since most tests exercise VAT calculation; tests of
+	// the non-registered rules clear it explicitly.
+	organisations.organisations[organisationID] = admin.Organisation{ID: organisationID, Name: "Test Organisation", VATRegistered: true}
 
 	addresses := newFakeAddressRepository()
 	// No billing address by default — Send must succeed without one
