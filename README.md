@@ -350,6 +350,10 @@ What this project provides, and what it deliberately leaves to an operator or a 
 - No automated backups — `pg_dump`/restore is a documented manual procedure (see "Self-hosted Docker Compose" above), not a scheduled job.
 - No horizontal-scaling support — see the "Horizontal scaling boundary" note above; the application performs its own startup migrations, which is only safe with exactly one instance.
 
+### Pagination at scale (Milestone 13 Part 6)
+
+List endpoints keep `limit`/`offset` pagination — measured, not assumed. With one tenant holding 50,000 invoices (about three years at 45 a day), the default-sorted invoice page took 0.5 ms at offset 0, 9 ms at offset 10,000 and 40 ms on the very last page (offset 49,950), plus about 20 ms for the `COUNT(*)` total and under 10 ms for the page's payment totals. Cost grows linearly with the offset (about 0.8 µs per skipped row), so a single tenant would need roughly 250,000 invoices before a last-page request neared a quarter of a second; that, or real users paging that deep, is the point to revisit keyset/cursor pagination. Customers (5,000) and products (2,000) per tenant stay under 40 ms even on their last page. Sorting invoices by a column with no index (e.g. `total`) sorts the tenant's whole invoice set — about 150 ms at 50,000 — which cursor pagination wouldn't change; an index for that sort is the fix if it's ever used heavily.
+
 ## Production readiness
 
 Deliberately **not** a single "production ready: yes/no" claim — that question means different things depending on which of the following is being asked. Each is classified independently, and a higher letter is not "more done" than a lower one; they're different products.
