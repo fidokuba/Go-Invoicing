@@ -3,6 +3,7 @@ package app
 import (
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"time"
 
 	"go-invoicing/api"
@@ -38,6 +39,19 @@ type App struct {
 	// tests in this package may relax it (every httptest request shares
 	// one client address).
 	rateLimits rateLimits
+
+	// clientAddressKey keys the login/register limiters: the direct peer
+	// by default, or the real client behind trusted proxies once
+	// TrustProxies is called (Milestone 13 Part 5).
+	clientAddressKey func(*http.Request) string
+}
+
+// TrustProxies configures the reverse proxies (config.TrustedProxies)
+// whose X-Forwarded-For the per-client-address rate limiters may use —
+// see httpx.ClientAddressKeyFunc for exactly how far that trust extends.
+// Call before Handler.
+func (a *App) TrustProxies(prefixes []netip.Prefix) {
+	a.clientAddressKey = httpx.ClientAddressKeyFunc(prefixes)
 }
 
 // rateLimitPolicy is one in-process token bucket per key: a sustained
@@ -101,7 +115,7 @@ func (p rateLimitPolicy) newLimiter() *ratelimit.Limiter {
 // method used elsewhere in this package's dependency graph is a nil-safe
 // no-op, so no other conditional is needed.
 func New(db *pgxpool.Pool, logger *slog.Logger, m *metrics.Metrics) *App {
-	return &App{db: db, logger: logger, metrics: m, rateLimits: defaultRateLimits}
+	return &App{db: db, logger: logger, metrics: m, rateLimits: defaultRateLimits, clientAddressKey: httpx.ClientAddressKey}
 }
 
 // RoutePattern is one application route's method and net/http.ServeMux
@@ -176,11 +190,11 @@ func (a *App) Handler() http.Handler {
 
 	// Milestone 13 Part 4: login and registration are the only public
 	// mutating routes, so they're limited per client address (see
-	// defaultRateLimits and httpx.ClientAddressKey) — before the body is
+	// defaultRateLimits and a.clientAddressKey) — before the body is
 	// even decoded, and identically for right and wrong credentials, so a
 	// 429 reveals nothing about any account.
-	loginLimit := httpx.RateLimit(metrics.RateLimiterLogin, a.rateLimits.login.newLimiter(), httpx.ClientAddressKey, a.metrics)
-	registerLimit := httpx.RateLimit(metrics.RateLimiterRegister, a.rateLimits.register.newLimiter(), httpx.ClientAddressKey, a.metrics)
+	loginLimit := httpx.RateLimit(metrics.RateLimiterLogin, a.rateLimits.login.newLimiter(), a.clientAddressKey, a.metrics)
+	registerLimit := httpx.RateLimit(metrics.RateLimiterRegister, a.rateLimits.register.newLimiter(), a.clientAddressKey, a.metrics)
 
 	register("POST", apiV1Prefix+"/auth/login", loginLimit(authHandler.Login))
 	// POST /auth/logout (Milestone 8 Part 3): revokes only the current

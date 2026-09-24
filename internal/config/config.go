@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -68,6 +69,20 @@ type Config struct {
 	// /metrics unreachable (no network-level restriction available at
 	// all) can still set METRICS_ENABLED=false.
 	MetricsEnabled bool
+
+	// MigrateOnStartup (Milestone 13 Part 5, MIGRATE_ON_STARTUP, default
+	// true) keeps the convenient development/single-instance behaviour of
+	// applying pending migrations as the server starts. Multi-instance
+	// deployments set it false and run `go-invoicing migrate` once, as a
+	// release step, before starting (or replacing) instances; the server
+	// then refuses to start against a schema that is behind or dirty.
+	MigrateOnStartup bool
+
+	// TrustedProxies (Milestone 13 Part 5, TRUSTED_PROXIES) lists the
+	// comma-separated addresses/CIDRs of reverse proxies whose
+	// X-Forwarded-For the rate limiter may use to find the real client
+	// address. Empty (the default) trusts no forwarding header at all.
+	TrustedProxies []netip.Prefix
 }
 
 func Load() (Config, error) {
@@ -129,7 +144,53 @@ func Load() (Config, error) {
 	}
 	cfg.MetricsEnabled = metricsEnabled
 
+	migrateOnStartup, err := getBoolEnv("MIGRATE_ON_STARTUP", true)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.MigrateOnStartup = migrateOnStartup
+
+	trustedProxies, err := parseTrustedProxies(os.Getenv("TRUSTED_PROXIES"))
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.TrustedProxies = trustedProxies
+
 	return cfg, nil
+}
+
+// parseTrustedProxies parses a comma-separated list of IP addresses and
+// CIDR prefixes ("10.0.0.5, 172.16.0.0/12"); a bare address is its own
+// single-address prefix. Any invalid entry is a configuration error
+// rather than being skipped — silently trusting fewer (or different)
+// proxies than intended is exactly the kind of mistake this must surface.
+func parseTrustedProxies(value string) ([]netip.Prefix, error) {
+	var prefixes []netip.Prefix
+
+	for _, entry := range strings.Split(value, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+
+		if strings.Contains(entry, "/") {
+			prefix, err := netip.ParsePrefix(entry)
+			if err != nil {
+				return nil, fmt.Errorf("invalid TRUSTED_PROXIES entry %q: %w", entry, err)
+			}
+			prefixes = append(prefixes, prefix.Masked())
+			continue
+		}
+
+		addr, err := netip.ParseAddr(entry)
+		if err != nil {
+			return nil, fmt.Errorf("invalid TRUSTED_PROXIES entry %q: %w", entry, err)
+		}
+		addr = addr.Unmap()
+		prefixes = append(prefixes, netip.PrefixFrom(addr, addr.BitLen()))
+	}
+
+	return prefixes, nil
 }
 
 // resolveDatabaseURL implements Milestone 11 Part 2's production-safety

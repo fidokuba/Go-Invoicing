@@ -426,3 +426,54 @@ func TestLoad_InvalidWorkerBatchSize(t *testing.T) {
 		})
 	}
 }
+
+// Milestone 13 Part 5.
+func TestLoad_MigrateOnStartup(t *testing.T) {
+	t.Setenv("APP_ENV", "development")
+
+	t.Setenv("MIGRATE_ON_STARTUP", "")
+	if cfg, err := Load(); err != nil || !cfg.MigrateOnStartup {
+		t.Errorf("expected MIGRATE_ON_STARTUP to default to true, got %v (err %v)", cfg.MigrateOnStartup, err)
+	}
+
+	t.Setenv("MIGRATE_ON_STARTUP", "false")
+	if cfg, err := Load(); err != nil || cfg.MigrateOnStartup {
+		t.Errorf("expected MIGRATE_ON_STARTUP=false to disable it, got %v (err %v)", cfg.MigrateOnStartup, err)
+	}
+
+	t.Setenv("MIGRATE_ON_STARTUP", "sometimes")
+	if _, err := Load(); err == nil {
+		t.Error("expected an invalid MIGRATE_ON_STARTUP to be a configuration error")
+	}
+}
+
+func TestLoad_TrustedProxies(t *testing.T) {
+	t.Setenv("APP_ENV", "development")
+
+	t.Setenv("TRUSTED_PROXIES", "")
+	if cfg, err := Load(); err != nil || len(cfg.TrustedProxies) != 0 {
+		t.Errorf("expected no trusted proxies by default, got %v (err %v)", cfg.TrustedProxies, err)
+	}
+
+	t.Setenv("TRUSTED_PROXIES", " 10.0.0.0/8, 192.0.2.10 ,::ffff:198.51.100.7, 2001:db8::/32, 172.16.5.9/12 ")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	want := []string{"10.0.0.0/8", "192.0.2.10/32", "198.51.100.7/32", "2001:db8::/32", "172.16.0.0/12"}
+	if len(cfg.TrustedProxies) != len(want) {
+		t.Fatalf("expected %d prefixes, got %v", len(want), cfg.TrustedProxies)
+	}
+	for i, prefix := range cfg.TrustedProxies {
+		if prefix.String() != want[i] {
+			t.Errorf("entry %d: got %s, want %s", i, prefix, want[i])
+		}
+	}
+
+	for _, invalid := range []string{"10.0.0.0/33", "not-an-ip", "10.0.0.1, bogus"} {
+		t.Setenv("TRUSTED_PROXIES", invalid)
+		if _, err := Load(); err == nil {
+			t.Errorf("expected TRUSTED_PROXIES=%q to be a configuration error", invalid)
+		}
+	}
+}

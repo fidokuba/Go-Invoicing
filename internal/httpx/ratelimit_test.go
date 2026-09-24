@@ -3,6 +3,7 @@ package httpx
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -84,5 +85,49 @@ func TestClientAddressKey(t *testing.T) {
 	base := key("203.0.113.7:1")
 	if key("203.0.113.7:1", "X-Forwarded-For", "198.51.100.1", "X-Real-IP", "198.51.100.2") != base {
 		t.Error("expected X-Forwarded-For/X-Real-IP to be ignored")
+	}
+}
+
+func TestClientAddressKeyFunc_TrustedProxies(t *testing.T) {
+	keyOf := ClientAddressKeyFunc([]netip.Prefix{
+		netip.MustParsePrefix("10.0.0.0/8"),
+		netip.MustParsePrefix("192.0.2.10/32"),
+	})
+
+	request := func(remoteAddr string, forwardedFor ...string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/", nil)
+		r.RemoteAddr = remoteAddr
+		for _, value := range forwardedFor {
+			r.Header.Add("X-Forwarded-For", value)
+		}
+		return r
+	}
+
+	tests := []struct {
+		name string
+		r    *http.Request
+		want string
+	}{
+		{"untrusted peer: header ignored", request("203.0.113.7:1", "198.51.100.1"), "addr:203.0.113.7"},
+		{"trusted proxy: client is the appended entry", request("10.1.2.3:1", "198.51.100.1"), "addr:198.51.100.1"},
+		{"client-supplied entries left of the proxy's are ignored", request("10.1.2.3:1", "6.6.6.6, 198.51.100.1"), "addr:198.51.100.1"},
+		{"chain of trusted proxies is skipped", request("10.1.2.3:1", "198.51.100.1, 192.0.2.10, 10.9.9.9"), "addr:198.51.100.1"},
+		{"repeated header lines are one list", request("10.1.2.3:1", "6.6.6.6", "198.51.100.1"), "addr:198.51.100.1"},
+		{"missing header: the proxy itself", request("10.1.2.3:1"), "addr:10.1.2.3"},
+		{"malformed entry: the proxy itself", request("10.1.2.3:1", "not-an-ip"), "addr:10.1.2.3"},
+		{"every entry trusted: the proxy itself", request("10.1.2.3:1", "10.5.5.5"), "addr:10.1.2.3"},
+		{"forwarded IPv6 client grouped by /64", request("10.1.2.3:1", "2001:db8:1:2::99"), "addr:2001:db8:1:2::/64"},
+	}
+
+	for _, tt := range tests {
+		if got := keyOf(tt.r); got != tt.want {
+			t.Errorf("%s: got %q, want %q", tt.name, got, tt.want)
+		}
+	}
+
+	// No trusted proxies: exactly the peer-only behaviour.
+	r := request("10.1.2.3:1", "198.51.100.1")
+	if got := ClientAddressKeyFunc(nil)(r); got != ClientAddressKey(r) || got != "addr:10.1.2.3" {
+		t.Errorf("expected no trusted proxies to ignore X-Forwarded-For, got %q", got)
 	}
 }

@@ -32,8 +32,12 @@ All configuration is environment variables (see `.env.example` for a documented 
 | `WORKER_INTERVAL` | `1h` | Must be a positive duration. |
 | `WORKER_BATCH_SIZE` | `500` | Must be a positive integer. |
 | `METRICS_ENABLED` | `true` | See `/metrics` below. |
+| `MIGRATE_ON_STARTUP` | `true` | Apply pending migrations as the server starts. Set `false` when running several instances and apply them with `go-invoicing migrate` instead — see "Running several instances" below. When `false`, the server refuses to start against a schema that is behind or dirty. |
+| `TRUSTED_PROXIES` | `` (none) | Comma-separated addresses/CIDRs of your reverse proxies (e.g. `10.0.0.0/8,192.0.2.10`). Only then is `X-Forwarded-For` used — and only its proxy-appended part — to find the client address for rate limiting. An invalid entry fails startup. |
 
 An invalid value for any of the above fails startup immediately with a descriptive error — never a silent fallback to the default.
+
+**Migrations only**: `go-invoicing migrate` (or `go run ./cmd/api migrate`, or `docker run … <image> migrate`) applies every pending migration and exits — 0 on success, including when there was nothing to do. It needs the same `DATABASE_URL`/`APP_ENV` as the server and never starts the server or worker.
 
 **Build metadata**: `go run ./cmd/api --version` (or a built binary's own `--version`) prints version/commit/build-time without touching configuration, the database, or starting anything. An ordinary build not produced by a release pipeline reports `dev`/`unknown`/`unknown` — real values are injected at build time via linker flags (`internal/buildinfo`), not read from Git at runtime.
 
@@ -274,6 +278,16 @@ Internet → managed TLS / load balancer / PaaS edge → Go Invoicing container 
 - **Metrics**: `/metrics`, if enabled at all, should only be reachable from private monitoring infrastructure — never through the same public ingress as the API. No Prometheus deployment is included here.
 - **Logs**: structured JSON to stdout (`LOG_FORMAT=json`), captured by whatever the platform's own logging pipeline is — no file logs, no log shipper added by this application.
 
+### Running several instances (Milestone 13 Part 5)
+
+Several containers can run behind one load balancer against the same PostgreSQL. What's shared, and what isn't:
+
+- **Correct across instances, unchanged** — all of this state lives in PostgreSQL: sessions (any instance accepts any token; logout/expiry apply everywhere), payment idempotency (unique index plus the invoice row lock), invoice/payment locking and transactions, and the organisation/settings optimistic-concurrency versions. Invoice PDFs are rendered per request from the database; nothing is cached in-process.
+- **Migrations**: run them once per release, **before** starting or replacing instances — `go-invoicing migrate` as a release/pre-deploy step — and set `MIGRATE_ON_STARTUP=false` on the instances. (Leaving it `true` is still *safe*: golang-migrate holds a PostgreSQL advisory lock, so simultaneous startups apply each migration exactly once while the others wait — but then every instance's readiness depends on the migration, and a failed migration crash-loops all of them.) Migrations must stay backward-compatible for one release (add, don't rename or drop in the same release), because old instances keep serving against the new schema during a rolling deploy; the startup check accepts a schema that is *ahead* of the binary for exactly that reason.
+- **Session-cleanup worker**: runs in every instance, and that's fine. Its bounded `DELETE … WHERE id IN (SELECT … LIMIT n)` is idempotent — two workers racing at worst delete the same expired rows once between them, and one simply deletes fewer. That's duplicated effort, not a correctness problem, so there's no leader election. To avoid the duplicate effort, set `WORKER_ENABLED=false` on all but one instance.
+- **Rate limits are per process** (see "Security boundaries"): with N instances, a client can make up to N times the configured rate, and a restart (or a deploy) resets them. Put stricter limits in the load balancer/proxy if that matters.
+- **Rolling deploys and the frontend**: each binary embeds its own frontend build. While old and new instances serve side by side, a browser that loaded the new `index.html` may request a new hashed asset from an old instance and get a plain 404 (never HTML); a reload fixes it. Keep the overlap short, or use session affinity during deploys.
+
 ## CI
 
 `.github/workflows/ci.yml` runs on every pull request and every push to `main`, as eight jobs:
@@ -332,7 +346,7 @@ What this project provides, and what it deliberately leaves to an operator or a 
 - No container image signing, SBOM, or build provenance/attestation — see the same section.
 - No secrets manager integration (Vault, cloud KMS, ...) — secrets are plain environment variables, as is conventional for a container at this scale.
 - No WAF or DDoS protection — expected to come from whatever sits in front (reverse proxy, cloud load balancer), not this application.
-- Rate limiting (Milestone 13 Part 4) is in-process and deliberately narrow: `POST /api/v1/auth/login` (10 at once, then 1 per 6 s) and `POST /api/v1/register` (5 at once, then 1 per 2 min) per client address, and `GET /api/v1/invoices/{id}/pdf` (20 at once, then 1 per 2 s) per user; a limited request gets `429` with `Retry-After`. The client address is always the direct peer (`RemoteAddr`) — `X-Forwarded-For` is never trusted, since there's no trusted-proxy configuration. **Behind a reverse proxy, every client therefore shares the proxy's login/register limits**, so a burst of logins from many people (or an attacker) can briefly lock out everyone; apply per-client limits at the proxy as well if that matters. Limits are per process: several instances each enforce their own, and a restart resets them.
+- Rate limiting (Milestone 13 Part 4) is in-process and deliberately narrow: `POST /api/v1/auth/login` (10 at once, then 1 per 6 s) and `POST /api/v1/register` (5 at once, then 1 per 2 min) per client address, and `GET /api/v1/invoices/{id}/pdf` (20 at once, then 1 per 2 s) per user; a limited request gets `429` with `Retry-After`. By default the client address is the direct peer (`RemoteAddr`) and `X-Forwarded-For` is ignored, so **behind a reverse proxy every client shares the proxy's login/register limits** — set `TRUSTED_PROXIES` to your proxies' addresses to key by the real client instead (only the entries your proxies appended are believed; anything a client prepends is ignored). Limits are per process: N instances allow up to N times the rate, and a restart resets them (see "Running several instances").
 - No automated backups — `pg_dump`/restore is a documented manual procedure (see "Self-hosted Docker Compose" above), not a scheduled job.
 - No horizontal-scaling support — see the "Horizontal scaling boundary" note above; the application performs its own startup migrations, which is only safe with exactly one instance.
 

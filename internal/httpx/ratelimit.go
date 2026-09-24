@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/netip"
 	"strconv"
+	"strings"
 
 	"go-invoicing/internal/metrics"
 	"go-invoicing/internal/ratelimit"
@@ -33,16 +34,67 @@ func RateLimit(name string, limiter *ratelimit.Limiter, keyOf func(*http.Request
 }
 
 // ClientAddressKey keys a request by the address of the peer that
-// connected to this server (r.RemoteAddr). IPv6 addresses are grouped by
-// their /64 prefix — one subscriber/host typically controls a whole /64,
-// so per-address keys would be trivially evaded.
-//
-// X-Forwarded-For / X-Real-IP are deliberately ignored: this application
-// has no trusted-proxy configuration, and any client can send those
-// headers, so honouring them would let a caller pick its own key. The
-// consequence for reverse-proxy deployments (see README): every client
-// appears as the proxy's address and shares one bucket.
+// connected to this server (r.RemoteAddr), never a forwarding header —
+// ClientAddressKeyFunc(nil). IPv6 addresses are grouped by their /64
+// prefix: one subscriber/host typically controls a whole /64, so
+// per-address keys would be trivially evaded.
 func ClientAddressKey(r *http.Request) string {
+	return addressKey(peerAddress(r), r.RemoteAddr)
+}
+
+// ClientAddressKeyFunc (Milestone 13 Part 5) returns a key function that
+// finds the real client behind the given trusted reverse proxies
+// (config.TrustedProxies / TRUSTED_PROXIES).
+//
+// X-Forwarded-For is consulted only when the connecting peer itself is
+// a trusted proxy; from any other peer it is ignored, since any client
+// can send it. Even then, only the part the trusted proxies appended can
+// be believed: each proxy appends the address it received the request
+// from, so the client is the rightmost entry that is not itself a
+// trusted proxy. Entries further left were supplied by the client and
+// are never used. If the header is missing or malformed, or every entry
+// is a trusted proxy, the peer's own address is the key — the safe
+// fallback that at worst shares one bucket.
+//
+// With no trusted proxies this is exactly ClientAddressKey.
+func ClientAddressKeyFunc(trusted []netip.Prefix) func(*http.Request) string {
+	if len(trusted) == 0 {
+		return ClientAddressKey
+	}
+
+	isTrusted := func(addr netip.Addr) bool {
+		for _, prefix := range trusted {
+			if prefix.Contains(addr) {
+				return true
+			}
+		}
+		return false
+	}
+
+	return func(r *http.Request) string {
+		peer := peerAddress(r)
+		if !peer.IsValid() || !isTrusted(peer) {
+			return addressKey(peer, r.RemoteAddr)
+		}
+
+		hops := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
+		for i := len(hops) - 1; i >= 0; i-- {
+			hop, err := netip.ParseAddr(strings.TrimSpace(hops[i]))
+			if err != nil {
+				break
+			}
+			hop = hop.Unmap()
+			if !isTrusted(hop) {
+				return addressKey(hop, "")
+			}
+		}
+
+		return addressKey(peer, r.RemoteAddr)
+	}
+}
+
+// peerAddress parses r.RemoteAddr's host, or returns the zero Addr.
+func peerAddress(r *http.Request) netip.Addr {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
@@ -50,10 +102,19 @@ func ClientAddressKey(r *http.Request) string {
 
 	addr, err := netip.ParseAddr(host)
 	if err != nil {
-		return "addr:" + host
+		return netip.Addr{}
 	}
 
-	addr = addr.Unmap()
+	return addr.Unmap()
+}
+
+// addressKey is addr's limiter key (IPv6 grouped by /64), or raw when
+// addr couldn't be parsed.
+func addressKey(addr netip.Addr, raw string) string {
+	if !addr.IsValid() {
+		return "addr:" + raw
+	}
+
 	if addr.Is6() {
 		prefix, _ := addr.Prefix(64)
 		return "addr:" + prefix.String()

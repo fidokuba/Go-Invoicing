@@ -163,6 +163,51 @@ func runServerLifecycle(
 	return unexpectedErr
 }
 
+// migrateCommandRequested reports whether the first argument is the
+// `migrate` subcommand.
+func migrateCommandRequested(args []string) bool {
+	return len(args) > 0 && args[0] == "migrate"
+}
+
+// runMigrateCommand applies every pending migration and reports the
+// process exit code: 0 on success (including "nothing to apply"), 1 on
+// failure. It never starts the server or the worker. Safe to run while
+// instances are serving: migrations are serialised by golang-migrate's
+// advisory lock (see database.Migrate), and this project's migrations
+// are additive so old instances keep working against the new schema.
+func runMigrateCommand(logger *slog.Logger, databaseURL string, migrate func(string) error) int {
+	logger.Info("applying database migrations")
+
+	if err := migrate(databaseURL); err != nil {
+		logger.Error("database migration failed", "error", err)
+		return 1
+	}
+
+	logger.Info("database migrations complete")
+	return 0
+}
+
+// prepareSchema is the server's startup schema step: apply pending
+// migrations when migrateOnStartup (MIGRATE_ON_STARTUP, default true —
+// convenient for development and single-instance deployments), or
+// otherwise only verify the schema is current, leaving migrations to an
+// explicit `go-invoicing migrate` release step.
+func prepareSchema(
+	logger *slog.Logger,
+	databaseURL string,
+	migrateOnStartup bool,
+	migrate func(string) error,
+	checkCurrent func(string) error,
+) error {
+	if migrateOnStartup {
+		logger.Info("applying pending database migrations on startup", "MIGRATE_ON_STARTUP", true)
+		return migrate(databaseURL)
+	}
+
+	logger.Info("verifying database schema is current (migrations are not applied on startup)", "MIGRATE_ON_STARTUP", false)
+	return checkCurrent(databaseURL)
+}
+
 func main() {
 	// --version prints build metadata and exits immediately — before
 	// configuration, logging, the database, or anything else this
@@ -223,9 +268,17 @@ func main() {
 		"LOG_LEVEL", cfg.LogLevel,
 	)
 
-	// Run database migrations before creating the pool.
-	if err := database.Migrate(cfg.DatabaseURL); err != nil {
-		logger.Error("database migration failed", "error", err)
+	// `go-invoicing migrate` (Milestone 13 Part 5): apply pending
+	// migrations and exit — the release step for deployments that run
+	// several instances with MIGRATE_ON_STARTUP=false.
+	if migrateCommandRequested(os.Args[1:]) {
+		os.Exit(runMigrateCommand(logger, cfg.DatabaseURL, database.Migrate))
+	}
+
+	// Apply (MIGRATE_ON_STARTUP=true, the default) or merely verify the
+	// schema before creating the pool.
+	if err := prepareSchema(logger, cfg.DatabaseURL, cfg.MigrateOnStartup, database.Migrate, database.CheckSchemaCurrent); err != nil {
+		logger.Error("database schema not ready", "error", err)
 		os.Exit(1)
 	}
 
@@ -254,6 +307,10 @@ func main() {
 
 	// Create the app
 	application := app.New(db, logger, m)
+	if len(cfg.TrustedProxies) > 0 {
+		application.TrustProxies(cfg.TrustedProxies)
+		logger.Info("trusting X-Forwarded-For from configured proxies for rate limiting", "trusted_proxies", len(cfg.TrustedProxies))
+	}
 
 	// Create an HTTP server. net.JoinHostPort (not naive "host:port"
 	// string concatenation) correctly brackets an IPv6 Host — e.g.
