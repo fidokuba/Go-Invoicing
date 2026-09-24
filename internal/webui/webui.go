@@ -86,6 +86,7 @@ func mustSub(f embed.FS, dir string) fs.FS {
 var frontendRoutePrefixes = []string{
 	"/login",
 	"/register",
+	"/terms",
 	"/dashboard",
 	"/customers",
 	"/products",

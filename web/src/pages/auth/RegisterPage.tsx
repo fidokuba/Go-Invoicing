@@ -14,6 +14,7 @@ export function RegisterPage() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [agreedToTerms, setAgreedToTerms] = useState(false);
   const [touched, setTouched] = useState(false);
   const register = useRegister();
   const navigate = useNavigate();
@@ -23,7 +24,7 @@ export function RegisterPage() {
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
     setTouched(true);
-    if (register.isPending || passwordTooShort) return;
+    if (register.isPending || passwordTooShort || !agreedToTerms) return;
 
     register.mutate(
       { organisationName, name, email, password },
@@ -88,6 +89,26 @@ export function RegisterPage() {
                   At least {MIN_PASSWORD_LENGTH} characters.
                 </p>
               )}
+            </div>
+            <div className="mb-6">
+              <div className="flex items-start gap-2">
+                <input
+                  id="agreeToTerms"
+                  type="checkbox"
+                  required
+                  className="mt-0.5 h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+                  aria-invalid={touched && !agreedToTerms}
+                  checked={agreedToTerms}
+                  onChange={(e) => setAgreedToTerms(e.target.checked)}
+                />
+                <label htmlFor="agreeToTerms" className="text-sm text-slate-700">
+                  I agree to the{" "}
+                  <Link to="/terms" target="_blank" rel="noopener" className="font-medium text-brand-600 hover:underline">
+                    Terms and Conditions
+                  </Link>
+                </label>
+              </div>
+              {touched && !agreedToTerms && <FieldError>You must agree to the Terms and Conditions.</FieldError>}
             </div>
             <Button type="submit" className="w-full" disabled={register.isPending}>
               {register.isPending ? "Creating account…" : "Create account"}

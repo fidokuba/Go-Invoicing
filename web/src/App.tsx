@@ -55,6 +55,7 @@ const InvoiceSettingsPage = lazy(() =>
 const UsersSettingsPage = lazy(() =>
   import("@/pages/settings/UsersSettingsPage").then((m) => ({ default: m.UsersSettingsPage })),
 );
+const TermsPage = lazy(() => import("@/pages/TermsPage").then((m) => ({ default: m.TermsPage })));
 const NotFoundPage = lazy(() => import("@/pages/NotFoundPage").then((m) => ({ default: m.NotFoundPage })));
 
 export function App() {
@@ -62,6 +63,14 @@ export function App() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/register" element={<RegisterPage />} />
+      <Route
+        path="/terms"
+        element={
+          <Suspense fallback={<PageLoading />}>
+            <TermsPage />
+          </Suspense>
+        }
+      />
 
       <Route element={<ProtectedRoute />}>
         <Route element={<AppShell />}>
