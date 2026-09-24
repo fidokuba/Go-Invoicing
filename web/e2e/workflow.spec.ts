@@ -31,7 +31,7 @@ test("full invoicing workflow: register through paid invoice", async ({ page, re
   await page.getByLabel("Organisation name").fill(organisationName);
   await page.getByLabel("Your name").fill("E2E Admin");
   await page.getByLabel("Email").fill(adminEmail);
-  await page.getByLabel("Password").fill(adminPassword);
+  await page.getByLabel("Password", { exact: true }).fill(adminPassword);
   await page.getByRole("button", { name: "Create account" }).click();
 
   await expect(page).toHaveURL(/\/login\?registered=1/);
@@ -39,7 +39,7 @@ test("full invoicing workflow: register through paid invoice", async ({ page, re
 
   // --- Login ------------------------------------------------------------
   await page.getByLabel("Email").fill(adminEmail);
-  await page.getByLabel("Password").fill(adminPassword);
+  await page.getByLabel("Password", { exact: true }).fill(adminPassword);
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page).toHaveURL(/\/dashboard/);
 

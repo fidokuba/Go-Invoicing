@@ -4,6 +4,7 @@ import { useRegister } from "@/api/queries/auth";
 import { friendlyMessage } from "@/api/errors";
 import { Button } from "@/components/ui/button";
 import { Input, Label, FieldError } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Alert } from "@/components/ui/alert";
 
 const MIN_PASSWORD_LENGTH = 12;
@@ -70,9 +71,8 @@ export function RegisterPage() {
             </div>
             <div className="mb-6">
               <Label htmlFor="password">Password</Label>
-              <Input
+              <PasswordInput
                 id="password"
-                type="password"
                 autoComplete="new-password"
                 required
                 minLength={MIN_PASSWORD_LENGTH}

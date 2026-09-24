@@ -6,6 +6,7 @@ import { friendlyMessage } from "@/api/errors";
 import { formatTimestampDate } from "@/lib/date";
 import { Button } from "@/components/ui/button";
 import { Input, Label, Select, FieldError } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Dialog } from "@/components/ui/dialog";
@@ -66,9 +67,8 @@ function CreateUserDialog({
         </div>
         <div>
           <Label htmlFor="new-user-password">Password</Label>
-          <Input
+          <PasswordInput
             id="new-user-password"
-            type="password"
             required
             minLength={MIN_PASSWORD_LENGTH}
             aria-invalid={passwordError !== null}

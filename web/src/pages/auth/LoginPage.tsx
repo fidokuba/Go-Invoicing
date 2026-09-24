@@ -4,6 +4,7 @@ import { useLogin } from "@/api/queries/auth";
 import { loginErrorMessage } from "@/api/errors";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Alert } from "@/components/ui/alert";
 
 interface LocationState {
@@ -69,9 +70,8 @@ export function LoginPage() {
             </div>
             <div className="mb-6">
               <Label htmlFor="password">Password</Label>
-              <Input
+              <PasswordInput
                 id="password"
-                type="password"
                 autoComplete="current-password"
                 required
                 value={password}
