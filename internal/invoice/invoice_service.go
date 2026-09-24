@@ -705,16 +705,15 @@ func (s *InvoiceService) buildPartySnapshot(
 }
 
 // CreatePaymentRequest is the caller-supplied shape for recording a
-// payment against an invoice. There is no HTTP handler for this yet (that
-// belongs to a later step), but the shape matches this project's existing
-// request-struct convention (see CreateInvoiceRequest), so a handler can
-// reuse it once added.
+// payment against an invoice — InvoiceService.CreatePayment's own input.
+// POST /invoices/{id}/payments decodes the wire-format
+// CreatePaymentHTTPRequest and converts it into this (see
+// payment_dto.go's toCreatePaymentRequest).
 //
-// PaymentDate is a real time.Time rather than a wire-format string, since
-// there is no JSON-decoding boundary in front of this yet — a future
-// handler would parse the request body's date string before constructing
-// this. A zero PaymentDate defaults to time.Now(); a non-zero one is used
-// exactly as supplied.
+// PaymentDate is a real time.Time rather than a wire-format string: the
+// handler parses the request body's "YYYY-MM-DD" date before constructing
+// this. A zero PaymentDate (date omitted) defaults to time.Now(); a
+// non-zero one is used exactly as supplied.
 //
 // IdempotencyKey (Milestone 13 Part 1) is required — see
 // ValidateIdempotencyKey. It identifies one logical payment attempt
