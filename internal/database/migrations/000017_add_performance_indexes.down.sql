@@ -1,0 +1,4 @@
+DROP INDEX customers_organisation_name_idx;
+DROP INDEX invoices_organisation_issue_date_idx;
+DROP INDEX invoice_lines_invoice_id_idx;
+DROP INDEX payments_invoice_id_idx;
