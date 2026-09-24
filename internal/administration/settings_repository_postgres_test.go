@@ -263,7 +263,7 @@ func TestPostgresSettingsRepository_Update_PersistsFieldsAndPopulatesUpdatedAt(t
 		// InvoiceNumber deliberately left at the zero value — Update must
 		// never write it regardless of what this struct carries.
 	}
-	if err := repository.Update(ctx, organisationID, updated); err != nil {
+	if err := repository.Update(ctx, organisationID, updated, 1); err != nil {
 		t.Fatalf("update settings: %v", err)
 	}
 
@@ -305,7 +305,7 @@ func TestPostgresSettingsRepository_Update_OnlyAffectsOwnOrganisation(t *testing
 
 	repository := NewPostgresSettingsRepository(db)
 
-	if err := repository.Update(ctx, orgA, &Settings{InvoicePrefix: "A-ONLY-", Currency: "USD", PaymentTerms: 7}); err != nil {
+	if err := repository.Update(ctx, orgA, &Settings{InvoicePrefix: "A-ONLY-", Currency: "USD", PaymentTerms: 7}, 1); err != nil {
 		t.Fatalf("update org A: %v", err)
 	}
 
@@ -327,7 +327,7 @@ func TestPostgresSettingsRepository_Update_NotFound(t *testing.T) {
 
 	repository := NewPostgresSettingsRepository(db)
 
-	err := repository.Update(ctx, uuid.New(), &Settings{InvoicePrefix: "X-", Currency: "GBP", PaymentTerms: 30})
+	err := repository.Update(ctx, uuid.New(), &Settings{InvoicePrefix: "X-", Currency: "GBP", PaymentTerms: 30}, 1)
 	if !errors.Is(err, ErrSettingsNotFound) {
 		t.Fatalf("expected ErrSettingsNotFound, got %v", err)
 	}

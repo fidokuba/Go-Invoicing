@@ -47,6 +47,7 @@ func (h *OrganisationHandler) GetCurrent(w http.ResponseWriter, r *http.Request)
 
 	response := toOrganisationResponse(organisation)
 
+	setVersionETag(w, organisation.Version)
 	httpx.WriteJSON(w, http.StatusOK, response)
 }
 
@@ -62,15 +63,27 @@ func (h *OrganisationHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Milestone 13 Part 2: If-Match is required (428 if missing, 400 if
+	// malformed) and checked before the body is even decoded.
+	expectedVersion, ok := readIfMatchVersion(w, r)
+	if !ok {
+		return
+	}
+
 	var request UpdateOrganisationRequest
 	if !httpx.DecodeJSON(w, r, &request) {
 		return
 	}
 
-	organisation, err := h.service.Update(r.Context(), identity.OrganisationID, request)
+	organisation, err := h.service.Update(r.Context(), identity.OrganisationID, expectedVersion, request)
 	if err != nil {
 		if errors.Is(err, ErrOrganisationNotFound) {
 			httpx.WriteError(w, http.StatusNotFound, "organisation_not_found", "organisation not found")
+			return
+		}
+
+		if errors.Is(err, ErrOrganisationVersionConflict) {
+			httpx.WriteError(w, http.StatusPreconditionFailed, codePreconditionFailed, staleWriteMessage)
 			return
 		}
 
@@ -85,5 +98,6 @@ func (h *OrganisationHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	response := toOrganisationResponse(organisation)
 
+	setVersionETag(w, organisation.Version)
 	httpx.WriteJSON(w, http.StatusOK, response)
 }

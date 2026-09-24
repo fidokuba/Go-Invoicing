@@ -405,7 +405,7 @@ func (f *fakeOrganisationRepository) GetByID(ctx context.Context, id uuid.UUID) 
 	return &o, nil
 }
 
-func (f *fakeOrganisationRepository) Update(ctx context.Context, organisationID uuid.UUID, o *admin.Organisation) error {
+func (f *fakeOrganisationRepository) Update(ctx context.Context, organisationID uuid.UUID, o *admin.Organisation, expectedVersion int64) error {
 	if _, ok := f.organisations[organisationID]; !ok {
 		return admin.ErrOrganisationNotFound
 	}
@@ -567,7 +567,7 @@ func (f *fakeSettingsRepository) UpdateInvoiceNumber(ctx context.Context, organi
 // satisfy admin.SettingsRepository, which gained an Update method in
 // Milestone 8 Part 3 for PATCH /organisation/settings, a route this
 // package's tests have no reason to exercise.
-func (f *fakeSettingsRepository) Update(ctx context.Context, organisationID uuid.UUID, settings *admin.Settings) error {
+func (f *fakeSettingsRepository) Update(ctx context.Context, organisationID uuid.UUID, settings *admin.Settings, expectedVersion int64) error {
 	panic("fakeSettingsRepository.Update should never be called by InvoiceService")
 }
 

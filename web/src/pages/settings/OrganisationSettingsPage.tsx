@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
-import { useOrganisation, useUpdateOrganisation } from "@/api/queries/organisation";
+import { useVersionedOrganisation, useUpdateOrganisation } from "@/api/queries/organisation";
 import { useAuth, hasRole } from "@/lib/useAuth";
-import { friendlyMessage } from "@/api/errors";
+import { friendlyMessage, isStaleWriteError } from "@/api/errors";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
@@ -11,7 +11,23 @@ import type { components } from "@/api/schema";
 
 type Organisation = components["schemas"]["OrganisationResponse"];
 
-function OrganisationForm({ organisation, canEdit }: { organisation: Organisation; canEdit: boolean }) {
+function OrganisationForm({
+  organisation,
+  etag: loadedETag,
+  canEdit,
+  onReload,
+}: {
+  organisation: Organisation;
+  etag: string;
+  canEdit: boolean;
+  onReload: () => void;
+}) {
+  // The version these fields were loaded from (Milestone 13 Part 2) —
+  // deliberately pinned here rather than read from the query cache on
+  // submit, so a background refetch can never pair a newer ETag with
+  // these older field values. Advanced only by this form's own
+  // successful save; a 412 is resolved by Reload (a fresh remount).
+  const [etag, setEtag] = useState(loadedETag);
   const [name, setName] = useState(organisation.name);
   const [email, setEmail] = useState(organisation.email ?? "");
   const [phone, setPhone] = useState(organisation.phone ?? "");
@@ -25,8 +41,13 @@ function OrganisationForm({ organisation, canEdit }: { organisation: Organisatio
     if (update.isPending) return;
     setSaved(false);
     update.mutate(
-      { name, email, phone, website, taxId },
-      { onSuccess: () => setSaved(true) },
+      { body: { name, email, phone, website, taxId }, etag },
+      {
+        onSuccess: (versioned) => {
+          setEtag(versioned.etag);
+          setSaved(true);
+        },
+      },
     );
   }
 
@@ -40,7 +61,13 @@ function OrganisationForm({ organisation, canEdit }: { organisation: Organisatio
         )}
         {update.isError && (
           <div className="mb-4">
-            <Alert>{friendlyMessage(update.error)}</Alert>
+            {isStaleWriteError(update.error) ? (
+              <Alert onRetry={onReload} retryLabel="Reload">
+                {friendlyMessage(update.error)}
+              </Alert>
+            ) : (
+              <Alert>{friendlyMessage(update.error)}</Alert>
+            )}
           </div>
         )}
         {saved && !update.isError && (
@@ -85,13 +112,28 @@ function OrganisationForm({ organisation, canEdit }: { organisation: Organisatio
 }
 
 export function OrganisationSettingsPage() {
-  const query = useOrganisation();
+  const query = useVersionedOrganisation();
+  // Bumped by Reload after a 412, remounting the form from the freshly
+  // fetched version so its fields and pinned ETag are reset together.
+  const [formKey, setFormKey] = useState(0);
+  const reload = async () => {
+    await query.refetch();
+    setFormKey((key) => key + 1);
+  };
   const { user } = useAuth();
   const canEdit = hasRole(user, "admin");
 
   return (
     <QueryBoundary query={query}>
-      {(organisation) => <OrganisationForm organisation={organisation} canEdit={canEdit} />}
+      {(versioned) => (
+        <OrganisationForm
+          key={formKey}
+          organisation={versioned.data}
+          etag={versioned.etag}
+          canEdit={canEdit}
+          onReload={reload}
+        />
+      )}
     </QueryBoundary>
   );
 }

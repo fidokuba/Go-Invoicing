@@ -419,3 +419,18 @@ func TestPostgresInvoiceRepository_GetByID_OrganisationScoping(t *testing.T) {
 		t.Errorf("expected nil invoice, got %+v", result)
 	}
 }
+
+// updateTestOrganisation writes organisation's party details onto
+// organisationID through the real repository, at whatever version the
+// organisation currently has (Milestone 13 Part 2) — these tests seed
+// data, they don't exercise optimistic concurrency.
+func updateTestOrganisation(ctx context.Context, db *pgxpool.Pool, organisationID uuid.UUID, organisation *admin.Organisation) error {
+	repository := admin.NewPostgresOrganisationRepository(db)
+
+	current, err := repository.GetByID(ctx, organisationID)
+	if err != nil {
+		return err
+	}
+
+	return repository.Update(ctx, organisationID, organisation, current.Version)
+}

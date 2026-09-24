@@ -52,7 +52,7 @@ func TestSettingsService_Update_PartialSemantics(t *testing.T) {
 	service, _ := newTestSettingsService(t, organisationID)
 
 	// First update: only Currency.
-	updated, err := service.Update(context.Background(), organisationID, UpdateSettingsRequest{Currency: strPtr("eur")})
+	updated, err := service.Update(context.Background(), organisationID, settingsVersion(t, service, organisationID), UpdateSettingsRequest{Currency: strPtr("eur")})
 	if err != nil {
 		t.Fatalf("update currency: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestSettingsService_Update_PartialSemantics(t *testing.T) {
 
 	// Second update: only PaymentTerms — Currency from the first update
 	// must survive untouched.
-	updated, err = service.Update(context.Background(), organisationID, UpdateSettingsRequest{PaymentTerms: intPtr(14)})
+	updated, err = service.Update(context.Background(), organisationID, settingsVersion(t, service, organisationID), UpdateSettingsRequest{PaymentTerms: intPtr(14)})
 	if err != nil {
 		t.Fatalf("update payment terms: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestSettingsService_Update_PartialSemantics(t *testing.T) {
 	}
 
 	// Third update: only InvoicePrefix.
-	updated, err = service.Update(context.Background(), organisationID, UpdateSettingsRequest{InvoicePrefix: strPtr("ACME-")})
+	updated, err = service.Update(context.Background(), organisationID, settingsVersion(t, service, organisationID), UpdateSettingsRequest{InvoicePrefix: strPtr("ACME-")})
 	if err != nil {
 		t.Fatalf("update invoice prefix: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestSettingsService_Update_CurrencyNormalization(t *testing.T) {
 	organisationID := uuid.New()
 	service, _ := newTestSettingsService(t, organisationID)
 
-	updated, err := service.Update(context.Background(), organisationID, UpdateSettingsRequest{Currency: strPtr("  usd  ")})
+	updated, err := service.Update(context.Background(), organisationID, settingsVersion(t, service, organisationID), UpdateSettingsRequest{Currency: strPtr("  usd  ")})
 	if err != nil {
 		t.Fatalf("update currency: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestSettingsService_Update_InvalidCurrency(t *testing.T) {
 			organisationID := uuid.New()
 			service, _ := newTestSettingsService(t, organisationID)
 
-			_, err := service.Update(context.Background(), organisationID, UpdateSettingsRequest{Currency: strPtr(tt.currency)})
+			_, err := service.Update(context.Background(), organisationID, settingsVersion(t, service, organisationID), UpdateSettingsRequest{Currency: strPtr(tt.currency)})
 			if tt.name == "blank" {
 				if !errors.Is(err, ErrSettingsCurrencyRequired) {
 					t.Fatalf("expected ErrSettingsCurrencyRequired, got %v", err)
@@ -136,7 +136,7 @@ func TestSettingsService_Update_InvalidPaymentTerms(t *testing.T) {
 	organisationID := uuid.New()
 	service, _ := newTestSettingsService(t, organisationID)
 
-	_, err := service.Update(context.Background(), organisationID, UpdateSettingsRequest{PaymentTerms: intPtr(-1)})
+	_, err := service.Update(context.Background(), organisationID, settingsVersion(t, service, organisationID), UpdateSettingsRequest{PaymentTerms: intPtr(-1)})
 	if !errors.Is(err, ErrSettingsPaymentTermsInvalid) {
 		t.Fatalf("expected ErrSettingsPaymentTermsInvalid, got %v", err)
 	}
@@ -148,7 +148,7 @@ func TestSettingsService_Update_PaymentTermsZeroIsValid(t *testing.T) {
 	organisationID := uuid.New()
 	service, _ := newTestSettingsService(t, organisationID)
 
-	updated, err := service.Update(context.Background(), organisationID, UpdateSettingsRequest{PaymentTerms: intPtr(0)})
+	updated, err := service.Update(context.Background(), organisationID, settingsVersion(t, service, organisationID), UpdateSettingsRequest{PaymentTerms: intPtr(0)})
 	if err != nil {
 		t.Fatalf("expected payment terms 0 to be valid, got error: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestSettingsService_Update_BlankInvoicePrefixRejected(t *testing.T) {
 	organisationID := uuid.New()
 	service, _ := newTestSettingsService(t, organisationID)
 
-	_, err := service.Update(context.Background(), organisationID, UpdateSettingsRequest{InvoicePrefix: strPtr("   ")})
+	_, err := service.Update(context.Background(), organisationID, settingsVersion(t, service, organisationID), UpdateSettingsRequest{InvoicePrefix: strPtr("   ")})
 	if !errors.Is(err, ErrSettingsInvoicePrefixRequired) {
 		t.Fatalf("expected ErrSettingsInvoicePrefixRequired, got %v", err)
 	}
@@ -179,7 +179,7 @@ func TestSettingsService_Update_NeverTouchesInvoiceNumber(t *testing.T) {
 	settings.InvoiceNumber = 42
 	repository.settings[organisationID] = settings
 
-	if _, err := service.Update(context.Background(), organisationID, UpdateSettingsRequest{Currency: strPtr("EUR")}); err != nil {
+	if _, err := service.Update(context.Background(), organisationID, settingsVersion(t, service, organisationID), UpdateSettingsRequest{Currency: strPtr("EUR")}); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 
@@ -199,7 +199,7 @@ func TestSettingsService_Update_TenantIsolation(t *testing.T) {
 	seedSettings(t, repository, orgB)
 	service := NewSettingsService(repository)
 
-	if _, err := service.Update(context.Background(), orgA, UpdateSettingsRequest{Currency: strPtr("EUR")}); err != nil {
+	if _, err := service.Update(context.Background(), orgA, settingsVersion(t, service, orgA), UpdateSettingsRequest{Currency: strPtr("EUR")}); err != nil {
 		t.Fatalf("update org A: %v", err)
 	}
 
@@ -210,4 +210,17 @@ func TestSettingsService_Update_TenantIsolation(t *testing.T) {
 	if settingsB.Currency != "GBP" {
 		t.Errorf("expected org B's currency to remain the default %q, got %q", "GBP", settingsB.Currency)
 	}
+}
+
+// settingsVersion returns the settings' current version — the If-Match a
+// well-behaved client would send (Milestone 13 Part 2).
+func settingsVersion(t *testing.T, service *SettingsService, organisationID uuid.UUID) int64 {
+	t.Helper()
+
+	settings, err := service.Get(context.Background(), organisationID)
+	if err != nil {
+		t.Fatalf("get settings version: %v", err)
+	}
+
+	return settings.Version
 }

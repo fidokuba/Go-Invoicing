@@ -26,7 +26,7 @@ func TestOrganisationService_Update_OmittedFieldsUnchanged(t *testing.T) {
 	}
 
 	// First, set Email via an explicit update.
-	updated, err := service.Update(context.Background(), organisation.ID, UpdateOrganisationRequest{
+	updated, err := service.Update(context.Background(), organisation.ID, organisationVersion(t, service, organisation.ID), UpdateOrganisationRequest{
 		Email: strPtr("hello@acme.test"),
 	})
 	if err != nil {
@@ -37,7 +37,7 @@ func TestOrganisationService_Update_OmittedFieldsUnchanged(t *testing.T) {
 	}
 
 	// A second update that only touches Name must leave Email untouched.
-	updated, err = service.Update(context.Background(), organisation.ID, UpdateOrganisationRequest{
+	updated, err = service.Update(context.Background(), organisation.ID, organisationVersion(t, service, organisation.ID), UpdateOrganisationRequest{
 		Name: strPtr("Acme Holdings Ltd"),
 	})
 	if err != nil {
@@ -62,7 +62,7 @@ func TestOrganisationService_Update_SuppliedFieldsUpdate(t *testing.T) {
 		t.Fatalf("create organisation: %v", err)
 	}
 
-	updated, err := service.Update(context.Background(), organisation.ID, UpdateOrganisationRequest{
+	updated, err := service.Update(context.Background(), organisation.ID, organisationVersion(t, service, organisation.ID), UpdateOrganisationRequest{
 		Email:      strPtr("hello@acme.test"),
 		Phone:      strPtr("+44 20 7946 0958"),
 		Website:    strPtr("https://acme.test"),
@@ -107,7 +107,7 @@ func TestOrganisationService_Update_BlankNameRejected(t *testing.T) {
 		t.Fatalf("create organisation: %v", err)
 	}
 
-	_, err = service.Update(context.Background(), organisation.ID, UpdateOrganisationRequest{
+	_, err = service.Update(context.Background(), organisation.ID, organisationVersion(t, service, organisation.ID), UpdateOrganisationRequest{
 		Name: strPtr("   "),
 	})
 	if !errors.Is(err, ErrOrganisationNameRequired) {
@@ -134,7 +134,7 @@ func TestOrganisationService_Update_InvalidEmailRejected(t *testing.T) {
 		t.Fatalf("create organisation: %v", err)
 	}
 
-	_, err = service.Update(context.Background(), organisation.ID, UpdateOrganisationRequest{
+	_, err = service.Update(context.Background(), organisation.ID, organisationVersion(t, service, organisation.ID), UpdateOrganisationRequest{
 		Email: strPtr("not-an-email"),
 	})
 	if !errors.Is(err, ErrOrganisationEmailInvalid) {
@@ -151,11 +151,11 @@ func TestOrganisationService_Update_EmptyEmailClearsField(t *testing.T) {
 		t.Fatalf("create organisation: %v", err)
 	}
 
-	if _, err := service.Update(context.Background(), organisation.ID, UpdateOrganisationRequest{Email: strPtr("hello@acme.test")}); err != nil {
+	if _, err := service.Update(context.Background(), organisation.ID, organisationVersion(t, service, organisation.ID), UpdateOrganisationRequest{Email: strPtr("hello@acme.test")}); err != nil {
 		t.Fatalf("set email: %v", err)
 	}
 
-	updated, err := service.Update(context.Background(), organisation.ID, UpdateOrganisationRequest{Email: strPtr("")})
+	updated, err := service.Update(context.Background(), organisation.ID, organisationVersion(t, service, organisation.ID), UpdateOrganisationRequest{Email: strPtr("")})
 	if err != nil {
 		t.Fatalf("clear email: %v", err)
 	}
@@ -182,6 +182,7 @@ func TestOrganisationHandler_Update_Success(t *testing.T) {
 	body := bytes.NewBufferString(`{"email":"hello@acme.test","city":"London"}`)
 	request := httptest.NewRequest(http.MethodPatch, "/organisation", body)
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("If-Match", `"1"`) // a newly created organisation's version
 	request = withAuthenticatedOrganisation(request, organisation.ID)
 	recorder := httptest.NewRecorder()
 
@@ -214,6 +215,7 @@ func TestOrganisationHandler_Update_BlankName(t *testing.T) {
 	body := bytes.NewBufferString(`{"name":""}`)
 	request := httptest.NewRequest(http.MethodPatch, "/organisation", body)
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("If-Match", `"1"`) // a newly created organisation's version
 	request = withAuthenticatedOrganisation(request, organisation.ID)
 	recorder := httptest.NewRecorder()
 
@@ -234,6 +236,7 @@ func TestOrganisationHandler_Update_InvalidEmail(t *testing.T) {
 	body := bytes.NewBufferString(`{"email":"not-an-email"}`)
 	request := httptest.NewRequest(http.MethodPatch, "/organisation", body)
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("If-Match", `"1"`) // a newly created organisation's version
 	request = withAuthenticatedOrganisation(request, organisation.ID)
 	recorder := httptest.NewRecorder()
 
@@ -254,6 +257,7 @@ func TestOrganisationHandler_Update_InvalidJSON(t *testing.T) {
 	body := bytes.NewBufferString(`{`)
 	request := httptest.NewRequest(http.MethodPatch, "/organisation", body)
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("If-Match", `"1"`) // a newly created organisation's version
 	request = withAuthenticatedOrganisation(request, organisation.ID)
 	recorder := httptest.NewRecorder()
 
@@ -270,6 +274,7 @@ func TestOrganisationHandler_Update_MissingAuthenticatedContext(t *testing.T) {
 	body := bytes.NewBufferString(`{"email":"hello@acme.test"}`)
 	request := httptest.NewRequest(http.MethodPatch, "/organisation", body)
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("If-Match", `"1"`) // a newly created organisation's version
 	recorder := httptest.NewRecorder()
 
 	handler.Update(recorder, request)
@@ -288,6 +293,7 @@ func TestOrganisationHandler_Update_NotFound(t *testing.T) {
 	body := bytes.NewBufferString(`{"email":"hello@acme.test"}`)
 	request := httptest.NewRequest(http.MethodPatch, "/organisation", body)
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("If-Match", `"1"`) // a newly created organisation's version
 	request = withAuthenticatedOrganisation(request, uuid.New())
 	recorder := httptest.NewRecorder()
 
@@ -296,4 +302,17 @@ func TestOrganisationHandler_Update_NotFound(t *testing.T) {
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusNotFound, recorder.Code, recorder.Body.String())
 	}
+}
+
+// organisationVersion returns the organisation's current version — the
+// If-Match a well-behaved client would send (Milestone 13 Part 2).
+func organisationVersion(t *testing.T, service *OrganisationService, organisationID uuid.UUID) int64 {
+	t.Helper()
+
+	organisation, err := service.GetByID(context.Background(), organisationID)
+	if err != nil {
+		t.Fatalf("get organisation version: %v", err)
+	}
+
+	return organisation.Version
 }

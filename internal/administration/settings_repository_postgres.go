@@ -16,6 +16,11 @@ import (
 // database failure.
 var ErrSettingsNotFound = errors.New("settings not found")
 
+// ErrSettingsVersionConflict (Milestone 13 Part 2) is returned by Update
+// when the settings exist but their current version is not the caller's
+// expected one — they were modified since the caller read them.
+var ErrSettingsVersionConflict = errors.New("settings have been modified since they were read")
+
 // dbExecutor is the minimal query surface this repository needs. Both
 // *pgxpool.Pool and pgx.Tx implement it, which is what lets these methods
 // run unmodified whether they're operating directly on the pool or inside
@@ -110,7 +115,8 @@ func (r *PostgresSettingsRepository) GetByOrganisationID(
 			payment_terms,
 			created_at,
 			updated_at,
-			deleted_at
+			deleted_at,
+			version
 		FROM settings
 		WHERE organisation_id = $1
 			AND deleted_at IS NULL
@@ -140,7 +146,8 @@ func (r *PostgresSettingsRepository) GetForUpdate(
 			payment_terms,
 			created_at,
 			updated_at,
-			deleted_at
+			deleted_at,
+			version
 		FROM settings
 		WHERE organisation_id = $1
 			AND deleted_at IS NULL
@@ -170,6 +177,7 @@ func (r *PostgresSettingsRepository) scanOne(
 		&s.CreatedAt,
 		&s.UpdatedAt,
 		&s.DeletedAt,
+		&s.Version,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -183,26 +191,35 @@ func (r *PostgresSettingsRepository) scanOne(
 }
 
 // Update persists InvoicePrefix, Currency and PaymentTerms in one
-// statement, tenant-scoped by organisationID, and scans the resulting
-// updated_at back onto settings via RETURNING — matching every other
-// Update in this project (see OrganisationRepository.Update). It
+// statement, tenant-scoped by organisationID, but only if the settings'
+// current version is still expectedVersion (Milestone 13 Part 2) — the
+// version predicate in the UPDATE itself is the authoritative
+// optimistic-concurrency check. A successful write increments version by
+// one and scans the new version and updated_at back onto settings. It
 // deliberately never touches invoice_number — see SettingsRepository
-// .Update's own comment for why that column belongs solely to the
-// locked allocate-and-increment sequence.
+// .Update's own comment for why that column belongs solely to the locked
+// allocate-and-increment sequence.
+//
+// Zero rows means either a stale expectedVersion
+// (ErrSettingsVersionConflict) or no live settings row
+// (ErrSettingsNotFound); a follow-up existence check tells them apart.
 func (r *PostgresSettingsRepository) Update(
 	ctx context.Context,
 	organisationID uuid.UUID,
 	settings *Settings,
+	expectedVersion int64,
 ) error {
 	const query = `
 		UPDATE settings
 		SET invoice_prefix = $1,
 			currency        = $2,
 			payment_terms   = $3,
-			updated_at      = NOW()
+			updated_at      = NOW(),
+			version         = version + 1
 		WHERE organisation_id = $4
 			AND deleted_at IS NULL
-		RETURNING updated_at
+			AND version = $5
+		RETURNING version, updated_at
 	`
 
 	err := r.db.QueryRow(
@@ -212,10 +229,11 @@ func (r *PostgresSettingsRepository) Update(
 		settings.Currency,
 		settings.PaymentTerms,
 		organisationID,
-	).Scan(&settings.UpdatedAt)
+		expectedVersion,
+	).Scan(&settings.Version, &settings.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrSettingsNotFound
+			return r.missingOrStale(ctx, organisationID)
 		}
 
 		return fmt.Errorf("update settings: %w", err)
@@ -224,7 +242,28 @@ func (r *PostgresSettingsRepository) Update(
 	return nil
 }
 
+// missingOrStale classifies an Update that matched no row: the settings
+// row still exists (so the version was stale) or it doesn't.
+func (r *PostgresSettingsRepository) missingOrStale(ctx context.Context, organisationID uuid.UUID) error {
+	const query = `SELECT EXISTS (SELECT 1 FROM settings WHERE organisation_id = $1 AND deleted_at IS NULL)`
+
+	var exists bool
+	if err := r.db.QueryRow(ctx, query, organisationID).Scan(&exists); err != nil {
+		return fmt.Errorf("check settings exist: %w", err)
+	}
+
+	if exists {
+		return ErrSettingsVersionConflict
+	}
+
+	return ErrSettingsNotFound
+}
+
 // UpdateInvoiceNumber persists a new invoice_number for the organisation.
+// It deliberately leaves version unchanged (Milestone 13 Part 2):
+// allocating an invoice number is an internal write, not a modification
+// of the settings resource clients edit, so it must never make an
+// admin's pending settings edit fail as stale.
 // Called with the value already incremented by Settings.NextInvoiceNumber,
 // through the same transaction that acquired the GetForUpdate lock, so the
 // read-increment-write sequence is atomic with respect to other

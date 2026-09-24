@@ -177,8 +177,7 @@ describe("RecordPaymentDialog idempotency", () => {
     await submit(user);
 
     expect(await screen.findByText(/check the invoice's recorded payments/i)).toBeInTheDocument();
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["invoices", INVOICE_ID] });
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["invoices", INVOICE_ID, "payments"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["invoices"] });
     expect(onOpenChange).not.toHaveBeenCalledWith(false);
 
     await submit(user);

@@ -23,7 +23,7 @@ func TestInvoiceService_Send_PersistsCompleteSnapshot(t *testing.T) {
 
 	organisationID := createTestOrganisation(t, db)
 	email, taxID := "seller@acme.test", "GB123456789"
-	if err := admin.NewPostgresOrganisationRepository(db).Update(ctx, organisationID, &admin.Organisation{
+	if err := updateTestOrganisation(ctx, db, organisationID, &admin.Organisation{
 		Name: "Acme Ltd", Email: &email, TaxID: &taxID,
 	}); err != nil {
 		t.Fatalf("set organisation party data: %v", err)
@@ -120,7 +120,7 @@ func TestInvoiceService_Send_OrganisationChangesAfterSendDoNotAlterSnapshot(t *t
 
 	organisationID := createTestOrganisation(t, db)
 	originalEmail := "original@acme.test"
-	if err := admin.NewPostgresOrganisationRepository(db).Update(ctx, organisationID, &admin.Organisation{
+	if err := updateTestOrganisation(ctx, db, organisationID, &admin.Organisation{
 		Name: "Original Seller Name", Email: &originalEmail, Address: strPtr("1 Original Street"),
 	}); err != nil {
 		t.Fatalf("set original organisation party data: %v", err)
@@ -137,7 +137,7 @@ func TestInvoiceService_Send_OrganisationChangesAfterSendDoNotAlterSnapshot(t *t
 
 	// Organisation changes: Name, Address, Email, TaxID — all after Send.
 	newEmail, newTaxID := "changed@acme.test", "GB999999973"
-	if err := admin.NewPostgresOrganisationRepository(db).Update(ctx, organisationID, &admin.Organisation{
+	if err := updateTestOrganisation(ctx, db, organisationID, &admin.Organisation{
 		Name: "Changed Seller Name", Email: &newEmail, Address: strPtr("2 Changed Avenue"), TaxID: &newTaxID,
 	}); err != nil {
 		t.Fatalf("change organisation party data: %v", err)
@@ -289,7 +289,7 @@ func TestInvoiceService_Send_RepeatedSendPreservesOriginalSnapshot(t *testing.T)
 	ctx := context.Background()
 
 	organisationID := createTestOrganisation(t, db)
-	if err := admin.NewPostgresOrganisationRepository(db).Update(ctx, organisationID, &admin.Organisation{Name: "Original Seller"}); err != nil {
+	if err := updateTestOrganisation(ctx, db, organisationID, &admin.Organisation{Name: "Original Seller"}); err != nil {
 		t.Fatalf("set organisation name: %v", err)
 	}
 	customerID := createTestCustomer(t, db, organisationID)
@@ -302,7 +302,7 @@ func TestInvoiceService_Send_RepeatedSendPreservesOriginalSnapshot(t *testing.T)
 		t.Fatalf("first send: %v", err)
 	}
 
-	if err := admin.NewPostgresOrganisationRepository(db).Update(ctx, organisationID, &admin.Organisation{Name: "Changed Seller"}); err != nil {
+	if err := updateTestOrganisation(ctx, db, organisationID, &admin.Organisation{Name: "Changed Seller"}); err != nil {
 		t.Fatalf("change organisation name: %v", err)
 	}
 	if _, err := db.Exec(ctx, "UPDATE settings SET currency = $1 WHERE organisation_id = $2", "USD", organisationID); err != nil {
@@ -347,7 +347,7 @@ func TestInvoiceService_Send_ConcurrentSendYieldsOneImmutableSnapshot(t *testing
 	ctx := context.Background()
 
 	organisationID := createTestOrganisation(t, db)
-	if err := admin.NewPostgresOrganisationRepository(db).Update(ctx, organisationID, &admin.Organisation{Name: "Concurrent Seller"}); err != nil {
+	if err := updateTestOrganisation(ctx, db, organisationID, &admin.Organisation{Name: "Concurrent Seller"}); err != nil {
 		t.Fatalf("set organisation name: %v", err)
 	}
 	customerID := createTestCustomer(t, db, organisationID)

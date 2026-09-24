@@ -34,7 +34,7 @@ func TestInvoicePDFService_Draft_ReadsLivePartyData_RealPostgres(t *testing.T) {
 	ctx := context.Background()
 
 	organisationID := createTestOrganisation(t, db)
-	if err := admin.NewPostgresOrganisationRepository(db).Update(ctx, organisationID, &admin.Organisation{Name: "Live Seller Ltd"}); err != nil {
+	if err := updateTestOrganisation(ctx, db, organisationID, &admin.Organisation{Name: "Live Seller Ltd"}); err != nil {
 		t.Fatalf("set organisation: %v", err)
 	}
 	createTestSettings(t, db, organisationID)
@@ -72,7 +72,7 @@ func TestInvoicePDFService_Issued_UsesStoredSnapshot_RealPostgres(t *testing.T) 
 	ctx := context.Background()
 
 	organisationID := createTestOrganisation(t, db)
-	if err := admin.NewPostgresOrganisationRepository(db).Update(ctx, organisationID, &admin.Organisation{Name: "Original Seller"}); err != nil {
+	if err := updateTestOrganisation(ctx, db, organisationID, &admin.Organisation{Name: "Original Seller"}); err != nil {
 		t.Fatalf("set organisation: %v", err)
 	}
 	createTestSettings(t, db, organisationID)
@@ -104,7 +104,7 @@ func TestInvoicePDFService_OrganisationChangeAfterSendDoesNotAffectPDF_RealPostg
 	ctx := context.Background()
 
 	organisationID := createTestOrganisation(t, db)
-	if err := admin.NewPostgresOrganisationRepository(db).Update(ctx, organisationID, &admin.Organisation{Name: "Original Seller"}); err != nil {
+	if err := updateTestOrganisation(ctx, db, organisationID, &admin.Organisation{Name: "Original Seller"}); err != nil {
 		t.Fatalf("set organisation: %v", err)
 	}
 	createTestSettings(t, db, organisationID)
@@ -116,7 +116,7 @@ func TestInvoicePDFService_OrganisationChangeAfterSendDoesNotAffectPDF_RealPostg
 		t.Fatalf("send invoice: %v", err)
 	}
 
-	if err := admin.NewPostgresOrganisationRepository(db).Update(ctx, organisationID, &admin.Organisation{Name: "Changed Seller"}); err != nil {
+	if err := updateTestOrganisation(ctx, db, organisationID, &admin.Organisation{Name: "Changed Seller"}); err != nil {
 		t.Fatalf("change organisation: %v", err)
 	}
 

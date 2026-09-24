@@ -37,6 +37,8 @@ export function friendlyMessage(err: unknown): string {
     }
 
     switch (err.status) {
+      case 412:
+        return STALE_WRITE_MESSAGE;
       case 400:
         return err.message || "Please check the form and try again.";
       case 401:
@@ -65,6 +67,15 @@ export function friendlyMessage(err: unknown): string {
   }
 
   return "Something went wrong. Please try again.";
+}
+
+/** Milestone 13 Part 2: a PATCH whose If-Match no longer matches — the
+ * record was saved by someone else after this form loaded it. */
+export const STALE_WRITE_MESSAGE =
+  "This record has changed since you opened it. Reload the latest version before saving your changes.";
+
+export function isStaleWriteError(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 412;
 }
 
 /** Whether a failed request is worth offering a plain "Retry" action for

@@ -38,5 +38,10 @@ type SettingsRepository interface {
 	// locked allocate-and-increment sequence in
 	// InvoiceService.Create/SettingsRepository.UpdateInvoiceNumber, and
 	// must never be reset or overwritten by an unrelated settings edit.
-	Update(ctx context.Context, organisationID uuid.UUID, settings *Settings) error
+	//
+	// expectedVersion (Milestone 13 Part 2): the write only happens if the
+	// settings' current version equals it, atomically in the same
+	// statement; otherwise ErrSettingsVersionConflict. On success
+	// settings.Version holds the new, incremented version.
+	Update(ctx context.Context, organisationID uuid.UUID, settings *Settings, expectedVersion int64) error
 }

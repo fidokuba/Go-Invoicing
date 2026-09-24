@@ -29,6 +29,12 @@ describe("friendlyMessage", () => {
     expect(message).not.toMatch(/idempotency/i);
   });
 
+  it("maps 412 to the reload-before-saving message", () => {
+    expect(friendlyMessage(new ApiError(412, "precondition_failed", "stale"))).toBe(
+      "This record has changed since you opened it. Reload the latest version before saving your changes.",
+    );
+  });
+
   it("gives a generic message for 500, never exposing raw detail", () => {
     expect(friendlyMessage(new ApiError(500, "internal_error", "internal server error"))).toMatch(
       /went wrong on our end/i,

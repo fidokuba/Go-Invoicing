@@ -113,7 +113,7 @@ func TestPostgresOrganisationRepository_Update_PersistsFields(t *testing.T) {
 		TaxID:      &taxID,
 	}
 
-	if err := repository.Update(ctx, organisation.ID, updated); err != nil {
+	if err := repository.Update(ctx, organisation.ID, updated, organisation.Version); err != nil {
 		t.Fatalf("update organisation: %v", err)
 	}
 
@@ -169,7 +169,7 @@ func TestPostgresOrganisationRepository_Update_OnlyAffectsOwnOrganisation(t *tes
 	})
 
 	newName := "Organisation A Renamed"
-	if err := repository.Update(ctx, orgA.ID, &Organisation{Name: newName}); err != nil {
+	if err := repository.Update(ctx, orgA.ID, &Organisation{Name: newName}, orgA.Version); err != nil {
 		t.Fatalf("update organisation A: %v", err)
 	}
 
@@ -262,7 +262,7 @@ func TestPostgresOrganisationRepository_Update_PopulatesUpdatedAt(t *testing.T) 
 	time.Sleep(10 * time.Millisecond) // ensure a measurably later NOW()
 
 	updated := &Organisation{Name: "Renamed Org"}
-	if err := repository.Update(ctx, organisation.ID, updated); err != nil {
+	if err := repository.Update(ctx, organisation.ID, updated, organisation.Version); err != nil {
 		t.Fatalf("update organisation: %v", err)
 	}
 

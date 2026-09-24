@@ -23,6 +23,11 @@ type Settings struct {
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 	DeletedAt      *time.Time
+
+	// Version (Milestone 13 Part 2) is the optimistic-concurrency token:
+	// incremented only by Update (a user-facing edit) — never by invoice
+	// number allocation — and exposed only as the HTTP ETag.
+	Version int64
 }
 
 func (s *Settings) TableName() string {

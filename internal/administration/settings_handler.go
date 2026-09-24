@@ -41,6 +41,7 @@ func (h *SettingsHandler) GetCurrent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	setVersionETag(w, settings.Version)
 	httpx.WriteJSON(w, http.StatusOK, toSettingsResponse(settings))
 }
 
@@ -55,15 +56,27 @@ func (h *SettingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Milestone 13 Part 2: If-Match is required (428 if missing, 400 if
+	// malformed) and checked before the body is even decoded.
+	expectedVersion, ok := readIfMatchVersion(w, r)
+	if !ok {
+		return
+	}
+
 	var request UpdateSettingsRequest
 	if !httpx.DecodeJSON(w, r, &request) {
 		return
 	}
 
-	settings, err := h.service.Update(r.Context(), identity.OrganisationID, request)
+	settings, err := h.service.Update(r.Context(), identity.OrganisationID, expectedVersion, request)
 	if err != nil {
 		if errors.Is(err, ErrSettingsNotFound) {
 			httpx.WriteError(w, http.StatusNotFound, "settings_not_found", "settings not found")
+			return
+		}
+
+		if errors.Is(err, ErrSettingsVersionConflict) {
+			httpx.WriteError(w, http.StatusPreconditionFailed, codePreconditionFailed, staleWriteMessage)
 			return
 		}
 
@@ -79,5 +92,6 @@ func (h *SettingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	setVersionETag(w, settings.Version)
 	httpx.WriteJSON(w, http.StatusOK, toSettingsResponse(settings))
 }

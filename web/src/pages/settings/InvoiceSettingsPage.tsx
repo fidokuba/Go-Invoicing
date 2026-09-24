@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
-import { useInvoiceSettings, useUpdateInvoiceSettings } from "@/api/queries/organisation";
+import { useVersionedInvoiceSettings, useUpdateInvoiceSettings } from "@/api/queries/organisation";
 import { useAuth, hasRole } from "@/lib/useAuth";
-import { friendlyMessage } from "@/api/errors";
+import { friendlyMessage, isStaleWriteError } from "@/api/errors";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input, Label, FieldError } from "@/components/ui/input";
@@ -11,7 +11,23 @@ import type { components } from "@/api/schema";
 
 type Settings = components["schemas"]["SettingsResponse"];
 
-function InvoiceSettingsForm({ settings, canEdit }: { settings: Settings; canEdit: boolean }) {
+function InvoiceSettingsForm({
+  settings,
+  etag: loadedETag,
+  canEdit,
+  onReload,
+}: {
+  settings: Settings;
+  etag: string;
+  canEdit: boolean;
+  onReload: () => void;
+}) {
+  // The version these fields were loaded from (Milestone 13 Part 2) —
+  // deliberately pinned here rather than read from the query cache on
+  // submit, so a background refetch can never pair a newer ETag with
+  // these older field values. Advanced only by this form's own
+  // successful save; a 412 is resolved by Reload (a fresh remount).
+  const [etag, setEtag] = useState(loadedETag);
   const [currency, setCurrency] = useState(settings.currency);
   const [paymentTerms, setPaymentTerms] = useState(String(settings.paymentTerms));
   const [invoicePrefix, setInvoicePrefix] = useState(settings.invoicePrefix);
@@ -40,8 +56,13 @@ function InvoiceSettingsForm({ settings, canEdit }: { settings: Settings; canEdi
     if (!ok) return;
 
     update.mutate(
-      { currency: currency.trim().toUpperCase(), paymentTerms: terms, invoicePrefix },
-      { onSuccess: () => setSaved(true) },
+      { body: { currency: currency.trim().toUpperCase(), paymentTerms: terms, invoicePrefix }, etag },
+      {
+        onSuccess: (versioned) => {
+          setEtag(versioned.etag);
+          setSaved(true);
+        },
+      },
     );
   }
 
@@ -55,7 +76,13 @@ function InvoiceSettingsForm({ settings, canEdit }: { settings: Settings; canEdi
         )}
         {update.isError && (
           <div className="mb-4">
-            <Alert>{friendlyMessage(update.error)}</Alert>
+            {isStaleWriteError(update.error) ? (
+              <Alert onRetry={onReload} retryLabel="Reload">
+                {friendlyMessage(update.error)}
+              </Alert>
+            ) : (
+              <Alert>{friendlyMessage(update.error)}</Alert>
+            )}
           </div>
         )}
         {saved && !update.isError && (
@@ -117,13 +144,28 @@ function InvoiceSettingsForm({ settings, canEdit }: { settings: Settings; canEdi
 }
 
 export function InvoiceSettingsPage() {
-  const query = useInvoiceSettings();
+  const query = useVersionedInvoiceSettings();
+  // Bumped by Reload after a 412, remounting the form from the freshly
+  // fetched version so its fields and pinned ETag are reset together.
+  const [formKey, setFormKey] = useState(0);
+  const reload = async () => {
+    await query.refetch();
+    setFormKey((key) => key + 1);
+  };
   const { user } = useAuth();
   const canEdit = hasRole(user, "admin");
 
   return (
     <QueryBoundary query={query}>
-      {(settings) => <InvoiceSettingsForm settings={settings} canEdit={canEdit} />}
+      {(versioned) => (
+        <InvoiceSettingsForm
+          key={formKey}
+          settings={versioned.data}
+          etag={versioned.etag}
+          canEdit={canEdit}
+          onReload={reload}
+        />
+      )}
     </QueryBoundary>
   );
 }

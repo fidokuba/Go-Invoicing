@@ -65,6 +65,17 @@ info:
     for the full semantics.
 
 
+    Optimistic concurrency: GET /api/v1/organisation and GET
+    /api/v1/organisation/settings return a strong `ETag` identifying the
+    resource's current version. PATCH on either resource requires that
+    value back in `If-Match`: a missing If-Match is 428
+    (precondition_required); an ETag that is no longer current — someone
+    else saved a change after you read it — is 412 (precondition_failed)
+    and writes nothing; a weak, wildcard, multiple or malformed value is
+    400. A successful PATCH returns the new ETag. The version is an HTTP
+    concern only and never appears in any JSON body.
+
+
     Money: every monetary amount is an integer number of the currency's
     minor units (e.g. GBP 12345 = £123.45) — never a float. An invoice
     carries a single top-level three-letter currency code that applies to
@@ -343,10 +354,14 @@ paths:
         A self-resource route: always returns the authenticated caller's
         own organisation. There is no path parameter to select a different
         one, so there is no cross-tenant case here. Any authenticated role
-        may call this.
+        may call this. The `ETag` identifies the organisation's current
+        version; send it back as `If-Match` on PATCH.
       responses:
         "200":
           description: The caller's organisation.
+          headers:
+            ETag:
+              $ref: "#/components/headers/VersionETag"
           content:
             application/json:
               schema:
@@ -369,7 +384,12 @@ paths:
         — an omitted field is left unchanged. An explicitly supplied empty
         string clears that optional field, except name, which may never
         become blank. There is no path parameter; this always targets the
-        caller's own organisation.
+        caller's own organisation. Requires `If-Match` with the ETag from
+        your last GET: if the organisation has been changed since (by
+        anyone), this returns 412 and writes nothing — fetch it again and
+        reapply your change.
+      parameters:
+        - $ref: "#/components/parameters/IfMatchHeader"
       requestBody:
         required: true
         content:
@@ -382,6 +402,9 @@ paths:
       responses:
         "200":
           description: The updated organisation.
+          headers:
+            ETag:
+              $ref: "#/components/headers/VersionETag"
           content:
             application/json:
               schema:
@@ -398,10 +421,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorBody"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
         "415":
           $ref: "#/components/responses/UnsupportedMediaType"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -412,10 +439,15 @@ paths:
       description: >-
         Every authenticated role may read the organisation's current
         invoice currency, payment terms, and invoice-number prefix. The
-        internal invoice-number counter itself is never exposed.
+        internal invoice-number counter itself is never exposed. The
+        `ETag` identifies the settings' current version (allocating invoice
+        numbers never changes it); send it back as `If-Match` on PATCH.
       responses:
         "200":
           description: The caller's organisation settings.
+          headers:
+            ETag:
+              $ref: "#/components/headers/VersionETag"
           content:
             application/json:
               schema:
@@ -447,7 +479,11 @@ paths:
         value rather than "unset", so an explicitly supplied blank/invalid
         value is rejected (400), not treated as "clear this field".
         Changing currency here has no effect on any invoice that has
-        already been sent — see the Invoices tag for why.
+        already been sent — see the Invoices tag for why. Requires
+        `If-Match` with the ETag from your last GET: if the settings have
+        been changed since, this returns 412 and writes nothing.
+      parameters:
+        - $ref: "#/components/parameters/IfMatchHeader"
       requestBody:
         required: true
         content:
@@ -459,6 +495,9 @@ paths:
       responses:
         "200":
           description: The updated settings.
+          headers:
+            ETag:
+              $ref: "#/components/headers/VersionETag"
           content:
             application/json:
               schema:
@@ -475,10 +514,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorBody"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
         "415":
           $ref: "#/components/responses/UnsupportedMediaType"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -1434,6 +1477,20 @@ components:
       schema:
         type: string
         format: uuid
+    IfMatchHeader:
+      name: If-Match
+      in: header
+      required: true
+      description: >-
+        Exactly one strong ETag previously returned by GET (or a successful
+        PATCH) of this resource, e.g. `"3"`. Missing is 428; a weak tag
+        (`W/"3"`), the wildcard (`*`), a list or repeated header, or any
+        other malformed value is 400; a well-formed but no-longer-current
+        ETag is 412.
+      schema:
+        type: string
+        pattern: '^"[0-9]+"$'
+      example: '"3"'
     IdempotencyKeyHeader:
       name: Idempotency-Key
       in: header
@@ -1470,7 +1527,36 @@ components:
         minimum: 0
         default: 0
 
+  headers:
+    VersionETag:
+      description: >-
+        Strong entity tag identifying the resource's current version, e.g.
+        `"3"`. Opaque to clients: send it back unchanged as If-Match.
+      schema:
+        type: string
+        pattern: '^"[0-9]+"$'
+      example: '"3"'
+
   responses:
+    PreconditionFailed:
+      description: >-
+        The If-Match ETag is no longer the resource's current version —
+        it was changed after you read it. Nothing was written; fetch the
+        resource again, reapply your change, and retry with the new ETag.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+          example:
+            error: { code: precondition_failed, message: this resource has been modified since it was read; fetch the latest version and retry }
+    PreconditionRequired:
+      description: The required If-Match header was not sent.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+          example:
+            error: { code: precondition_required, message: "If-Match header is required: send the ETag from your last GET of this resource" }
     BadRequest:
       description: The request was malformed, or failed validation, or an explicitly supplied query parameter was invalid.
       content:

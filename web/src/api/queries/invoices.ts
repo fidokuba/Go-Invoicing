@@ -77,11 +77,12 @@ export interface CreatePaymentVariables {
 
 export function useCreatePayment(id: string) {
   const queryClient = useQueryClient();
-  const invalidateInvoice = () => {
-    queryClient.invalidateQueries({ queryKey: ["invoices", id] });
-    queryClient.invalidateQueries({ queryKey: ["invoices", id, "payments"] });
-    queryClient.invalidateQueries({ queryKey: ["invoices"], exact: false });
-  };
+  // One prefix invalidation covers this invoice, its payments and every
+  // invoice list. Deliberately a single call: overlapping
+  // invalidateQueries calls each cancel the previous call's in-flight
+  // refetch (cancelRefetch), which intermittently left the invoice or its
+  // payment history showing pre-payment data.
+  const invalidateInvoice = () => queryClient.invalidateQueries({ queryKey: ["invoices"] });
   return useMutation({
     mutationFn: ({ body, idempotencyKey }: CreatePaymentVariables) =>
       unwrap(

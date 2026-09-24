@@ -375,7 +375,7 @@ export interface paths {
         };
         /**
          * Get the caller's organisation
-         * @description A self-resource route: always returns the authenticated caller's own organisation. There is no path parameter to select a different one, so there is no cross-tenant case here. Any authenticated role may call this.
+         * @description A self-resource route: always returns the authenticated caller's own organisation. There is no path parameter to select a different one, so there is no cross-tenant case here. Any authenticated role may call this. The `ETag` identifies the organisation's current version; send it back as `If-Match` on PATCH.
          */
         get: {
             parameters: {
@@ -389,6 +389,7 @@ export interface paths {
                 /** @description The caller's organisation. */
                 200: {
                     headers: {
+                        ETag: components["headers"]["VersionETag"];
                         [name: string]: unknown;
                     };
                     content: {
@@ -415,12 +416,18 @@ export interface paths {
         head?: never;
         /**
          * Update the caller's organisation
-         * @description Role required: admin only. Partial update: every field is optional — an omitted field is left unchanged. An explicitly supplied empty string clears that optional field, except name, which may never become blank. There is no path parameter; this always targets the caller's own organisation.
+         * @description Role required: admin only. Partial update: every field is optional — an omitted field is left unchanged. An explicitly supplied empty string clears that optional field, except name, which may never become blank. There is no path parameter; this always targets the caller's own organisation. Requires `If-Match` with the ETag from your last GET: if the organisation has been changed since (by anyone), this returns 412 and writes nothing — fetch it again and reapply your change.
          */
         patch: {
             parameters: {
                 query?: never;
-                header?: never;
+                header: {
+                    /**
+                     * @description Exactly one strong ETag previously returned by GET (or a successful PATCH) of this resource, e.g. `"3"`. Missing is 428; a weak tag (`W/"3"`), the wildcard (`*`), a list or repeated header, or any other malformed value is 400; a well-formed but no-longer-current ETag is 412.
+                     * @example "3"
+                     */
+                    "If-Match": components["parameters"]["IfMatchHeader"];
+                };
                 path?: never;
                 cookie?: never;
             };
@@ -439,6 +446,7 @@ export interface paths {
                 /** @description The updated organisation. */
                 200: {
                     headers: {
+                        ETag: components["headers"]["VersionETag"];
                         [name: string]: unknown;
                     };
                     content: {
@@ -457,8 +465,10 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorBody"];
                     };
                 };
+                412: components["responses"]["PreconditionFailed"];
                 413: components["responses"]["PayloadTooLarge"];
                 415: components["responses"]["UnsupportedMediaType"];
+                428: components["responses"]["PreconditionRequired"];
                 500: components["responses"]["InternalServerError"];
             };
         };
@@ -473,7 +483,7 @@ export interface paths {
         };
         /**
          * Get the caller's invoice-numbering settings
-         * @description Every authenticated role may read the organisation's current invoice currency, payment terms, and invoice-number prefix. The internal invoice-number counter itself is never exposed.
+         * @description Every authenticated role may read the organisation's current invoice currency, payment terms, and invoice-number prefix. The internal invoice-number counter itself is never exposed. The `ETag` identifies the settings' current version (allocating invoice numbers never changes it); send it back as `If-Match` on PATCH.
          */
         get: {
             parameters: {
@@ -487,6 +497,7 @@ export interface paths {
                 /** @description The caller's organisation settings. */
                 200: {
                     headers: {
+                        ETag: components["headers"]["VersionETag"];
                         [name: string]: unknown;
                     };
                     content: {
@@ -520,12 +531,18 @@ export interface paths {
         head?: never;
         /**
          * Update the caller's invoice-numbering settings
-         * @description Role required: admin only, since these settings affect every future invoice the tenant produces. Partial update: an omitted field is left unchanged. Unlike PATCH /organisation, none of these three fields may be cleared to a blank/zero-ish value by supplying one — currency and invoicePrefix are business-required strings, and paymentTerms already treats 0 ("due immediately") as a meaningful value rather than "unset", so an explicitly supplied blank/invalid value is rejected (400), not treated as "clear this field". Changing currency here has no effect on any invoice that has already been sent — see the Invoices tag for why.
+         * @description Role required: admin only, since these settings affect every future invoice the tenant produces. Partial update: an omitted field is left unchanged. Unlike PATCH /organisation, none of these three fields may be cleared to a blank/zero-ish value by supplying one — currency and invoicePrefix are business-required strings, and paymentTerms already treats 0 ("due immediately") as a meaningful value rather than "unset", so an explicitly supplied blank/invalid value is rejected (400), not treated as "clear this field". Changing currency here has no effect on any invoice that has already been sent — see the Invoices tag for why. Requires `If-Match` with the ETag from your last GET: if the settings have been changed since, this returns 412 and writes nothing.
          */
         patch: {
             parameters: {
                 query?: never;
-                header?: never;
+                header: {
+                    /**
+                     * @description Exactly one strong ETag previously returned by GET (or a successful PATCH) of this resource, e.g. `"3"`. Missing is 428; a weak tag (`W/"3"`), the wildcard (`*`), a list or repeated header, or any other malformed value is 400; a well-formed but no-longer-current ETag is 412.
+                     * @example "3"
+                     */
+                    "If-Match": components["parameters"]["IfMatchHeader"];
+                };
                 path?: never;
                 cookie?: never;
             };
@@ -543,6 +560,7 @@ export interface paths {
                 /** @description The updated settings. */
                 200: {
                     headers: {
+                        ETag: components["headers"]["VersionETag"];
                         [name: string]: unknown;
                     };
                     content: {
@@ -561,8 +579,10 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorBody"];
                     };
                 };
+                412: components["responses"]["PreconditionFailed"];
                 413: components["responses"]["PayloadTooLarge"];
                 415: components["responses"]["UnsupportedMediaType"];
+                428: components["responses"]["PreconditionRequired"];
                 500: components["responses"]["InternalServerError"];
             };
         };
@@ -2179,6 +2199,40 @@ export interface components {
         };
     };
     responses: {
+        /** @description The If-Match ETag is no longer the resource's current version — it was changed after you read it. Nothing was written; fetch the resource again, reapply your change, and retry with the new ETag. */
+        PreconditionFailed: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                /**
+                 * @example {
+                 *       "error": {
+                 *         "code": "precondition_failed",
+                 *         "message": "this resource has been modified since it was read; fetch the latest version and retry"
+                 *       }
+                 *     }
+                 */
+                "application/json": components["schemas"]["ErrorBody"];
+            };
+        };
+        /** @description The required If-Match header was not sent. */
+        PreconditionRequired: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                /**
+                 * @example {
+                 *       "error": {
+                 *         "code": "precondition_required",
+                 *         "message": "If-Match header is required: send the ETag from your last GET of this resource"
+                 *       }
+                 *     }
+                 */
+                "application/json": components["schemas"]["ErrorBody"];
+            };
+        };
         /** @description The request was malformed, or failed validation, or an explicitly supplied query parameter was invalid. */
         BadRequest: {
             headers: {
@@ -2303,6 +2357,11 @@ export interface components {
     parameters: {
         IdPathParam: string;
         /**
+         * @description Exactly one strong ETag previously returned by GET (or a successful PATCH) of this resource, e.g. `"3"`. Missing is 428; a weak tag (`W/"3"`), the wildcard (`*`), a list or repeated header, or any other malformed value is 400; a well-formed but no-longer-current ETag is 412.
+         * @example "3"
+         */
+        IfMatchHeader: string;
+        /**
          * @description An opaque, client-generated key identifying one logical payment attempt: 16-128 characters from A-Z a-z 0-9 . _ ~ : - (a UUID is accepted but not required). Case-sensitive. Exactly one Idempotency-Key header must be sent; a missing, repeated or malformed key is a 400. The key is scoped to the invoice in the path. Generate a fresh, random key for each new payment, and reuse it unchanged for every retry of that same payment.
          * @example 8e03978e-40d5-43e8-bc93-6894a57f9324
          */
@@ -2313,7 +2372,13 @@ export interface components {
         OffsetParam: number;
     };
     requestBodies: never;
-    headers: never;
+    headers: {
+        /**
+         * @description Strong entity tag identifying the resource's current version, e.g. `"3"`. Opaque to clients: send it back unchanged as If-Match.
+         * @example "3"
+         */
+        VersionETag: string;
+    };
     pathItems: never;
 }
 export type $defs = Record<string, never>;

@@ -26,6 +26,11 @@ type Organisation struct {
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
 	DeletedAt  *time.Time
+
+	// Version (Milestone 13 Part 2) is the optimistic-concurrency token:
+	// incremented on every user-facing Update, exposed only as the HTTP
+	// ETag, never in JSON.
+	Version int64
 }
 
 func (o *Organisation) TableName() string {

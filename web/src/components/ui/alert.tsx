@@ -15,11 +15,13 @@ export function Alert({
   title,
   children,
   onRetry,
+  retryLabel = "Retry",
 }: {
   tone?: AlertTone;
   title?: string;
   children?: ReactNode;
   onRetry?: () => void;
+  retryLabel?: string;
 }) {
   const Icon = tone === "error" ? AlertTriangle : Info;
   return (
@@ -32,7 +34,7 @@ export function Alert({
       {onRetry && (
         <Button variant="secondary" size="sm" onClick={onRetry}>
           <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
-          Retry
+          {retryLabel}
         </Button>
       )}
     </div>

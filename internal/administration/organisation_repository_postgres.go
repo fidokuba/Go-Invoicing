@@ -16,6 +16,12 @@ import (
 // a 500.
 var ErrOrganisationNotFound = errors.New("organisation not found")
 
+// ErrOrganisationVersionConflict (Milestone 13 Part 2) is returned by
+// Update when the organisation exists but its current version is not the
+// caller's expected one — someone else has modified it since the caller
+// read it, so applying this write would silently overwrite their change.
+var ErrOrganisationVersionConflict = errors.New("organisation has been modified since it was read")
+
 // PostgresOrganisationRepository is the PostgreSQL-backed implementation of
 // OrganisationRepository. It holds a dbExecutor (see
 // settings_repository_postgres.go) rather than a concrete pool, so the
@@ -73,7 +79,7 @@ func (r *PostgresOrganisationRepository) Create(
 		VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
 		)
-		RETURNING created_at, updated_at
+		RETURNING created_at, updated_at, version
 	`
 
 	err := r.db.QueryRow(
@@ -91,7 +97,7 @@ func (r *PostgresOrganisationRepository) Create(
 		organisation.PostalCode,
 		organisation.Country,
 		organisation.TaxID,
-	).Scan(&organisation.CreatedAt, &organisation.UpdatedAt)
+	).Scan(&organisation.CreatedAt, &organisation.UpdatedAt, &organisation.Version)
 	if err != nil {
 		return fmt.Errorf("create organisation: %w", err)
 	}
@@ -121,7 +127,8 @@ func (r *PostgresOrganisationRepository) GetByID(
 			tax_id,
 			created_at,
 			updated_at,
-			deleted_at
+			deleted_at,
+			version
 		FROM organisations
 		WHERE id = $1
 	`
@@ -148,6 +155,7 @@ func (r *PostgresOrganisationRepository) GetByID(
 		&organisation.CreatedAt,
 		&organisation.UpdatedAt,
 		&organisation.DeletedAt,
+		&organisation.Version,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -160,18 +168,25 @@ func (r *PostgresOrganisationRepository) GetByID(
 	return &organisation, nil
 }
 
-// Update persists every mutable party-detail field in one statement.
-// Logo is intentionally absent from the SET list, so it is never touched
-// here — see OrganisationRepository.Update's own comment. updated_at is
-// bumped explicitly (Create leaves it to the column default, but this is
-// a genuine change, not an initial insert) and scanned back onto
-// organisation via RETURNING, so the value OrganisationService.Update
-// returns to its caller reflects this write, not the stale value it read
-// before applying the patch.
+// Update persists every mutable party-detail field in one statement,
+// but only if the organisation's current version is still
+// expectedVersion (Milestone 13 Part 2): the version predicate in the
+// UPDATE itself is the authoritative optimistic-concurrency check, so two
+// writers holding the same version can never both succeed — whichever
+// commits second matches no row. A successful write increments version
+// by one; the new version and updated_at are scanned back onto
+// organisation. Logo is intentionally absent from the SET list, so it is
+// never touched here — see OrganisationRepository.Update's own comment.
+//
+// Zero rows means either a stale expectedVersion
+// (ErrOrganisationVersionConflict) or no such live organisation
+// (ErrOrganisationNotFound); a follow-up existence check tells the two
+// apart.
 func (r *PostgresOrganisationRepository) Update(
 	ctx context.Context,
 	organisationID uuid.UUID,
 	organisation *Organisation,
+	expectedVersion int64,
 ) error {
 	const query = `
 		UPDATE organisations
@@ -186,10 +201,12 @@ func (r *PostgresOrganisationRepository) Update(
 			postal_code = $8,
 			country     = $9,
 			tax_id      = $10,
-			updated_at  = NOW()
+			updated_at  = NOW(),
+			version     = version + 1
 		WHERE id = $11
 			AND deleted_at IS NULL
-		RETURNING updated_at
+			AND version = $12
+		RETURNING version, updated_at
 	`
 
 	err := r.db.QueryRow(
@@ -206,14 +223,32 @@ func (r *PostgresOrganisationRepository) Update(
 		organisation.Country,
 		organisation.TaxID,
 		organisationID,
-	).Scan(&organisation.UpdatedAt)
+		expectedVersion,
+	).Scan(&organisation.Version, &organisation.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrOrganisationNotFound
+			return r.missingOrStale(ctx, organisationID)
 		}
 
 		return fmt.Errorf("update organisation: %w", err)
 	}
 
 	return nil
+}
+
+// missingOrStale classifies an Update that matched no row: the
+// organisation still exists (so the version was stale) or it doesn't.
+func (r *PostgresOrganisationRepository) missingOrStale(ctx context.Context, organisationID uuid.UUID) error {
+	const query = `SELECT EXISTS (SELECT 1 FROM organisations WHERE id = $1 AND deleted_at IS NULL)`
+
+	var exists bool
+	if err := r.db.QueryRow(ctx, query, organisationID).Scan(&exists); err != nil {
+		return fmt.Errorf("check organisation exists: %w", err)
+	}
+
+	if exists {
+		return ErrOrganisationVersionConflict
+	}
+
+	return ErrOrganisationNotFound
 }

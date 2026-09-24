@@ -43,6 +43,8 @@ func (f *fakeOrganisationRepository) Create(ctx context.Context, organisation *O
 		return f.createErr
 	}
 
+	// Mirrors the column default: a new organisation starts at version 1.
+	organisation.Version = 1
 	f.organisations[organisation.ID] = *organisation
 	return nil
 }
@@ -59,14 +61,22 @@ func (f *fakeOrganisationRepository) GetByID(ctx context.Context, id uuid.UUID) 
 	return &organisation, nil
 }
 
-func (f *fakeOrganisationRepository) Update(ctx context.Context, organisationID uuid.UUID, organisation *Organisation) error {
+// Update mirrors PostgresOrganisationRepository.Update's optimistic
+// concurrency contract: the write only happens if the stored version
+// equals expectedVersion, and then increments it.
+func (f *fakeOrganisationRepository) Update(ctx context.Context, organisationID uuid.UUID, organisation *Organisation, expectedVersion int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if _, ok := f.organisations[organisationID]; !ok {
+	current, ok := f.organisations[organisationID]
+	if !ok {
 		return ErrOrganisationNotFound
 	}
+	if current.Version != expectedVersion {
+		return ErrOrganisationVersionConflict
+	}
 
+	organisation.Version = expectedVersion + 1
 	f.organisations[organisationID] = *organisation
 	return nil
 }
@@ -100,6 +110,8 @@ func (f *fakeSettingsRepository) Create(ctx context.Context, settings *Settings)
 		return f.createErr
 	}
 
+	// Mirrors the column default: new settings start at version 1.
+	settings.Version = 1
 	f.settings[settings.OrganisationID] = *settings
 	return nil
 }
@@ -139,7 +151,7 @@ func (f *fakeSettingsRepository) UpdateInvoiceNumber(ctx context.Context, organi
 // Update persists InvoicePrefix/Currency/PaymentTerms only — mirroring
 // PostgresSettingsRepository.Update's own contract, including never
 // touching InvoiceNumber.
-func (f *fakeSettingsRepository) Update(ctx context.Context, organisationID uuid.UUID, settings *Settings) error {
+func (f *fakeSettingsRepository) Update(ctx context.Context, organisationID uuid.UUID, settings *Settings, expectedVersion int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -147,6 +159,12 @@ func (f *fakeSettingsRepository) Update(ctx context.Context, organisationID uuid
 	if !ok {
 		return ErrSettingsNotFound
 	}
+	if s.Version != expectedVersion {
+		return ErrSettingsVersionConflict
+	}
+
+	s.Version = expectedVersion + 1
+	settings.Version = s.Version
 
 	s.InvoicePrefix = settings.InvoicePrefix
 	s.Currency = settings.Currency

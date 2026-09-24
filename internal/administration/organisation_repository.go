@@ -42,5 +42,10 @@ type OrganisationRepository interface {
 	// already checked" defense-in-depth reasoning applied to every other
 	// tenant-scoped repository mutation in this project (e.g.
 	// InvoiceRepository.MarkSent).
-	Update(ctx context.Context, organisationID uuid.UUID, organisation *Organisation) error
+	//
+	// expectedVersion (Milestone 13 Part 2): the write only happens if the
+	// organisation's current version equals it, atomically in the same
+	// statement; otherwise ErrOrganisationVersionConflict. On success
+	// organisation.Version holds the new, incremented version.
+	Update(ctx context.Context, organisationID uuid.UUID, organisation *Organisation, expectedVersion int64) error
 }

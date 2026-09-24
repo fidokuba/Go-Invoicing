@@ -60,14 +60,24 @@ func (s *SettingsService) Get(ctx context.Context, organisationID uuid.UUID) (*S
 // it, and writes the whole merged value back via one repository Update
 // call — no dynamic/reflection-based patch SQL, matching this project's
 // "smallest clear implementation" convention.
+//
+// Optimistic concurrency (Milestone 13 Part 2), exactly as
+// OrganisationService.Update: a mismatch with the version just read
+// fails fast with ErrSettingsVersionConflict, and the repository's atomic
+// "WHERE version = expectedVersion" is the authoritative check.
 func (s *SettingsService) Update(
 	ctx context.Context,
 	organisationID uuid.UUID,
+	expectedVersion int64,
 	request UpdateSettingsRequest,
 ) (*Settings, error) {
 	settings, err := s.repository.GetByOrganisationID(ctx, organisationID)
 	if err != nil {
 		return nil, err
+	}
+
+	if settings.Version != expectedVersion {
+		return nil, ErrSettingsVersionConflict
 	}
 
 	if request.Currency != nil {
@@ -96,7 +106,7 @@ func (s *SettingsService) Update(
 		settings.InvoicePrefix = prefix
 	}
 
-	if err := s.repository.Update(ctx, organisationID, settings); err != nil {
+	if err := s.repository.Update(ctx, organisationID, settings, expectedVersion); err != nil {
 		return nil, err
 	}
 

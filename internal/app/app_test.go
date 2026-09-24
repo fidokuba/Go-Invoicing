@@ -421,6 +421,15 @@ func doRequest(handler http.Handler, method, path, token string, body *bytes.Buf
 	if method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/payments") {
 		request.Header.Set("Idempotency-Key", "app-test-"+uuid.NewString())
 	}
+	// PATCH /organisation and /organisation/settings require If-Match
+	// (Milestone 13 Part 2). Like a well-behaved client, this helper sends
+	// the ETag from a fresh GET of the same resource as the same caller.
+	// Tests of the precondition behaviour itself set (or omit) If-Match
+	// explicitly via doRequestWithIfMatch.
+	if method == http.MethodPatch && (request.URL.Path == "/api/v1/organisation" || request.URL.Path == "/api/v1/organisation/settings") {
+		current := doRequest(handler, http.MethodGet, request.URL.Path, token, nil)
+		request.Header.Set("If-Match", current.Header().Get("ETag"))
+	}
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	return recorder

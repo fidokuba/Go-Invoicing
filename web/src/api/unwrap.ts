@@ -28,3 +28,19 @@ export async function unwrap<T>(result: FetchResult<T> | Promise<FetchResult<T>>
 
   return data as T;
 }
+
+/** A resource together with the strong ETag identifying its version
+ * (Milestone 13 Part 2) — only GET/PATCH /organisation and
+ * /organisation/settings send one. */
+export interface Versioned<T> {
+  data: T;
+  etag: string;
+}
+
+/** unwrap, additionally keeping the response's ETag — which a later
+ * PATCH must send back unchanged as If-Match. */
+export async function unwrapVersioned<T>(result: FetchResult<T> | Promise<FetchResult<T>>): Promise<Versioned<T>> {
+  const awaited = await result;
+  const data = await unwrap(awaited);
+  return { data, etag: awaited.response.headers.get("ETag") ?? "" };
+}

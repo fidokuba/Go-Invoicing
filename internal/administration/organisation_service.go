@@ -132,14 +132,27 @@ func (s *OrganisationService) GetByID(
 // project's existing "smallest clear implementation" convention (e.g.
 // InvoiceService.Send's explicit domain method over a generic state
 // machine).
+//
+// Optimistic concurrency (Milestone 13 Part 2): expectedVersion is the
+// version the caller last read (its If-Match). A mismatch against the
+// version just read fails fast with ErrOrganisationVersionConflict, but
+// the authoritative check is the repository's atomic
+// "WHERE version = expectedVersion" — which also catches a concurrent
+// write landing between this read and the write below, so a merged
+// value built from a stale read can never overwrite a newer one.
 func (s *OrganisationService) Update(
 	ctx context.Context,
 	organisationID uuid.UUID,
+	expectedVersion int64,
 	request UpdateOrganisationRequest,
 ) (*Organisation, error) {
 	organisation, err := s.repository.GetByID(ctx, organisationID)
 	if err != nil {
 		return nil, err
+	}
+
+	if organisation.Version != expectedVersion {
+		return nil, ErrOrganisationVersionConflict
 	}
 
 	if request.Name != nil {
@@ -192,7 +205,7 @@ func (s *OrganisationService) Update(
 		organisation.TaxID = nilIfEmpty(*request.TaxID)
 	}
 
-	if err := s.repository.Update(ctx, organisationID, organisation); err != nil {
+	if err := s.repository.Update(ctx, organisationID, organisation, expectedVersion); err != nil {
 		return nil, err
 	}
 
