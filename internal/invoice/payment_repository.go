@@ -31,7 +31,20 @@ type PaymentRepository interface {
 	// implementation for how an INSERT ... SELECT enforces this in a
 	// single statement. If no such tenant-owned invoice exists, this
 	// returns ErrInvoiceNotFound rather than silently inserting nothing.
-	Create(ctx context.Context, organisationID uuid.UUID, payment *Payment) error
+	//
+	// idempotency (Milestone 13 Part 1) is written onto the same row, so
+	// the key and request fingerprint become durable if and only if the
+	// payment itself does.
+	Create(ctx context.Context, organisationID uuid.UUID, payment *Payment, idempotency PaymentIdempotency) error
+
+	// GetByIdempotencyKey (Milestone 13 Part 1) returns the payment
+	// previously created against invoiceID with idempotencyKey, together
+	// with the request fingerprint it was created from — or
+	// errPaymentNotFound if there is none. Tenant-scoped through invoices
+	// exactly like GetByInvoiceID, so a foreign invoice's key is never
+	// visible. InvoiceService calls this only after GetForUpdate has
+	// locked (and tenant-verified) the invoice.
+	GetByIdempotencyKey(ctx context.Context, organisationID uuid.UUID, invoiceID uuid.UUID, idempotencyKey string) (*Payment, []byte, error)
 	GetByInvoiceID(ctx context.Context, organisationID uuid.UUID, invoiceID uuid.UUID) ([]*Payment, error)
 	GetTotalPaidByInvoiceID(ctx context.Context, organisationID uuid.UUID, invoiceID uuid.UUID) (int64, error)
 
@@ -44,4 +57,14 @@ type PaymentRepository interface {
 	// Go's zero value for int64 already represents correctly when the
 	// caller indexes the map for an ID that isn't there.
 	GetTotalPaidByInvoiceIDs(ctx context.Context, organisationID uuid.UUID, invoiceIDs []uuid.UUID) (map[uuid.UUID]int64, error)
+}
+
+// PaymentIdempotency is the idempotency identity stored on a payment row
+// (Milestone 13 Part 1): the client's Idempotency-Key and the SHA-256
+// fingerprint of the logical request it was first used with. It is kept
+// separate from Payment itself because it is never part of any API
+// response.
+type PaymentIdempotency struct {
+	Key         string
+	RequestHash []byte
 }

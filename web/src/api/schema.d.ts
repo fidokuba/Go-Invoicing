@@ -1675,11 +1675,19 @@ export interface paths {
         /**
          * Record a payment against an invoice
          * @description Any authenticated role. A Draft invoice cannot accept a payment (409); a Sent (including effectively Overdue) invoice can. amount must be strictly positive (400 if not) and must not exceed the invoice's current outstanding balance (409 if it does — this depends on the invoice's current state, so it's a conflict, not a malformed request). If this payment exactly exhausts the outstanding balance, the invoice is automatically transitioned to Paid in the same operation; a partial payment leaves the invoice's status unchanged. paymentDate defaults to the current date if omitted. There is no refund operation.
+         *
+         *     Idempotency: the required `Idempotency-Key` header identifies one logical payment attempt. Retrying with the same key and the same logical request (same amount, paymentMethod, paymentDate — or its omission — reference and notes; JSON formatting and field order don't matter) never records a second payment: it returns 201 with the originally recorded payment and `Idempotent-Replayed: true`, even if that payment has since settled the invoice. Reusing the key with a different request returns 409 `idempotency_key_reused` and records nothing. Only a successfully recorded payment consumes a key: any failure (400, 401, 404, a 409 business-rule conflict, 5xx) stores nothing, so the same key may be retried — including with a corrected request. If the outcome is uncertain (a network failure, a lost response, or any 5xx), retry with the SAME key: the payment is then either replayed (it was recorded) or recorded now (it wasn't), never duplicated. Use a NEW key only for a new, distinct payment. Keys are scoped to this invoice and retained for as long as the payment exists.
          */
         post: {
             parameters: {
                 query?: never;
-                header?: never;
+                header: {
+                    /**
+                     * @description An opaque, client-generated key identifying one logical payment attempt: 16-128 characters from A-Z a-z 0-9 . _ ~ : - (a UUID is accepted but not required). Case-sensitive. Exactly one Idempotency-Key header must be sent; a missing, repeated or malformed key is a 400. The key is scoped to the invoice in the path. Generate a fresh, random key for each new payment, and reuse it unchanged for every retry of that same payment.
+                     * @example 8e03978e-40d5-43e8-bc93-6894a57f9324
+                     */
+                    "Idempotency-Key": components["parameters"]["IdempotencyKeyHeader"];
+                };
                 path: {
                     id: components["parameters"]["IdPathParam"];
                 };
@@ -1699,9 +1707,11 @@ export interface paths {
                 };
             };
             responses: {
-                /** @description The recorded payment. */
+                /** @description The recorded payment — either newly recorded by this request, or (with `Idempotent-Replayed: true`) the payment this Idempotency-Key already recorded, returned unchanged. */
                 201: {
                     headers: {
+                        /** @description Present, with the value `true`, only when this response replays a payment an earlier request with the same Idempotency-Key already recorded. Absent on the response that originally recorded it. */
+                        "Idempotent-Replayed"?: "true";
                         [name: string]: unknown;
                     };
                     content: {
@@ -1720,7 +1730,23 @@ export interface paths {
                         "application/json": components["schemas"]["PaymentResponse"];
                     };
                 };
-                400: components["responses"]["BadRequest"];
+                /** @description The request was malformed or failed validation — including a missing, repeated or malformed Idempotency-Key header (invalid_request). */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        /**
+                         * @example {
+                         *       "error": {
+                         *         "code": "invalid_request",
+                         *         "message": "Idempotency-Key header is required"
+                         *       }
+                         *     }
+                         */
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
                 401: components["responses"]["Unauthorized"];
                 /** @description No such invoice in the caller's organisation. */
                 404: {
@@ -1739,12 +1765,20 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorBody"];
                     };
                 };
-                /** @description The invoice cannot currently accept a payment, or this payment would exceed its outstanding balance. */
+                /** @description The invoice cannot currently accept a payment, or this payment would exceed its outstanding balance (code `conflict`); or this Idempotency-Key was already used on this invoice for a different payment request (code `idempotency_key_reused` — nothing about the original request is revealed, and nothing is recorded). */
                 409: {
                     headers: {
                         [name: string]: unknown;
                     };
                     content: {
+                        /**
+                         * @example {
+                         *       "error": {
+                         *         "code": "idempotency_key_reused",
+                         *         "message": "Idempotency-Key has already been used for a different payment request."
+                         *       }
+                         *     }
+                         */
                         "application/json": components["schemas"]["ErrorBody"];
                     };
                 };
@@ -2268,6 +2302,11 @@ export interface components {
     };
     parameters: {
         IdPathParam: string;
+        /**
+         * @description An opaque, client-generated key identifying one logical payment attempt: 16-128 characters from A-Z a-z 0-9 . _ ~ : - (a UUID is accepted but not required). Case-sensitive. Exactly one Idempotency-Key header must be sent; a missing, repeated or malformed key is a 400. The key is scoped to the invoice in the path. Generate a fresh, random key for each new payment, and reuse it unchanged for every retry of that same payment.
+         * @example 8e03978e-40d5-43e8-bc93-6894a57f9324
+         */
+        IdempotencyKeyHeader: string;
         /** @description Maximum number of items to return. Defaults to 50; must not exceed 200. */
         LimitParam: number;
         /** @description Number of matching items to skip. Defaults to 0. */

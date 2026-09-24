@@ -82,13 +82,15 @@ func TestInvoiceService_CreatePayment_Persisted(t *testing.T) {
 
 	service := newPaymentTestService(db)
 
-	payment, _, err := service.CreatePayment(ctx, organisationID, invoiceID, CreatePaymentRequest{
-		Amount:        4000,
-		PaymentMethod: "cash",
+	result, err := service.CreatePayment(ctx, organisationID, invoiceID, CreatePaymentRequest{
+		IdempotencyKey: newTestIdempotencyKey(),
+		Amount:         4000,
+		PaymentMethod:  "cash",
 	})
 	if err != nil {
 		t.Fatalf("create payment: %v", err)
 	}
+	payment := result.Payment
 
 	paymentRepository := NewPostgresPaymentRepository(db)
 
@@ -124,9 +126,10 @@ func TestInvoiceService_CreatePayment_MultiplePaymentsAccumulate(t *testing.T) {
 
 	amounts := []int64{2000, 3000, 4000} // sums to 9000, deliberately under the 10000 total
 	for _, amount := range amounts {
-		if _, _, err := service.CreatePayment(ctx, organisationID, invoiceID, CreatePaymentRequest{
-			Amount:        amount,
-			PaymentMethod: "cash",
+		if _, err := service.CreatePayment(ctx, organisationID, invoiceID, CreatePaymentRequest{
+			IdempotencyKey: newTestIdempotencyKey(),
+			Amount:         amount,
+			PaymentMethod:  "cash",
 		}); err != nil {
 			t.Fatalf("create payment of %d: %v", amount, err)
 		}
@@ -169,9 +172,10 @@ func TestInvoiceService_CreatePayment_FullPayment_UpdatesStatusInDB(t *testing.T
 
 	service := newPaymentTestService(db)
 
-	if _, _, err := service.CreatePayment(ctx, organisationID, invoiceID, CreatePaymentRequest{
-		Amount:        10000,
-		PaymentMethod: "bank_transfer",
+	if _, err := service.CreatePayment(ctx, organisationID, invoiceID, CreatePaymentRequest{
+		IdempotencyKey: newTestIdempotencyKey(),
+		Amount:         10000,
+		PaymentMethod:  "bank_transfer",
 	}); err != nil {
 		t.Fatalf("create payment: %v", err)
 	}
@@ -204,9 +208,10 @@ func TestInvoiceService_CreatePayment_OverpaymentTransaction_CreatesNothing(t *t
 
 	service := newPaymentTestService(db)
 
-	_, _, err := service.CreatePayment(ctx, organisationID, invoiceID, CreatePaymentRequest{
-		Amount:        10001, // 1 minor unit more than the outstanding balance
-		PaymentMethod: "cash",
+	_, err := service.CreatePayment(ctx, organisationID, invoiceID, CreatePaymentRequest{
+		IdempotencyKey: newTestIdempotencyKey(),
+		Amount:         10001, // 1 minor unit more than the outstanding balance
+		PaymentMethod:  "cash",
 	})
 	if !errors.Is(err, ErrPaymentExceedsOutstanding) {
 		t.Fatalf("expected ErrPaymentExceedsOutstanding, got %v", err)
@@ -256,9 +261,10 @@ func TestInvoiceService_CreatePayment_WrongOrganisation_LeavesNoTrace(t *testing
 
 	service := newPaymentTestService(db)
 
-	_, _, err := service.CreatePayment(ctx, organisationA, invoiceID, CreatePaymentRequest{
-		Amount:        5000,
-		PaymentMethod: "cash",
+	_, err := service.CreatePayment(ctx, organisationA, invoiceID, CreatePaymentRequest{
+		IdempotencyKey: newTestIdempotencyKey(),
+		Amount:         5000,
+		PaymentMethod:  "cash",
 	})
 	if !errors.Is(err, ErrInvoiceNotFound) {
 		t.Fatalf("expected ErrInvoiceNotFound for a cross-organisation payment attempt, got %v", err)
@@ -329,9 +335,10 @@ func TestInvoiceService_CreatePayment_ConcurrentPaymentsCannotOverpay(t *testing
 		go func(i int) {
 			defer wg.Done()
 
-			_, _, err := service.CreatePayment(ctx, organisationID, invoiceID, CreatePaymentRequest{
-				Amount:        10000, // each attempts to pay the full balance
-				PaymentMethod: "cash",
+			_, err := service.CreatePayment(ctx, organisationID, invoiceID, CreatePaymentRequest{
+				IdempotencyKey: newTestIdempotencyKey(),
+				Amount:         10000, // each attempts to pay the full balance
+				PaymentMethod:  "cash",
 			})
 			errs[i] = err
 		}(i)

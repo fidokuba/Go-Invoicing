@@ -79,6 +79,7 @@ func TestNilMetrics_EveryMethodIsANoOp(t *testing.T) {
 	m.RecordWorkerFailure()
 	m.RecordSessionsDeleted(5)
 	m.RecordPDFGeneration("success", time.Millisecond)
+	m.RecordPaymentIdempotency(PaymentIdempotencyCreated)
 }
 
 // TestObserveHTTPRequest_BoundedLabelsAndHistogram proves the HTTP
@@ -239,4 +240,31 @@ func TestMetrics_ConcurrentRecordingAndScrapingIsRaceFree(t *testing.T) {
 		}(g)
 	}
 	wg.Wait()
+}
+
+// TestRecordPaymentIdempotency_OutcomeLabelIsBoundedEnum proves the
+// Milestone 13 Part 1 counter carries only the three fixed outcomes, and
+// that any other value is dropped rather than becoming a new label value.
+func TestRecordPaymentIdempotency_OutcomeLabelIsBoundedEnum(t *testing.T) {
+	m := New(nil)
+
+	m.RecordPaymentIdempotency(PaymentIdempotencyCreated)
+	m.RecordPaymentIdempotency(PaymentIdempotencyReplayed)
+	m.RecordPaymentIdempotency(PaymentIdempotencyReplayed)
+	m.RecordPaymentIdempotency(PaymentIdempotencyConflict)
+	m.RecordPaymentIdempotency("some-raw-idempotency-key-value")
+
+	body := scrape(t, m)
+	for _, want := range []string{
+		`go_invoicing_payment_idempotency_total{outcome="created"} 1`,
+		`go_invoicing_payment_idempotency_total{outcome="replayed"} 2`,
+		`go_invoicing_payment_idempotency_total{outcome="conflict"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected %q in:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "some-raw-idempotency-key-value") {
+		t.Error("expected an unrecognised outcome never to become a label value")
+	}
 }

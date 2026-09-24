@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -411,6 +412,14 @@ func doRequest(handler http.Handler, method, path, token string, body *bytes.Buf
 	request.Header.Set("Content-Type", "application/json")
 	if token != "" {
 		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	// POST /invoices/{id}/payments requires an Idempotency-Key (Milestone
+	// 13 Part 1). Like any well-behaved client, this helper sends a fresh
+	// one per call — so each call here is one new logical payment attempt.
+	// Tests of the idempotency behaviour itself use
+	// doRequestWithIdempotencyKey to control (or omit) the key.
+	if method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/payments") {
+		request.Header.Set("Idempotency-Key", "app-test-"+uuid.NewString())
 	}
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)

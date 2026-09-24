@@ -60,7 +60,7 @@ func TestPostgresPaymentRepository_CreateAndGetByInvoiceID(t *testing.T) {
 		Notes:         &notes,
 	}
 
-	if err := repository.Create(ctx, organisationID, payment); err != nil {
+	if err := repository.Create(ctx, organisationID, payment, newTestPaymentIdempotency()); err != nil {
 		t.Fatalf("create payment: %v", err)
 	}
 
@@ -131,7 +131,7 @@ func TestPostgresPaymentRepository_Create_PopulatesTimestamps(t *testing.T) {
 		PaymentDate:   time.Now().UTC().Truncate(24 * time.Hour),
 	}
 
-	if err := repository.Create(ctx, organisationID, payment); err != nil {
+	if err := repository.Create(ctx, organisationID, payment, newTestPaymentIdempotency()); err != nil {
 		t.Fatalf("create payment: %v", err)
 	}
 	t.Cleanup(func() {
@@ -208,7 +208,7 @@ func TestPostgresPaymentRepository_GetByInvoiceID_OrderedByDateThenCreatedAt(t *
 			PaymentMethod: "cash",
 			PaymentDate:   d,
 		}
-		if err := repository.Create(ctx, organisationID, p); err != nil {
+		if err := repository.Create(ctx, organisationID, p, newTestPaymentIdempotency()); err != nil {
 			t.Fatalf("create payment: %v", err)
 		}
 		ids = append(ids, p.ID)
@@ -278,7 +278,7 @@ func TestPostgresPaymentRepository_GetTotalPaidByInvoiceID_MultiplePayments(t *t
 			PaymentMethod: "cash",
 			PaymentDate:   time.Now().UTC().Truncate(24 * time.Hour),
 		}
-		if err := repository.Create(ctx, organisationID, p); err != nil {
+		if err := repository.Create(ctx, organisationID, p, newTestPaymentIdempotency()); err != nil {
 			t.Fatalf("create payment: %v", err)
 		}
 		ids = append(ids, p.ID)

@@ -1,6 +1,7 @@
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import { useCreatePayment } from "@/api/queries/invoices";
 import { friendlyMessage } from "@/api/errors";
+import { isIdempotencyKeyReused, isUncertainFailure, newIdempotencyKey } from "@/lib/idempotencyKey";
 import { formatMoney, minorToInputString, parseMoneyInput } from "@/lib/money";
 import { todayDateOnly } from "@/lib/date";
 import { Dialog } from "@/components/ui/dialog";
@@ -27,6 +28,15 @@ export function RecordPaymentDialog({
   const [reference, setReference] = useState("");
   const [amountError, setAmountError] = useState<string | null>(null);
   const createPayment = useCreatePayment(invoiceId);
+  // The Idempotency-Key for the logical payment attempt currently in
+  // progress (Milestone 13 Part 1), or null when there is none. Created on
+  // the first submit; kept across resubmits while the outcome is
+  // uncertain, so a retry can never record the payment twice; cleared once
+  // the outcome is known, so the next submission is a new payment. Lives
+  // as long as this component (which, like the form fields, survives the
+  // dialog being closed and reopened) — deliberately not persisted
+  // anywhere, so a page reload starts afresh.
+  const idempotencyKey = useRef<string | null>(null);
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -46,14 +56,35 @@ export function RecordPaymentDialog({
     }
     setAmountError(null);
 
+    idempotencyKey.current ??= newIdempotencyKey();
+
     createPayment.mutate(
       {
-        amount: amountMinor,
-        paymentMethod: paymentMethod || undefined,
-        paymentDate,
-        reference: reference || undefined,
+        body: {
+          amount: amountMinor,
+          paymentMethod: paymentMethod || undefined,
+          paymentDate,
+          reference: reference || undefined,
+        },
+        idempotencyKey: idempotencyKey.current,
       },
-      { onSuccess: () => onOpenChange(false) },
+      {
+        onSuccess: () => {
+          // Recorded (or replayed): this attempt is over.
+          idempotencyKey.current = null;
+          onOpenChange(false);
+        },
+        onError: (err) => {
+          // A network failure or 5xx may or may not have recorded the
+          // payment: keep the key so resubmitting is a safe retry. Any
+          // other outcome is definitive — a plain 4xx recorded nothing,
+          // and a reused key means this attempt can't proceed — so the
+          // next submission is a new attempt with a new key.
+          if (isIdempotencyKeyReused(err) || !isUncertainFailure(err)) {
+            idempotencyKey.current = null;
+          }
+        },
+      },
     );
   }
 

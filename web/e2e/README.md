@@ -46,6 +46,13 @@ authenticated API response directly, alongside exercising the View PDF
 button for the absence of an error) → payment → Paid → logout → the
 dashboard becoming unreachable again.
 
+The payment step also covers retry safety (Milestone 13 Part 1): the
+first payment request's response is deliberately dropped after the
+server has recorded it, so the browser sees a network failure; the
+resubmission must carry the same `Idempotency-Key` and receive the
+recorded payment back (`201` + `Idempotent-Replayed: true`), leaving
+exactly one payment on the now-Paid invoice.
+
 Each run generates a fresh organisation/email so it can be re-run
 against a persistent (non-ephemeral) database without unique-constraint
 collisions.

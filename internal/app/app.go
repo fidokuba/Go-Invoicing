@@ -257,7 +257,7 @@ func (a *App) Handler() http.Handler {
 	invoicePDFRenderer := invoice.NewInvoicePDFRenderer()
 	invoicePDFService := invoice.NewInvoicePDFService(invoiceRepository, paymentRepository, organisationRepository, customerRepository, addressRepository, settingsRepository, invoicePDFRenderer, a.metrics)
 
-	invoiceHandler := invoice.NewInvoiceHandler(invoiceService, invoicePDFService)
+	invoiceHandler := invoice.NewInvoiceHandler(invoiceService, invoicePDFService, a.metrics)
 
 	register("POST", apiV1Prefix+"/invoices", authMiddleware.RequireAuth(invoiceHandler.Create))
 	// GET /invoices (Milestone 8 Part 3): open to every authenticated

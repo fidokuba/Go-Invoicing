@@ -29,6 +29,13 @@ export class ApiError extends Error {
  * server never produced at all. */
 export function friendlyMessage(err: unknown): string {
   if (err instanceof ApiError) {
+    // Milestone 13 Part 1: a payment's Idempotency-Key was already used
+    // for a different payment — so something was recorded; point the user
+    // at the recorded payments rather than inviting a blind resubmit.
+    if (err.code === "idempotency_key_reused") {
+      return "This payment conflicts with one that was already recorded. Check the invoice's recorded payments before trying again.";
+    }
+
     switch (err.status) {
       case 400:
         return err.message || "Please check the form and try again.";

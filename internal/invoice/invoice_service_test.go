@@ -579,14 +579,27 @@ func (f *fakeSettingsRepository) Update(ctx context.Context, organisationID uuid
 type fakePaymentRepository struct {
 	payments map[uuid.UUID][]*Payment
 
-	createErr       error
-	getTotalPaidErr error
+	// idempotency mirrors payments.idempotency_key/request_hash
+	// (Milestone 13 Part 1), keyed by invoice then key.
+	idempotency map[uuid.UUID]map[string]fakeIdempotentPayment
+
+	createErr              error
+	getTotalPaidErr        error
+	getByIdempotencyKeyErr error
 
 	getTotalPaidByInvoiceIDsCallCount int
 }
 
 func newFakePaymentRepository() *fakePaymentRepository {
-	return &fakePaymentRepository{payments: make(map[uuid.UUID][]*Payment)}
+	return &fakePaymentRepository{
+		payments:    make(map[uuid.UUID][]*Payment),
+		idempotency: make(map[uuid.UUID]map[string]fakeIdempotentPayment),
+	}
+}
+
+type fakeIdempotentPayment struct {
+	payment     *Payment
+	requestHash []byte
 }
 
 func (f *fakePaymentRepository) WithTx(tx pgx.Tx) PaymentRepository {
@@ -604,12 +617,27 @@ func (f *fakePaymentRepository) WithTx(tx pgx.Tx) PaymentRepository {
 // payment_repository_postgres_test.go. Tests relying on cross-tenant
 // rejection go through InvoiceService, which never reaches this fake for
 // a foreign invoice because GetForUpdate rejects it first.
-func (f *fakePaymentRepository) Create(ctx context.Context, organisationID uuid.UUID, payment *Payment) error {
+func (f *fakePaymentRepository) Create(ctx context.Context, organisationID uuid.UUID, payment *Payment, idempotency PaymentIdempotency) error {
 	if f.createErr != nil {
 		return f.createErr
 	}
 	f.payments[payment.InvoiceID] = append(f.payments[payment.InvoiceID], payment)
+	if f.idempotency[payment.InvoiceID] == nil {
+		f.idempotency[payment.InvoiceID] = make(map[string]fakeIdempotentPayment)
+	}
+	f.idempotency[payment.InvoiceID][idempotency.Key] = fakeIdempotentPayment{payment: payment, requestHash: idempotency.RequestHash}
 	return nil
+}
+
+func (f *fakePaymentRepository) GetByIdempotencyKey(ctx context.Context, organisationID, invoiceID uuid.UUID, idempotencyKey string) (*Payment, []byte, error) {
+	if f.getByIdempotencyKeyErr != nil {
+		return nil, nil, f.getByIdempotencyKeyErr
+	}
+	existing, ok := f.idempotency[invoiceID][idempotencyKey]
+	if !ok {
+		return nil, nil, errPaymentNotFound
+	}
+	return existing.payment, existing.requestHash, nil
 }
 
 func (f *fakePaymentRepository) GetByInvoiceID(ctx context.Context, organisationID, invoiceID uuid.UUID) ([]*Payment, error) {
@@ -1426,9 +1454,10 @@ func TestInvoiceService_GetByID_OnePayment(t *testing.T) {
 	f := newTestFixture()
 	invoiceID := f.addInvoice(10000, InvoiceStatusSent)
 
-	if _, _, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, CreatePaymentRequest{
-		Amount:        4000,
-		PaymentMethod: "cash",
+	if _, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, CreatePaymentRequest{
+		IdempotencyKey: newTestIdempotencyKey(),
+		Amount:         4000,
+		PaymentMethod:  "cash",
 	}); err != nil {
 		t.Fatalf("create payment: %v", err)
 	}
@@ -1449,9 +1478,10 @@ func TestInvoiceService_GetByID_MultiplePayments_SumsCorrectly(t *testing.T) {
 	ctx := context.Background()
 
 	for _, amount := range []int64{2000, 3000, 1000} {
-		if _, _, err := f.service.CreatePayment(ctx, f.organisationID, invoiceID, CreatePaymentRequest{
-			Amount:        amount,
-			PaymentMethod: "cash",
+		if _, err := f.service.CreatePayment(ctx, f.organisationID, invoiceID, CreatePaymentRequest{
+			IdempotencyKey: newTestIdempotencyKey(),
+			Amount:         amount,
+			PaymentMethod:  "cash",
 		}); err != nil {
 			t.Fatalf("create payment of %d: %v", amount, err)
 		}
@@ -1477,9 +1507,10 @@ func TestInvoiceService_GetByID_FullyPaid_OutstandingIsZero(t *testing.T) {
 	f := newTestFixture()
 	invoiceID := f.addInvoice(10000, InvoiceStatusSent)
 
-	if _, _, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, CreatePaymentRequest{
-		Amount:        10000,
-		PaymentMethod: "cash",
+	if _, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, CreatePaymentRequest{
+		IdempotencyKey: newTestIdempotencyKey(),
+		Amount:         10000,
+		PaymentMethod:  "cash",
 	}); err != nil {
 		t.Fatalf("create payment: %v", err)
 	}

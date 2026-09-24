@@ -176,9 +176,10 @@ func TestInvoiceHandler_List_UsesSummaryRepresentation(t *testing.T) {
 	if _, err := f.service.Send(context.Background(), f.organisationID, created.ID); err != nil {
 		t.Fatalf("send invoice: %v", err)
 	}
-	if _, _, err := f.service.CreatePayment(context.Background(), f.organisationID, created.ID, CreatePaymentRequest{
-		Amount:        4000,
-		PaymentMethod: "cash",
+	if _, err := f.service.CreatePayment(context.Background(), f.organisationID, created.ID, CreatePaymentRequest{
+		IdempotencyKey: newTestIdempotencyKey(),
+		Amount:         4000,
+		PaymentMethod:  "cash",
 	}); err != nil {
 		t.Fatalf("create payment: %v", err)
 	}

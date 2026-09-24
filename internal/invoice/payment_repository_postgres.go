@@ -10,6 +10,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// errPaymentNotFound is GetByIdempotencyKey's "no payment has used this
+// key on this invoice" result — the ordinary, expected first-attempt
+// case, not a failure. Unexported: it never leaves this package.
+var errPaymentNotFound = errors.New("payment not found")
+
 // PostgresPaymentRepository is the PostgreSQL-backed implementation of
 // PaymentRepository. It holds a connection pool rather than creating one
 // itself, so the caller decides how the pool is configured and when it is
@@ -50,6 +55,14 @@ func (r *PostgresPaymentRepository) WithTx(tx pgx.Tx) PaymentRepository {
 // an API response directly from this same *Payment gets real timestamps
 // without a second SELECT.
 //
+// idempotency.Key and idempotency.RequestHash (Milestone 13 Part 1) are
+// written onto the same row. A unique violation on
+// payments_invoice_idempotency_key_unique is deliberately NOT mapped to a
+// domain error: InvoiceService.CreatePayment looks the key up while
+// holding the invoice's FOR UPDATE lock, so two payments with the same
+// key on the same invoice can only collide if some caller inserted
+// without that lock — a bug, surfaced as an ordinary internal error.
+//
 // If no tenant-owned invoice matches, zero rows are inserted — RETURNING
 // then yields no row at all, which this reports as pgx.ErrNoRows via
 // QueryRow.Scan, translated to ErrInvoiceNotFound exactly as the
@@ -62,6 +75,7 @@ func (r *PostgresPaymentRepository) Create(
 	ctx context.Context,
 	organisationID uuid.UUID,
 	payment *Payment,
+	idempotency PaymentIdempotency,
 ) error {
 	const query = `
 		INSERT INTO payments (
@@ -71,10 +85,12 @@ func (r *PostgresPaymentRepository) Create(
 			payment_method,
 			payment_date,
 			reference,
-			notes
+			notes,
+			idempotency_key,
+			request_hash
 		)
 		SELECT
-			$1, i.id, $3, $4, $5, $6, $7
+			$1, i.id, $3, $4, $5, $6, $7, $9, $10
 		FROM invoices i
 		WHERE i.id = $2
 			AND i.organisation_id = $8
@@ -93,6 +109,8 @@ func (r *PostgresPaymentRepository) Create(
 		payment.Reference,
 		payment.Notes,
 		organisationID,
+		idempotency.Key,
+		idempotency.RequestHash,
 	).Scan(&payment.CreatedAt, &payment.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -169,6 +187,65 @@ func (r *PostgresPaymentRepository) GetByInvoiceID(
 	}
 
 	return payments, nil
+}
+
+// GetByIdempotencyKey finds the payment previously created against
+// invoiceID with idempotencyKey (Milestone 13 Part 1), scoped to
+// organisationID through the same join back to invoices every other
+// read here uses. It is served by payments_invoice_idempotency_key_unique.
+// Returns errPaymentNotFound when no such payment exists — including for
+// another organisation's invoice, indistinguishably.
+func (r *PostgresPaymentRepository) GetByIdempotencyKey(
+	ctx context.Context,
+	organisationID uuid.UUID,
+	invoiceID uuid.UUID,
+	idempotencyKey string,
+) (*Payment, []byte, error) {
+	const query = `
+		SELECT
+			p.id,
+			p.invoice_id,
+			p.amount,
+			p.payment_method,
+			p.payment_date,
+			p.reference,
+			p.notes,
+			p.created_at,
+			p.updated_at,
+			p.request_hash
+		FROM payments p
+		JOIN invoices i ON i.id = p.invoice_id
+		WHERE p.invoice_id = $1
+			AND p.idempotency_key = $2
+			AND i.organisation_id = $3
+	`
+
+	var (
+		p           Payment
+		requestHash []byte
+	)
+
+	err := r.db.QueryRow(ctx, query, invoiceID, idempotencyKey, organisationID).Scan(
+		&p.ID,
+		&p.InvoiceID,
+		&p.Amount,
+		&p.PaymentMethod,
+		&p.PaymentDate,
+		&p.Reference,
+		&p.Notes,
+		&p.CreatedAt,
+		&p.UpdatedAt,
+		&requestHash,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil, errPaymentNotFound
+		}
+
+		return nil, nil, fmt.Errorf("get payment by idempotency key: %w", err)
+	}
+
+	return &p, requestHash, nil
 }
 
 // GetTotalPaidByInvoiceID sums every payment for an invoice in PostgreSQL

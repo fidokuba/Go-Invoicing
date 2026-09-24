@@ -120,7 +120,7 @@ func TestPostgresPaymentRepository_Create_CrossTenantRejected(t *testing.T) {
 		PaymentDate:   time.Now().UTC().Truncate(24 * time.Hour),
 	}
 
-	err := repository.Create(ctx, organisationB, payment)
+	err := repository.Create(ctx, organisationB, payment, newTestPaymentIdempotency())
 	if !errors.Is(err, ErrInvoiceNotFound) {
 		t.Fatalf("expected ErrInvoiceNotFound for a cross-organisation payment create, got %v", err)
 	}
@@ -156,7 +156,7 @@ func TestPostgresPaymentRepository_GetByInvoiceID_CrossTenantRejected(t *testing
 		PaymentMethod: "cash",
 		PaymentDate:   time.Now().UTC().Truncate(24 * time.Hour),
 	}
-	if err := repository.Create(ctx, organisationA, payment); err != nil {
+	if err := repository.Create(ctx, organisationA, payment, newTestPaymentIdempotency()); err != nil {
 		t.Fatalf("create payment as the real organisation: %v", err)
 	}
 	t.Cleanup(func() {
@@ -198,7 +198,7 @@ func TestPostgresPaymentRepository_GetTotalPaidByInvoiceID_CrossTenantRejected(t
 		PaymentMethod: "cash",
 		PaymentDate:   time.Now().UTC().Truncate(24 * time.Hour),
 	}
-	if err := repository.Create(ctx, organisationA, payment); err != nil {
+	if err := repository.Create(ctx, organisationA, payment, newTestPaymentIdempotency()); err != nil {
 		t.Fatalf("create payment as the real organisation: %v", err)
 	}
 	t.Cleanup(func() {

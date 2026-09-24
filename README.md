@@ -12,7 +12,7 @@
 | **10**    | Observability (structured logs, `/health`, `/health/db`, Prometheus `/metrics`) | Done |
 | **11**    | CI/CD & deployment (Docker, Docker Compose, GitHub Actions CI, `cmd/release`, tagged-release workflow publishing to GHCR) | Done |
 | **12**    | Frontend & usable application (React/TypeScript/Vite browser app, embedded into the production Go binary) | Done |
-| **13**    | Advanced backend engineering | Not started |
+| **13**    | Advanced backend engineering (13.1: idempotent, safely retryable payment creation via a required `Idempotency-Key`) | In progress |
 
 > **Note:** this table reflects the project's actual roadmap, not the original teaching-plan draft. Earlier drafts of this README numbered milestones differently (e.g. describing an early "Milestone 10" as authentication and "Milestone 11" as PDF invoices, and at one point swapping Milestones 12/13's own descriptions); those numbers were superseded once the project's real scope diverged from that draft, and this table is the corrected, current source of truth. Emailing (invoice delivery, payment/overdue reminders, scheduled delivery, templates, delivery tracking) was deliberately removed from the core roadmap — it is a potential future/commercial feature, not a gap in this project's own scope. See "Production readiness" below for what "done" through Milestone 12 does and doesn't mean for the complete product.
 
@@ -95,7 +95,7 @@ Hashed build assets (`/assets/*`, content-hashed filenames from Vite) are served
 
 **Frontend testing**: Vitest + Testing Library, focused on behaviour over coverage percentage — money/date conversion and formatting, API error mapping, the auth store's session/persistence behaviour, invoice-line calculation/serialization, and lifecycle-based action visibility (`web/src/**/*.test.ts(x)`).
 
-**End-to-end testing**: Playwright (`web/e2e/workflow.spec.ts`) drives the real built frontend against a real Go API and real PostgreSQL — nothing about the backend is mocked. It covers registration → login → session restoration after refresh → organisation details → customer → product → invoice (using a product to help populate a line, which stays editable) → send → PDF (verified via the authenticated API response directly, since asserting on a browser-native PDF viewer's contents isn't practical) → payment → Paid → logout. See `web/e2e/README.md` for exactly how to run it locally; CI runs it automatically in its own job.
+**End-to-end testing**: Playwright (`web/e2e/workflow.spec.ts`) drives the real built frontend against a real Go API and real PostgreSQL — nothing about the backend is mocked. It covers registration → login → session restoration after refresh → organisation details → customer → product → invoice (using a product to help populate a line, which stays editable) → send → PDF (verified via the authenticated API response directly, since asserting on a browser-native PDF viewer's contents isn't practical) → payment (including a lost-response retry that must replay the already-recorded payment via its `Idempotency-Key`, not record a second one) → Paid → logout. See `web/e2e/README.md` for exactly how to run it locally; CI runs it automatically in its own job.
 
 ## Release builds
 

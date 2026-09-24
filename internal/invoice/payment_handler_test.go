@@ -21,6 +21,11 @@ func newPaymentTestRequest(method, url string, body *bytes.Buffer, invoiceID uui
 
 	request := httptest.NewRequest(method, url, body)
 	request.Header.Set("Content-Type", "application/json")
+	// Every POST carries a fresh, valid Idempotency-Key (Milestone 13
+	// Part 1) unless a test deliberately replaces or removes it.
+	if method == http.MethodPost {
+		request.Header.Set("Idempotency-Key", newTestIdempotencyKey())
+	}
 	request.SetPathValue("id", invoiceID.String())
 	request = withAuthenticatedOrganisation(request, organisationID)
 
@@ -186,6 +191,7 @@ func TestInvoiceHandler_CreatePayment_IgnoresOrganisationIdQueryParameter(t *tes
 	body := bytes.NewBufferString(`{"amount": 5000, "paymentMethod": "cash", "paymentDate": "2026-09-17"}`)
 	request := httptest.NewRequest(http.MethodPost, "/invoices/"+invoiceID.String()+"/payments?organisationId="+f.organisationID.String(), body)
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", newTestIdempotencyKey())
 	request.SetPathValue("id", invoiceID.String())
 	request = withAuthenticatedOrganisation(request, attackerOrganisationID)
 	recorder := httptest.NewRecorder()

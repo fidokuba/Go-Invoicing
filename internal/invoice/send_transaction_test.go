@@ -192,9 +192,10 @@ func TestInvoiceService_CreatePayment_DraftAttemptCreatesNoPaymentRows(t *testin
 
 	service := newPaymentTestService(db)
 
-	_, _, err := service.CreatePayment(ctx, organisationID, invoiceID, CreatePaymentRequest{
-		Amount:        5000,
-		PaymentMethod: "cash",
+	_, err := service.CreatePayment(ctx, organisationID, invoiceID, CreatePaymentRequest{
+		IdempotencyKey: newTestIdempotencyKey(),
+		Amount:         5000,
+		PaymentMethod:  "cash",
 	})
 	if !errors.Is(err, ErrInvoiceCannotAcceptPayment) {
 		t.Fatalf("expected ErrInvoiceCannotAcceptPayment, got %v", err)
@@ -243,9 +244,10 @@ func TestInvoiceService_SendThenPaymentRace_SerializesSafely(t *testing.T) {
 	}()
 	go func() {
 		defer wg.Done()
-		_, _, paymentErr = service.CreatePayment(ctx, organisationID, invoiceID, CreatePaymentRequest{
-			Amount:        10000,
-			PaymentMethod: "cash",
+		_, paymentErr = service.CreatePayment(ctx, organisationID, invoiceID, CreatePaymentRequest{
+			IdempotencyKey: newTestIdempotencyKey(),
+			Amount:         10000,
+			PaymentMethod:  "cash",
 		})
 	}()
 	wg.Wait()

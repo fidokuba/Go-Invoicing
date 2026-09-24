@@ -249,8 +249,9 @@ func TestInvoicePDFService_LinesAndPaymentTotalsLoadCorrectly_RealPostgres(t *te
 		t.Fatalf("send invoice: %v", err)
 	}
 
-	if _, _, err := sendService.CreatePayment(ctx, organisationID, invoiceID, CreatePaymentRequest{
-		Amount: 400, PaymentMethod: "cash", PaymentDate: time.Now().UTC(),
+	if _, err := sendService.CreatePayment(ctx, organisationID, invoiceID, CreatePaymentRequest{
+		IdempotencyKey: newTestIdempotencyKey(),
+		Amount:         400, PaymentMethod: "cash", PaymentDate: time.Now().UTC(),
 	}); err != nil {
 		t.Fatalf("create payment: %v", err)
 	}

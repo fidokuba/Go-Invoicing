@@ -171,7 +171,7 @@ func TestInvoiceHandler_GetPDF_RendererFailureReturnsGenericServerError(t *testi
 
 	pdfService := f.pdfService()
 	pdfService.renderer = &InvoicePDFRenderer{fontData: []byte("not a valid ttf font")}
-	handler := NewInvoiceHandler(f.service, pdfService)
+	handler := NewInvoiceHandler(f.service, pdfService, nil)
 
 	request := httptest.NewRequest(http.MethodGet, "/invoices/"+invoiceID.String()+"/pdf", nil)
 	request.SetPathValue("id", invoiceID.String())

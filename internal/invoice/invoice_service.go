@@ -1,6 +1,7 @@
 package invoice
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -714,23 +715,44 @@ func (s *InvoiceService) buildPartySnapshot(
 // handler would parse the request body's date string before constructing
 // this. A zero PaymentDate defaults to time.Now(); a non-zero one is used
 // exactly as supplied.
+//
+// IdempotencyKey (Milestone 13 Part 1) is required — see
+// ValidateIdempotencyKey. It identifies one logical payment attempt
+// against this invoice; it is not part of the payment's own data.
 type CreatePaymentRequest struct {
-	Amount        int64
-	PaymentMethod string
-	PaymentDate   time.Time
-	Reference     string
-	Notes         string
+	Amount         int64
+	PaymentMethod  string
+	PaymentDate    time.Time
+	Reference      string
+	Notes          string
+	IdempotencyKey string
+}
+
+// CreatePaymentResult is CreatePayment's outcome. Replayed is true when
+// no new payment was recorded because this request's IdempotencyKey had
+// already produced Payment, with a matching request fingerprint; Invoice
+// is then nil, since a replay never reads or changes the invoice's
+// payment state (the handler doesn't use it either way).
+type CreatePaymentResult struct {
+	Payment  *Payment
+	Invoice  *Invoice
+	Replayed bool
 }
 
 // CreatePayment records a payment against an invoice and, if the payment
 // exhausts the invoice's outstanding balance, updates its status to
 // "paid" — all within a single database transaction:
 //
+//	validate the idempotency key, fingerprint the request (outside the tx)
 //	BEGIN
 //	    lock invoice row (FOR UPDATE) and verify it belongs to organisationID
+//	    look up a payment already created on this invoice with this key
+//	        found, same fingerprint      -> return it as a replay
+//	        found, different fingerprint -> ErrPaymentIdempotencyKeyReused
+//	    check the invoice can accept a payment
 //	    calculate total already paid
 //	    validate the new payment does not exceed the outstanding balance
-//	    insert the payment
+//	    insert the payment, with its idempotency key and fingerprint
 //	    update invoice status to "paid" if this payment exhausts the balance
 //	COMMIT
 //
@@ -740,6 +762,24 @@ type CreatePaymentRequest struct {
 // call blocks at the lock-acquisition step until the first transaction
 // finishes, so two payments can never both be validated against the same
 // stale outstanding balance and together overpay the invoice.
+//
+// Idempotency (Milestone 13 Part 1). The same lock is also the
+// serialisation point for retries: a concurrent request carrying the same
+// key blocks on GetForUpdate until the first commits, and its key lookup
+// — a new statement, so under this transaction's default READ COMMITTED
+// isolation it sees everything committed before it began — then finds
+// the first request's payment and replays it. (Under REPEATABLE READ or
+// SERIALIZABLE the lookup would see only the transaction's original
+// snapshot, so this relies on READ COMMITTED.) The lookup deliberately
+// runs BEFORE CanAcceptPayment: retrying a payment that settled the
+// invoice in full must replay that payment, not fail because the invoice
+// is now Paid. The key and fingerprint are written on the payment row
+// itself, so they become durable exactly when — and only if — the
+// payment does: every failure below (lifecycle, overpayment, database
+// error, rollback) leaves the key unused and freely retryable, and an
+// ambiguous COMMIT error is resolved by the client retrying with the
+// same key (replay if it did commit, a normal execution if it didn't).
+// Nothing here ever retries a commit itself.
 //
 // A fully paid invoice's outstanding balance is 0, so any further
 // strictly-positive payment amount already fails the "amount <=
@@ -760,7 +800,18 @@ func (s *InvoiceService) CreatePayment(
 	organisationID uuid.UUID,
 	invoiceID uuid.UUID,
 	request CreatePaymentRequest,
-) (*Payment, *Invoice, error) {
+) (CreatePaymentResult, error) {
+	if err := ValidateIdempotencyKey(request.IdempotencyKey); err != nil {
+		return CreatePaymentResult{}, err
+	}
+
+	// Fingerprinted before PaymentDate's time.Now() default below, so an
+	// omitted date fingerprints as omitted (see paymentFingerprintV1).
+	idempotency := PaymentIdempotency{
+		Key:         request.IdempotencyKey,
+		RequestHash: fingerprintPaymentRequest(request),
+	}
+
 	paymentDate := request.PaymentDate
 	if paymentDate.IsZero() {
 		paymentDate = time.Now().UTC()
@@ -777,7 +828,7 @@ func (s *InvoiceService) CreatePayment(
 	}
 
 	if err := payment.Validate(); err != nil {
-		return nil, nil, err
+		return CreatePaymentResult{}, err
 	}
 
 	// BEGIN — everything from here to the matching Commit/Rollback below
@@ -786,7 +837,7 @@ func (s *InvoiceService) CreatePayment(
 	// together or are all undone together.
 	tx, err := s.txBeginner.Begin(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("begin payment transaction: %w", err)
+		return CreatePaymentResult{}, fmt.Errorf("begin payment transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
@@ -800,7 +851,26 @@ func (s *InvoiceService) CreatePayment(
 	// for an invoice that doesn't exist at all.
 	inv, err := txInvoiceRepository.GetForUpdate(ctx, organisationID, invoiceID)
 	if err != nil {
-		return nil, nil, err
+		return CreatePaymentResult{}, err
+	}
+
+	txPaymentRepository := s.paymentRepository.WithTx(tx)
+
+	// Idempotency lookup: only after the lock (so a concurrent same-key
+	// request has already committed or rolled back) and before any
+	// lifecycle/balance check (so a replay never depends on the invoice's
+	// current state). A replay or conflict writes nothing; the deferred
+	// Rollback simply releases the lock.
+	existing, existingHash, err := txPaymentRepository.GetByIdempotencyKey(ctx, organisationID, invoiceID, idempotency.Key)
+	switch {
+	case err == nil:
+		if !bytes.Equal(existingHash, idempotency.RequestHash) {
+			return CreatePaymentResult{}, ErrPaymentIdempotencyKeyReused
+		}
+
+		return CreatePaymentResult{Payment: existing, Replayed: true}, nil
+	case !errors.Is(err, errPaymentNotFound):
+		return CreatePaymentResult{}, fmt.Errorf("look up idempotent payment: %w", err)
 	}
 
 	// Checked only after the lock is held, so a concurrent Send or
@@ -812,31 +882,29 @@ func (s *InvoiceService) CreatePayment(
 	// settled, by lifecycle rule rather than by an outstanding-balance
 	// coincidence) are both rejected here, before any payment math runs.
 	if !inv.CanAcceptPayment() {
-		return nil, nil, ErrInvoiceCannotAcceptPayment
+		return CreatePaymentResult{}, ErrInvoiceCannotAcceptPayment
 	}
-
-	txPaymentRepository := s.paymentRepository.WithTx(tx)
 
 	// Computed only after the lock is held, so a concurrent payment
 	// against the same invoice cannot read this same total.
 	totalPaid, err := txPaymentRepository.GetTotalPaidByInvoiceID(ctx, organisationID, invoiceID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("get total paid: %w", err)
+		return CreatePaymentResult{}, fmt.Errorf("get total paid: %w", err)
 	}
 
 	outstanding := inv.Total - totalPaid
 
 	if payment.Amount > outstanding {
-		return nil, nil, ErrPaymentExceedsOutstanding
+		return CreatePaymentResult{}, ErrPaymentExceedsOutstanding
 	}
 
-	if err := txPaymentRepository.Create(ctx, organisationID, payment); err != nil {
-		return nil, nil, err
+	if err := txPaymentRepository.Create(ctx, organisationID, payment, idempotency); err != nil {
+		return CreatePaymentResult{}, err
 	}
 
 	if payment.Amount == outstanding {
 		if err := txInvoiceRepository.UpdateStatus(ctx, organisationID, invoiceID, InvoiceStatusPaid); err != nil {
-			return nil, nil, fmt.Errorf("update invoice status: %w", err)
+			return CreatePaymentResult{}, fmt.Errorf("update invoice status: %w", err)
 		}
 
 		inv.Status = InvoiceStatusPaid
@@ -844,12 +912,13 @@ func (s *InvoiceService) CreatePayment(
 
 	// COMMIT — only reached once the outstanding-balance check passed,
 	// the payment inserted, and (if applicable) the status update
-	// succeeded.
+	// succeeded. A commit error is returned as-is and never retried here:
+	// the outcome may be ambiguous (see the idempotency note above).
 	if err := tx.Commit(ctx); err != nil {
-		return nil, nil, fmt.Errorf("commit payment transaction: %w", err)
+		return CreatePaymentResult{}, fmt.Errorf("commit payment transaction: %w", err)
 	}
 
-	return payment, inv, nil
+	return CreatePaymentResult{Payment: payment, Invoice: inv}, nil
 }
 
 // GetPayments returns every payment recorded against an invoice, in

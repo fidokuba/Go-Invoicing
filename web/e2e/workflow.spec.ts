@@ -5,6 +5,10 @@ import { test, expect } from "@playwright/test";
  * registration → login → organisation details → customer → product →
  * invoice → lines → send → PDF → payment → Paid → logout.
  *
+ * The payment step also exercises Milestone 13 Part 1's retry safety: its
+ * first response is deliberately lost after the server has recorded it,
+ * and the resubmission must be an idempotent replay.
+ *
  * Runs against a real Go API + real PostgreSQL (see e2e/README.md) —
  * nothing about the backend is mocked. Each run uses a freshly
  * generated organisation/email so it can be re-run against a
@@ -126,16 +130,53 @@ test("full invoicing workflow: register through paid invoice", async ({ page, re
   await expect(page.getByRole("alert")).toHaveCount(0);
 
   // --- Record a payment that exactly settles the invoice ------------------
+  // Milestone 13 Part 1: the first attempt's response is lost in transit —
+  // the request genuinely reaches the server and the payment is recorded,
+  // but the browser only sees a network failure. Resubmitting must reuse
+  // the same Idempotency-Key and get the recorded payment back (201 +
+  // Idempotent-Replayed), not a second payment and not a 409 for the
+  // now-Paid invoice.
+  const paymentKeys: string[] = [];
+  let loseNextResponse = true;
+  await page.route("**/api/v1/invoices/*/payments", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    paymentKeys.push(route.request().headers()["idempotency-key"]);
+    if (loseNextResponse) {
+      loseNextResponse = false;
+      const delivered = await route.fetch();
+      expect(delivered.status()).toBe(201);
+      return route.abort("failed");
+    }
+    return route.continue();
+  });
+
   await page.getByRole("button", { name: "Record payment" }).click();
   const dialog = page.getByRole("dialog", { name: "Record a payment" });
   await dialog.getByLabel(/Amount/).fill("360.00");
   await dialog.getByLabel("Method").fill("bank_transfer");
   await dialog.getByRole("button", { name: "Record payment" }).click();
+  await expect(dialog.getByText(/network error/i)).toBeVisible();
+
+  const replay = page.waitForResponse(
+    (response) => response.request().method() === "POST" && /\/api\/v1\/invoices\/[^/]+\/payments$/.test(response.url()),
+  );
+  await dialog.getByRole("button", { name: "Record payment" }).click();
+  const replayResponse = await replay;
+  expect(replayResponse.status()).toBe(201);
+  expect(replayResponse.headers()["idempotent-replayed"]).toBe("true");
+  await page.unroute("**/api/v1/invoices/*/payments");
+
+  expect(paymentKeys).toHaveLength(2);
+  expect(paymentKeys[0]).toMatch(/^[A-Za-z0-9._~:-]{16,128}$/);
+  expect(paymentKeys[1]).toBe(paymentKeys[0]);
 
   // --- Verify Paid ---------------------------------------------------------
   await expect(page.getByText("This invoice is fully paid.")).toBeVisible();
   await expect(page.getByText("Paid", { exact: true }).first()).toBeVisible();
   await expect(page.getByRole("button", { name: "Record payment" })).toHaveCount(0);
+  // Exactly one payment was recorded despite the two submissions.
+  const paymentHistory = page.getByRole("table").filter({ has: page.getByRole("columnheader", { name: "Method" }) });
+  await expect(paymentHistory.getByRole("row")).toHaveCount(2); // header + one payment
 
   // --- Logout ---------------------------------------------------------------
   await page.getByRole("button", { name: "E2E Admin" }).click();

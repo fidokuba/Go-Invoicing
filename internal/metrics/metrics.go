@@ -52,7 +52,17 @@ type Metrics struct {
 
 	pdfGenerationsTotal   *prometheus.CounterVec
 	pdfGenerationDuration prometheus.Histogram
+
+	paymentIdempotencyTotal *prometheus.CounterVec
 }
+
+// The only outcome label values RecordPaymentIdempotency accepts
+// (Milestone 13 Part 1).
+const (
+	PaymentIdempotencyCreated  = "created"
+	PaymentIdempotencyReplayed = "replayed"
+	PaymentIdempotencyConflict = "conflict"
+)
 
 // New builds a Metrics with its own private *prometheus.Registry — never
 // the package-level default/global registry. An application-owned
@@ -149,6 +159,14 @@ func New(pool *pgxpool.Pool) *Metrics {
 			Name:      "pdf_generation_duration_seconds",
 			Help:      "Duration of invoice PDF generation (data assembly and rendering, excluding HTTP overhead), in seconds.",
 		}),
+		// outcome is a fixed three-value enum (created/replayed/conflict)
+		// — never the idempotency key, request hash, invoice ID or any
+		// payment field. See RecordPaymentIdempotency.
+		paymentIdempotencyTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "payment_idempotency_total",
+			Help:      "Total number of keyed payment-creation requests reaching an idempotency decision, labeled by outcome (created, replayed or conflict).",
+		}, []string{"outcome"}),
 	}
 
 	// buildInfo (Milestone 11 Part 2 — deferred by Milestone 10 Part 4
@@ -182,6 +200,7 @@ func New(pool *pgxpool.Pool) *Metrics {
 		m.workerRunDuration,
 		m.pdfGenerationsTotal,
 		m.pdfGenerationDuration,
+		m.paymentIdempotencyTotal,
 		buildInfo,
 		newDBPoolCollector(pool),
 		// Standard Go runtime and process collectors (GC pauses, heap,
@@ -274,4 +293,21 @@ func (m *Metrics) RecordPDFGeneration(result string, duration time.Duration) {
 
 	m.pdfGenerationsTotal.WithLabelValues(result).Inc()
 	m.pdfGenerationDuration.Observe(duration.Seconds())
+}
+
+// RecordPaymentIdempotency records the idempotency outcome of one
+// payment-creation request that reached InvoiceService's key lookup and
+// completed: a newly created payment, a replay of an earlier one, or a
+// key reused with a different request. outcome must be one of the
+// PaymentIdempotency* constants; anything else is ignored rather than
+// becoming a new label value.
+func (m *Metrics) RecordPaymentIdempotency(outcome string) {
+	if m == nil {
+		return
+	}
+
+	switch outcome {
+	case PaymentIdempotencyCreated, PaymentIdempotencyReplayed, PaymentIdempotencyConflict:
+		m.paymentIdempotencyTotal.WithLabelValues(outcome).Inc()
+	}
 }

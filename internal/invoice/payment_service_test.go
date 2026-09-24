@@ -10,8 +10,9 @@ import (
 
 func validPaymentRequest() CreatePaymentRequest {
 	return CreatePaymentRequest{
-		Amount:        4000,
-		PaymentMethod: "cash",
+		IdempotencyKey: newTestIdempotencyKey(),
+		Amount:         4000,
+		PaymentMethod:  "cash",
 	}
 }
 
@@ -25,7 +26,7 @@ func TestInvoiceService_CreatePayment_DraftRejected(t *testing.T) {
 	f := newTestFixture()
 	invoiceID := f.addInvoice(10000, InvoiceStatusDraft)
 
-	_, _, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, validPaymentRequest())
+	_, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, validPaymentRequest())
 	if !errors.Is(err, ErrInvoiceCannotAcceptPayment) {
 		t.Fatalf("expected ErrInvoiceCannotAcceptPayment, got %v", err)
 	}
@@ -39,7 +40,7 @@ func TestInvoiceService_CreatePayment_DraftRejectionWritesNoPayment(t *testing.T
 	f := newTestFixture()
 	invoiceID := f.addInvoice(10000, InvoiceStatusDraft)
 
-	if _, _, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, validPaymentRequest()); err == nil {
+	if _, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, validPaymentRequest()); err == nil {
 		t.Fatal("expected an error")
 	}
 
@@ -52,7 +53,7 @@ func TestInvoiceService_CreatePayment_PaidRejectedExplicitly(t *testing.T) {
 	f := newTestFixture()
 	invoiceID := f.addInvoice(10000, InvoiceStatusPaid)
 
-	_, _, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, validPaymentRequest())
+	_, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, validPaymentRequest())
 	if !errors.Is(err, ErrInvoiceCannotAcceptPayment) {
 		t.Fatalf("expected ErrInvoiceCannotAcceptPayment, got %v", err)
 	}
@@ -64,10 +65,11 @@ func TestInvoiceService_CreatePayment_Success(t *testing.T) {
 	f := newTestFixture()
 	invoiceID := f.addInvoice(10000, InvoiceStatusSent)
 
-	payment, inv, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, validPaymentRequest())
+	result, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, validPaymentRequest())
 	if err != nil {
 		t.Fatalf("create payment: %v", err)
 	}
+	payment, inv := result.Payment, result.Invoice
 
 	if payment.ID == uuid.Nil {
 		t.Error("expected a generated payment ID")
@@ -93,7 +95,7 @@ func TestInvoiceService_CreatePayment_ZeroAmount(t *testing.T) {
 	request := validPaymentRequest()
 	request.Amount = 0
 
-	_, _, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, request)
+	_, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, request)
 	if !errors.Is(err, ErrPaymentAmountInvalid) {
 		t.Fatalf("expected ErrPaymentAmountInvalid, got %v", err)
 	}
@@ -106,7 +108,7 @@ func TestInvoiceService_CreatePayment_NegativeAmount(t *testing.T) {
 	request := validPaymentRequest()
 	request.Amount = -500
 
-	_, _, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, request)
+	_, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, request)
 	if !errors.Is(err, ErrPaymentAmountInvalid) {
 		t.Fatalf("expected ErrPaymentAmountInvalid, got %v", err)
 	}
@@ -121,10 +123,11 @@ func TestInvoiceService_CreatePayment_PartialPayment_LeavesStatusUnchanged(t *te
 	request := validPaymentRequest()
 	request.Amount = 4000 // less than the 10000 total: partial
 
-	_, inv, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, request)
+	result, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, request)
 	if err != nil {
 		t.Fatalf("create payment: %v", err)
 	}
+	inv := result.Invoice
 
 	if inv.Status != InvoiceStatusSent {
 		t.Errorf("expected status to remain %q after a partial payment, got %q", InvoiceStatusSent, inv.Status)
@@ -138,10 +141,11 @@ func TestInvoiceService_CreatePayment_FullPayment_SetsStatusPaid(t *testing.T) {
 	request := validPaymentRequest()
 	request.Amount = 10000 // exactly the outstanding balance: full payment
 
-	_, inv, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, request)
+	result, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, request)
 	if err != nil {
 		t.Fatalf("create payment: %v", err)
 	}
+	inv := result.Invoice
 
 	if inv.Status != InvoiceStatusPaid {
 		t.Errorf("expected status %q after a full payment, got %q", InvoiceStatusPaid, inv.Status)
@@ -155,18 +159,19 @@ func TestInvoiceService_CreatePayment_SecondPaymentCompletesInvoice(t *testing.T
 
 	first := validPaymentRequest()
 	first.Amount = 6000
-	if _, inv, err := f.service.CreatePayment(ctx, f.organisationID, invoiceID, first); err != nil {
+	if result, err := f.service.CreatePayment(ctx, f.organisationID, invoiceID, first); err != nil {
 		t.Fatalf("create first payment: %v", err)
-	} else if inv.Status != InvoiceStatusSent {
+	} else if inv := result.Invoice; inv.Status != InvoiceStatusSent {
 		t.Fatalf("expected status to remain %q after the first (partial) payment, got %q", InvoiceStatusSent, inv.Status)
 	}
 
 	second := validPaymentRequest()
 	second.Amount = 4000 // exhausts the remaining 4000 outstanding
-	_, inv, err := f.service.CreatePayment(ctx, f.organisationID, invoiceID, second)
+	result, err := f.service.CreatePayment(ctx, f.organisationID, invoiceID, second)
 	if err != nil {
 		t.Fatalf("create second payment: %v", err)
 	}
+	inv := result.Invoice
 
 	if inv.Status != InvoiceStatusPaid {
 		t.Errorf("expected status %q after the second payment exhausts the balance, got %q", InvoiceStatusPaid, inv.Status)
@@ -182,7 +187,7 @@ func TestInvoiceService_CreatePayment_Overpayment_Rejected(t *testing.T) {
 	request := validPaymentRequest()
 	request.Amount = 10001 // 1 minor unit more than the outstanding balance
 
-	_, _, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, request)
+	_, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, request)
 	if !errors.Is(err, ErrPaymentExceedsOutstanding) {
 		t.Fatalf("expected ErrPaymentExceedsOutstanding, got %v", err)
 	}
@@ -200,7 +205,7 @@ func TestInvoiceService_CreatePayment_AgainstAlreadyPaidInvoice_Rejected(t *test
 		{ID: uuid.New(), InvoiceID: invoiceID, Amount: 10000},
 	}
 
-	_, _, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, validPaymentRequest())
+	_, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, validPaymentRequest())
 	if !errors.Is(err, ErrInvoiceCannotAcceptPayment) {
 		t.Fatalf("expected ErrInvoiceCannotAcceptPayment for a payment against an already-paid invoice, got %v", err)
 	}
@@ -211,7 +216,7 @@ func TestInvoiceService_CreatePayment_AgainstAlreadyPaidInvoice_Rejected(t *test
 func TestInvoiceService_CreatePayment_InvoiceNotFound(t *testing.T) {
 	f := newTestFixture()
 
-	_, _, err := f.service.CreatePayment(context.Background(), f.organisationID, uuid.New(), validPaymentRequest())
+	_, err := f.service.CreatePayment(context.Background(), f.organisationID, uuid.New(), validPaymentRequest())
 	if !errors.Is(err, ErrInvoiceNotFound) {
 		t.Fatalf("expected ErrInvoiceNotFound, got %v", err)
 	}
@@ -224,7 +229,7 @@ func TestInvoiceService_CreatePayment_WrongOrganisation_Rejected(t *testing.T) {
 	f := newTestFixture()
 	invoiceID := f.addInvoice(10000, InvoiceStatusSent)
 
-	_, _, err := f.service.CreatePayment(context.Background(), uuid.New(), invoiceID, validPaymentRequest())
+	_, err := f.service.CreatePayment(context.Background(), uuid.New(), invoiceID, validPaymentRequest())
 	if !errors.Is(err, ErrInvoiceNotFound) {
 		t.Fatalf("expected ErrInvoiceNotFound for a cross-organisation payment, got %v", err)
 	}
@@ -244,7 +249,7 @@ func TestInvoiceService_CreatePayment_CommitsOnSuccess(t *testing.T) {
 	f := newTestFixture()
 	invoiceID := f.addInvoice(10000, InvoiceStatusSent)
 
-	_, _, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, validPaymentRequest())
+	_, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, validPaymentRequest())
 	if err != nil {
 		t.Fatalf("create payment: %v", err)
 	}
@@ -263,7 +268,7 @@ func TestInvoiceService_CreatePayment_RollsBackOnCreateFailure(t *testing.T) {
 	invoiceID := f.addInvoice(10000, InvoiceStatusSent)
 	f.paymentRepository.createErr = errors.New("connection reset by peer")
 
-	_, _, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, validPaymentRequest())
+	_, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, validPaymentRequest())
 	if err == nil {
 		t.Fatal("expected an error, got nil")
 	}
@@ -285,7 +290,7 @@ func TestInvoiceService_CreatePayment_RollsBackOnStatusUpdateFailure(t *testing.
 	request := validPaymentRequest()
 	request.Amount = 10000 // a full payment, so the status update is attempted
 
-	_, _, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, request)
+	_, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, request)
 	if err == nil {
 		t.Fatal("expected an error, got nil")
 	}
@@ -313,7 +318,7 @@ func TestInvoiceService_CreatePayment_BeginError(t *testing.T) {
 	invoiceID := f.addInvoice(10000, InvoiceStatusSent)
 	f.service.txBeginner = &fakeTxBeginner{beginErr: errors.New("pool exhausted")}
 
-	_, _, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, validPaymentRequest())
+	_, err := f.service.CreatePayment(context.Background(), f.organisationID, invoiceID, validPaymentRequest())
 	if err == nil {
 		t.Fatal("expected an error when Begin fails, got nil")
 	}

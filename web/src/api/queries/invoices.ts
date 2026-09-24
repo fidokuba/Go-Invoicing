@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { client } from "../client";
 import { unwrap } from "../unwrap";
 import type { components } from "../schema";
+import { isIdempotencyKeyReused } from "@/lib/idempotencyKey";
 
 type CreateInvoiceRequest = components["schemas"]["CreateInvoiceRequest"];
 type CreatePaymentRequest = components["schemas"]["CreatePaymentHTTPRequest"];
@@ -67,15 +68,35 @@ export function useInvoicePayments(id: string | undefined) {
   });
 }
 
+export interface CreatePaymentVariables {
+  body: CreatePaymentRequest;
+  /** One logical payment attempt's key — reused for every retry of that
+   * attempt (see src/lib/idempotencyKey.ts). */
+  idempotencyKey: string;
+}
+
 export function useCreatePayment(id: string) {
   const queryClient = useQueryClient();
+  const invalidateInvoice = () => {
+    queryClient.invalidateQueries({ queryKey: ["invoices", id] });
+    queryClient.invalidateQueries({ queryKey: ["invoices", id, "payments"] });
+    queryClient.invalidateQueries({ queryKey: ["invoices"], exact: false });
+  };
   return useMutation({
-    mutationFn: (body: CreatePaymentRequest) =>
-      unwrap(client.POST("/api/v1/invoices/{id}/payments", { params: { path: { id } }, body })),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["invoices", id] });
-      queryClient.invalidateQueries({ queryKey: ["invoices", id, "payments"] });
-      queryClient.invalidateQueries({ queryKey: ["invoices"], exact: false });
+    mutationFn: ({ body, idempotencyKey }: CreatePaymentVariables) =>
+      unwrap(
+        client.POST("/api/v1/invoices/{id}/payments", {
+          params: { path: { id }, header: { "Idempotency-Key": idempotencyKey } },
+          body,
+        }),
+      ),
+    // A replayed payment (201 + Idempotent-Replayed) is handled exactly
+    // like a new one: either way it is now recorded.
+    onSuccess: invalidateInvoice,
+    onError: (err) => {
+      // The key was already used for a different payment — something was
+      // recorded that this screen may not be showing yet, so refresh it.
+      if (isIdempotencyKeyReused(err)) invalidateInvoice();
     },
   });
 }

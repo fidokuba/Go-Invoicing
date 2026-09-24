@@ -11,6 +11,7 @@ import (
 
 	admin "go-invoicing/internal/administration"
 	"go-invoicing/internal/httpx"
+	"go-invoicing/internal/metrics"
 )
 
 // InvoiceHandler owns the HTTP-specific concerns for invoices: decoding
@@ -25,18 +26,25 @@ import (
 // passed to InvoiceService is what its existing organisation-scoped
 // invoice lookup (and, for CreatePayment, its row lock) uses to establish
 // that the invoice belongs to the caller before anything else happens.
+//
+// metrics records CreatePayment's bounded idempotency outcome (Milestone
+// 13 Part 1); it may be nil (metrics disabled) — every *metrics.Metrics
+// method is a nil-safe no-op.
 type InvoiceHandler struct {
 	service    *InvoiceService
 	pdfService *InvoicePDFService
+	metrics    *metrics.Metrics
 }
 
 func NewInvoiceHandler(
 	service *InvoiceService,
 	pdfService *InvoicePDFService,
+	m *metrics.Metrics,
 ) *InvoiceHandler {
 	return &InvoiceHandler{
 		service:    service,
 		pdfService: pdfService,
+		metrics:    m,
 	}
 }
 
@@ -326,7 +334,54 @@ func (h *InvoiceHandler) Send(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, response)
 }
 
+// idempotencyKeyHeader is the request header carrying a payment
+// attempt's idempotency key; idempotentReplayedHeader marks a response
+// that replays an earlier, already-recorded payment rather than
+// recording a new one (Milestone 13 Part 1).
+const (
+	idempotencyKeyHeader     = "Idempotency-Key"
+	idempotentReplayedHeader = "Idempotent-Replayed"
+)
+
+// codeIdempotencyKeyReused is the stable error code for a key reused with
+// a different payment request — distinct from the generic "conflict" code
+// the business-rule 409s (not payable, overpayment) use, so a client can
+// tell them apart.
+const codeIdempotencyKeyReused = "idempotency_key_reused"
+
+const idempotencyKeyInvalidMessage = "Idempotency-Key must be 16-128 characters from A-Z a-z 0-9 . _ ~ : -"
+
+// readIdempotencyKey extracts and validates the single Idempotency-Key
+// header, writing a 400 and returning false if it is missing, repeated,
+// or malformed. The raw value is never echoed back or logged.
+func readIdempotencyKey(w http.ResponseWriter, r *http.Request) (string, bool) {
+	values := r.Header.Values(idempotencyKeyHeader)
+
+	switch {
+	case len(values) == 0 || (len(values) == 1 && values[0] == ""):
+		httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, "Idempotency-Key header is required")
+		return "", false
+	case len(values) > 1:
+		httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, "exactly one Idempotency-Key header is allowed")
+		return "", false
+	}
+
+	if err := ValidateIdempotencyKey(values[0]); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, idempotencyKeyInvalidMessage)
+		return "", false
+	}
+
+	return values[0], true
+}
+
 // CreatePayment handles POST /invoices/{id}/payments.
+//
+// Idempotency (Milestone 13 Part 1): Idempotency-Key is required and is
+// validated here, after authentication and before the body is decoded.
+// A replay returns 201 with the originally recorded payment plus
+// Idempotent-Replayed: true; a key reused with a different request is a
+// 409 idempotency_key_reused. See InvoiceService.CreatePayment for the
+// transactional semantics.
 func (h *InvoiceHandler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 	identity, ok := admin.RequireAuthenticatedUser(w, r)
 	if !ok {
@@ -336,6 +391,11 @@ func (h *InvoiceHandler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 	invoiceID, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, "invalid invoice ID")
+		return
+	}
+
+	idempotencyKey, ok := readIdempotencyKey(w, r)
+	if !ok {
 		return
 	}
 
@@ -350,8 +410,21 @@ func (h *InvoiceHandler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payment, _, err := h.service.CreatePayment(r.Context(), identity.OrganisationID, invoiceID, request)
+	request.IdempotencyKey = idempotencyKey
+
+	result, err := h.service.CreatePayment(r.Context(), identity.OrganisationID, invoiceID, request)
 	if err != nil {
+		if errors.Is(err, ErrPaymentIdempotencyKeyReused) {
+			h.metrics.RecordPaymentIdempotency(metrics.PaymentIdempotencyConflict)
+			httpx.WriteError(w, http.StatusConflict, codeIdempotencyKeyReused, "Idempotency-Key has already been used for a different payment request.")
+			return
+		}
+
+		if errors.Is(err, ErrPaymentIdempotencyKeyInvalid) {
+			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, idempotencyKeyInvalidMessage)
+			return
+		}
+
 		if errors.Is(err, ErrInvoiceNotFound) {
 			httpx.WriteError(w, http.StatusNotFound, "invoice_not_found", "invoice not found")
 			return
@@ -382,9 +455,16 @@ func (h *InvoiceHandler) CreatePayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := toPaymentResponse(payment)
+	if result.Replayed {
+		h.metrics.RecordPaymentIdempotency(metrics.PaymentIdempotencyReplayed)
+		w.Header().Set(idempotentReplayedHeader, "true")
+	} else {
+		h.metrics.RecordPaymentIdempotency(metrics.PaymentIdempotencyCreated)
+	}
 
-	httpx.WriteJSON(w, http.StatusCreated, response)
+	// A replay is rebuilt from the stored (immutable) payment row, so its
+	// body is the same logical PaymentResponse the original 201 carried.
+	httpx.WriteJSON(w, http.StatusCreated, toPaymentResponse(result.Payment))
 }
 
 // GetPayments handles GET /invoices/{id}/payments.

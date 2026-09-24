@@ -20,6 +20,15 @@ describe("friendlyMessage", () => {
     );
   });
 
+  it("explains an idempotency_key_reused conflict and points at the recorded payments", () => {
+    const message = friendlyMessage(
+      new ApiError(409, "idempotency_key_reused", "Idempotency-Key has already been used for a different payment request."),
+    );
+    expect(message).toMatch(/already recorded/i);
+    expect(message).toMatch(/recorded payments/i);
+    expect(message).not.toMatch(/idempotency/i);
+  });
+
   it("gives a generic message for 500, never exposing raw detail", () => {
     expect(friendlyMessage(new ApiError(500, "internal_error", "internal server error"))).toMatch(
       /went wrong on our end/i,

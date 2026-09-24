@@ -14,7 +14,7 @@ import (
 )
 
 func newTestHandler(f *testFixture) *InvoiceHandler {
-	return NewInvoiceHandler(f.service, f.pdfService())
+	return NewInvoiceHandler(f.service, f.pdfService(), nil)
 }
 
 // withAuthenticatedOrganisation attaches an AuthenticatedUser identity
@@ -278,9 +278,10 @@ func TestInvoiceHandler_GetByID_WithPayments(t *testing.T) {
 
 	// validRequest's default line is quantity 1, unitPrice 1000, vatRate
 	// 20 -> total 1200. Pay less than that: a partial payment.
-	if _, _, err := f.service.CreatePayment(context.Background(), f.organisationID, created.ID, CreatePaymentRequest{
-		Amount:        500,
-		PaymentMethod: "cash",
+	if _, err := f.service.CreatePayment(context.Background(), f.organisationID, created.ID, CreatePaymentRequest{
+		IdempotencyKey: newTestIdempotencyKey(),
+		Amount:         500,
+		PaymentMethod:  "cash",
 	}); err != nil {
 		t.Fatalf("create payment: %v", err)
 	}
@@ -326,9 +327,10 @@ func TestInvoiceHandler_GetByID_MultiplePayments(t *testing.T) {
 	}
 
 	for _, amount := range []int64{300, 400} {
-		if _, _, err := f.service.CreatePayment(context.Background(), f.organisationID, created.ID, CreatePaymentRequest{
-			Amount:        amount,
-			PaymentMethod: "cash",
+		if _, err := f.service.CreatePayment(context.Background(), f.organisationID, created.ID, CreatePaymentRequest{
+			IdempotencyKey: newTestIdempotencyKey(),
+			Amount:         amount,
+			PaymentMethod:  "cash",
 		}); err != nil {
 			t.Fatalf("create payment of %d: %v", amount, err)
 		}
@@ -375,9 +377,10 @@ func TestInvoiceHandler_GetByID_FullyPaid_OutstandingIsZero(t *testing.T) {
 	}
 
 	// validRequest's default line totals 1200 — pay exactly that.
-	if _, _, err := f.service.CreatePayment(context.Background(), f.organisationID, created.ID, CreatePaymentRequest{
-		Amount:        1200,
-		PaymentMethod: "cash",
+	if _, err := f.service.CreatePayment(context.Background(), f.organisationID, created.ID, CreatePaymentRequest{
+		IdempotencyKey: newTestIdempotencyKey(),
+		Amount:         1200,
+		PaymentMethod:  "cash",
 	}); err != nil {
 		t.Fatalf("create payment: %v", err)
 	}
