@@ -428,7 +428,7 @@ func (a *App) Handler() http.Handler {
 	// httpx.FrontendFallback's own doc comment for the full reasoning,
 	// including why it cannot reintroduce the "/" catch-all problem this
 	// paragraph describes.
-	return httpx.RequestID(
+	return httpx.SecurityHeaders(httpx.RequestID(
 		httpx.RequestLogging(a.logger, a.metrics)(
 			httpx.Recover(a.logger)(
 				httpx.FrontendFallback(webui.Serve)(
@@ -436,7 +436,7 @@ func (a *App) Handler() http.Handler {
 				),
 			),
 		),
-	)
+	))
 }
 
 // authenticatedUserKey keys a request by its authenticated user. Only

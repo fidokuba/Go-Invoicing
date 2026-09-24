@@ -494,3 +494,26 @@ func Recover(logger *slog.Logger) func(http.Handler) http.Handler {
 		})
 	}
 }
+
+// SecurityHeaders (Milestone 13 Part 7) sets headers every response should
+// carry, API and frontend alike:
+//
+//   - X-Frame-Options: DENY and Content-Security-Policy: frame-ancestors
+//     'none' stop any other site framing the application. The session
+//     token lives in this origin's storage, so a framed copy would be
+//     fully logged in — the classic clickjacking setup for tricking a
+//     user into clicking "Record payment" or "Send". Both headers are
+//     sent: frame-ancestors is the standard, X-Frame-Options covers older
+//     browsers. The CSP deliberately contains only frame-ancestors, so it
+//     restricts nothing the frontend loads.
+//   - X-Content-Type-Options: nosniff makes browsers honour the declared
+//     Content-Type rather than guessing.
+func SecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Content-Security-Policy", "frame-ancestors 'none'")
+		h.Set("X-Content-Type-Options", "nosniff")
+		next.ServeHTTP(w, r)
+	})
+}

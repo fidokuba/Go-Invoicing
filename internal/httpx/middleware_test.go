@@ -644,3 +644,24 @@ func TestRequestLogging_UnmatchedRoute_PathAndQueryMarkersNeverSurface(t *testin
 		t.Fatalf("expected the bounded \"unmatched\" route label, got:\n%s", metricsBody)
 	}
 }
+
+// Milestone 13 Part 7: every response — API, error or frontend — carries
+// the anti-framing and nosniff headers.
+func TestSecurityHeaders_SetOnEveryResponse(t *testing.T) {
+	handler := SecurityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		WriteError(w, http.StatusNotFound, CodeNotFound, "not found")
+	}))
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/anything", nil))
+
+	for header, want := range map[string]string{
+		"X-Frame-Options":         "DENY",
+		"Content-Security-Policy": "frame-ancestors 'none'",
+		"X-Content-Type-Options":  "nosniff",
+	} {
+		if got := recorder.Header().Get(header); got != want {
+			t.Errorf("%s: expected %q, got %q", header, want, got)
+		}
+	}
+}

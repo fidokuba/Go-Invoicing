@@ -188,17 +188,21 @@ func Serve(w http.ResponseWriter, r *http.Request) {
 
 // prepareForFileServer clears the header state net/http's own
 // NotFoundHandler already wrote before Serve ever runs (Content-Type:
-// text/plain, X-Content-Type-Options: nosniff — see
+// text/plain — see
 // internal/httpx.FrontendFallback's doc comment: this function is only
 // ever reached mid-flight through that exact call). http.FileServer's
 // underlying ServeContent only sets Content-Type when none is already
 // present, so leaving the stale text/plain value in place would silently
 // serve real HTML/JS/CSS content mislabelled as plain text — this must
 // run before every call to fileServer.ServeHTTP below.
+//
+// X-Content-Type-Options: nosniff is deliberately kept (Milestone 13
+// Part 7): http.FileServer sets each file's real Content-Type, so the
+// directive is correct for real assets too — see
+// httpx.SecurityHeaders, which sets it on every response.
 func prepareForFileServer(w http.ResponseWriter, cacheControl string) {
 	h := w.Header()
 	h.Del("Content-Type")
-	h.Del("X-Content-Type-Options")
 	h.Set("Cache-Control", cacheControl)
 }
 
