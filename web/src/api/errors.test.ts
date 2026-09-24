@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ApiError, friendlyMessage, isRetryable } from "./errors";
+import { ApiError, friendlyMessage, isRetryable, loginErrorMessage } from "./errors";
 
 describe("friendlyMessage", () => {
   it("maps 401 to a session-expired message", () => {
@@ -77,5 +77,16 @@ describe("isRetryable", () => {
 
   it("treats a network TypeError as retryable", () => {
     expect(isRetryable(new TypeError("Failed to fetch"))).toBe(true);
+  });
+});
+
+describe("loginErrorMessage", () => {
+  it("says the credentials were wrong on a 401, not that a session expired", () => {
+    expect(loginErrorMessage(new ApiError(401, "unauthorized", "unauthorized"))).toBe("Incorrect email or password.");
+  });
+
+  it("keeps the usual messages for everything else", () => {
+    expect(loginErrorMessage(new ApiError(429, "rate_limited", "too many requests", 6))).toMatch(/wait 6 seconds/);
+    expect(loginErrorMessage(new TypeError("Failed to fetch"))).toMatch(/network error/i);
   });
 });

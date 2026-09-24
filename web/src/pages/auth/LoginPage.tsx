@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useLogin } from "@/api/queries/auth";
-import { friendlyMessage } from "@/api/errors";
+import { loginErrorMessage } from "@/api/errors";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 import { Alert } from "@/components/ui/alert";
@@ -51,7 +51,7 @@ export function LoginPage() {
 
           {login.isError && (
             <div className="mb-4">
-              <Alert>{friendlyMessage(login.error)}</Alert>
+              <Alert>{loginErrorMessage(login.error)}</Alert>
             </div>
           )}
 

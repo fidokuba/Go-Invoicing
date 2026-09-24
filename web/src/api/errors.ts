@@ -82,6 +82,16 @@ function formatWait(seconds: number): string {
   return minutes === 1 ? "1 minute" : `${minutes} minutes`;
 }
 
+/** The login page's message. There a 401 means the credentials were
+ * wrong — not, as friendlyMessage assumes everywhere else, that a session
+ * expired. It deliberately doesn't say which of the two was wrong. */
+export function loginErrorMessage(err: unknown): string {
+  if (err instanceof ApiError && err.status === 401) {
+    return "Incorrect email or password.";
+  }
+  return friendlyMessage(err);
+}
+
 /** Milestone 13 Part 2: a PATCH whose If-Match no longer matches — the
  * record was saved by someone else after this form loaded it. */
 export const STALE_WRITE_MESSAGE =
