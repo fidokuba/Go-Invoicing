@@ -15,6 +15,8 @@ func TestIsFrontendRoute(t *testing.T) {
 		{"/", true},
 		{"/login", true},
 		{"/register", true},
+		{"/terms", true},
+		{"/privacy", true},
 		{"/dashboard", true},
 		{"/customers", true},
 		{"/customers/11111111-1111-1111-1111-111111111111", true},

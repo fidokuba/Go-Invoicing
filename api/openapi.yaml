@@ -318,6 +318,7 @@ paths:
                 name: Ada Lovelace
                 email: ada@example.com
                 password: correct-horse-battery-staple
+                agreedToTerms: true
       responses:
         "201":
           description: The organisation and its first admin user were created.
@@ -1733,7 +1734,7 @@ components:
     RegisterUserRequest:
       type: object
       additionalProperties: false
-      required: [name, email, password]
+      required: [name, email, password, agreedToTerms]
       properties:
         name:
           type: string
@@ -1742,6 +1743,13 @@ components:
         password:
           type: string
           description: Minimum 12 characters.
+        agreedToTerms:
+          type: boolean
+          description: >-
+            Must be true — the request is rejected otherwise. Records
+            agreement to the Terms & Conditions; there is no equivalent
+            field for the Privacy Policy, which is acknowledged rather
+            than opted into.
 
     RegisterRequest:
       type: object

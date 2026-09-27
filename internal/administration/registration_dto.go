@@ -13,10 +13,18 @@ type RegisterOrganisationRequest struct {
 // UserRoleAdmin, decided server-side by RegistrationService.Register —
 // an anonymous caller has no way to request any other initial role,
 // because the wire format has nowhere to put one.
+//
+// AgreedToTerms must be true or Register rejects the request with
+// ErrTermsNotAccepted — the signup form's "I agree to the Terms &
+// Conditions" checkbox is enforced here, not just in the client, so a
+// direct API call can't bypass it. There is no separate field for the
+// Privacy Policy: it is acknowledged, not opted into (see RegisterPage),
+// so nothing is recorded for it.
 type RegisterUserRequest struct {
-	Name     string `json:"name"`
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Name          string `json:"name"`
+	Email         string `json:"email"`
+	Password      string `json:"password"`
+	AgreedToTerms bool   `json:"agreedToTerms"`
 }
 
 // RegisterRequest is the shape a client POSTs to /register.

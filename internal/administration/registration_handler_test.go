@@ -20,7 +20,7 @@ func TestRegistrationHandler_Register_Success(t *testing.T) {
 
 	body := bytes.NewBufferString(`{
 		"organisation": {"name": "Acme Ltd"},
-		"user": {"name": "Alice", "email": "alice@example.com", "password": "` + registrationPassword + `"}
+		"user": {"name": "Alice", "email": "alice@example.com", "password": "` + registrationPassword + `", "agreedToTerms": true}
 	}`)
 	request := httptest.NewRequest(http.MethodPost, "/register", body)
 	request.Header.Set("Content-Type", "application/json")
@@ -59,7 +59,7 @@ func TestRegistrationHandler_Register_ResponseContainsNoCredentialFieldsOrToken(
 
 	body := bytes.NewBufferString(`{
 		"organisation": {"name": "Acme Ltd"},
-		"user": {"name": "Alice", "email": "alice@example.com", "password": "` + registrationPassword + `"}
+		"user": {"name": "Alice", "email": "alice@example.com", "password": "` + registrationPassword + `", "agreedToTerms": true}
 	}`)
 	request := httptest.NewRequest(http.MethodPost, "/register", body)
 	request.Header.Set("Content-Type", "application/json")
@@ -116,6 +116,29 @@ func TestRegistrationHandler_Register_ShortPassword(t *testing.T) {
 	body := bytes.NewBufferString(`{
 		"organisation": {"name": "Acme Ltd"},
 		"user": {"name": "Alice", "email": "alice@example.com", "password": "short"}
+	}`)
+	request := httptest.NewRequest(http.MethodPost, "/register", body)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.Register(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusBadRequest, recorder.Code, recorder.Body.String())
+	}
+}
+
+// TestRegistrationHandler_Register_TermsNotAccepted proves the signup
+// form's "I agree to the Terms & Conditions" checkbox is enforced
+// server-side: a request that omits agreedToTerms (so it decodes to its
+// zero value, false) is rejected the same as any other invalid field,
+// not silently accepted.
+func TestRegistrationHandler_Register_TermsNotAccepted(t *testing.T) {
+	handler, _ := newTestRegistrationHandler()
+
+	body := bytes.NewBufferString(`{
+		"organisation": {"name": "Acme Ltd"},
+		"user": {"name": "Alice", "email": "alice@example.com", "password": "` + registrationPassword + `"}
 	}`)
 	request := httptest.NewRequest(http.MethodPost, "/register", body)
 	request.Header.Set("Content-Type", "application/json")
@@ -210,7 +233,7 @@ func TestRegistrationHandler_Register_DuplicateEmail(t *testing.T) {
 
 	body := bytes.NewBufferString(`{
 		"organisation": {"name": "Acme Ltd"},
-		"user": {"name": "Alice", "email": "alice@example.com", "password": "` + registrationPassword + `"}
+		"user": {"name": "Alice", "email": "alice@example.com", "password": "` + registrationPassword + `", "agreedToTerms": true}
 	}`)
 	request := httptest.NewRequest(http.MethodPost, "/register", body)
 	request.Header.Set("Content-Type", "application/json")
@@ -223,7 +246,7 @@ func TestRegistrationHandler_Register_DuplicateEmail(t *testing.T) {
 
 	body = bytes.NewBufferString(`{
 		"organisation": {"name": "Second Co"},
-		"user": {"name": "Alice Again", "email": "alice@example.com", "password": "` + registrationPassword + `"}
+		"user": {"name": "Alice Again", "email": "alice@example.com", "password": "` + registrationPassword + `", "agreedToTerms": true}
 	}`)
 	request = httptest.NewRequest(http.MethodPost, "/register", body)
 	request.Header.Set("Content-Type", "application/json")
@@ -241,7 +264,7 @@ func TestRegistrationHandler_Register_UnexpectedFailure(t *testing.T) {
 
 	body := bytes.NewBufferString(`{
 		"organisation": {"name": "Acme Ltd"},
-		"user": {"name": "Alice", "email": "alice@example.com", "password": "` + registrationPassword + `"}
+		"user": {"name": "Alice", "email": "alice@example.com", "password": "` + registrationPassword + `", "agreedToTerms": true}
 	}`)
 	request := httptest.NewRequest(http.MethodPost, "/register", body)
 	request.Header.Set("Content-Type", "application/json")

@@ -313,7 +313,7 @@ func registerTenant(t *testing.T, handler http.Handler, db *pgxpool.Pool, orgNam
 
 	registerBody := bytes.NewBufferString(`{
 		"organisation": {"name": "` + orgName + `"},
-		"user": {"name": "` + orgName + ` Admin", "email": "` + adminEmail + `", "password": "` + testPassword + `"}
+		"user": {"name": "` + orgName + ` Admin", "email": "` + adminEmail + `", "password": "` + testPassword + `", "agreedToTerms": true}
 	}`)
 	registerRecorder := doRequest(handler, http.MethodPost, "/api/v1/register", "", registerBody)
 	if registerRecorder.Code != http.StatusCreated {

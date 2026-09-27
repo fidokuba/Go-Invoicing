@@ -5,9 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 )
+
+// ErrTermsNotAccepted is returned when Register is called with
+// agreedToTerms false. The signup form's checkbox already prevents this
+// client-side, but this is the enforcement that actually matters — a
+// direct call to POST /register has no other reason to send true.
+var ErrTermsNotAccepted = errors.New("you must agree to the terms and conditions")
 
 // RegistrationResult is what a successful Register returns: the newly
 // created organisation and its first user. There is no session/token
@@ -70,12 +77,21 @@ func NewRegistrationService(
 // Register does not create a session and does not authenticate the
 // caller — it only creates rows. The client must call AuthService.Login
 // afterward to obtain a bearer token, the same as any other user.
+//
+// agreedToTerms must be true or Register returns ErrTermsNotAccepted
+// without beginning a transaction — the same "validate everything before
+// Begin" ordering as the other field checks above. On success, the
+// created user's TermsAcceptedAt/TermsVersion are stamped with the
+// current moment and CurrentTermsVersion. There is no equivalent
+// parameter for the Privacy Policy: it is acknowledged by creating an
+// account, not a separate opt-in, so nothing is recorded for it.
 func (s *RegistrationService) Register(
 	ctx context.Context,
 	organisationName string,
 	userName string,
 	userEmail string,
 	userPassword string,
+	agreedToTerms bool,
 ) (*RegistrationResult, error) {
 	organisationName = strings.TrimSpace(organisationName)
 	if organisationName == "" {
@@ -85,6 +101,10 @@ func (s *RegistrationService) Register(
 	name, email, err := normalizeAndValidateUserFields(userName, userEmail, userPassword)
 	if err != nil {
 		return nil, err
+	}
+
+	if !agreedToTerms {
+		return nil, ErrTermsNotAccepted
 	}
 
 	passwordHash, err := hashPassword(userPassword)
@@ -110,14 +130,19 @@ func (s *RegistrationService) Register(
 		PaymentTerms:   30,
 	}
 
+	termsAcceptedAt := time.Now().UTC()
+	termsVersion := CurrentTermsVersion
+
 	user := &User{
-		ID:             uuid.New(),
-		OrganisationID: organisation.ID,
-		Name:           name,
-		Email:          email,
-		PasswordHash:   passwordHash,
-		Role:           UserRoleAdmin,
-		IsActive:       true,
+		ID:              uuid.New(),
+		OrganisationID:  organisation.ID,
+		Name:            name,
+		Email:           email,
+		PasswordHash:    passwordHash,
+		Role:            UserRoleAdmin,
+		IsActive:        true,
+		TermsAcceptedAt: &termsAcceptedAt,
+		TermsVersion:    &termsVersion,
 	}
 
 	// BEGIN — the organisation, its settings, and its first user either

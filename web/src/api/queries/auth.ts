@@ -20,12 +20,18 @@ export function useRegister() {
       name: string;
       email: string;
       password: string;
+      agreedToTerms: boolean;
     }) =>
       unwrap(
         client.POST("/api/v1/register", {
           body: {
             organisation: { name: input.organisationName },
-            user: { name: input.name, email: input.email, password: input.password },
+            user: {
+              name: input.name,
+              email: input.email,
+              password: input.password,
+              agreedToTerms: input.agreedToTerms,
+            },
           },
         }),
       ),

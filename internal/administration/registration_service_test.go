@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // registrationTestFixture bundles a RegistrationService with the same
@@ -45,7 +46,7 @@ const registrationPassword = "correct horse battery staple"
 func TestRegistrationService_Register_Success(t *testing.T) {
 	f := newRegistrationTestFixture()
 
-	result, err := f.service.Register(context.Background(), "Acme Ltd", "Alice", "Alice@Example.com", registrationPassword)
+	result, err := f.service.Register(context.Background(), "Acme Ltd", "Alice", "Alice@Example.com", registrationPassword, true)
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -70,7 +71,7 @@ func TestRegistrationService_Register_Success(t *testing.T) {
 func TestRegistrationService_Register_CreatesDefaultSettings(t *testing.T) {
 	f := newRegistrationTestFixture()
 
-	result, err := f.service.Register(context.Background(), "Acme Ltd", "Alice", "alice@example.com", registrationPassword)
+	result, err := f.service.Register(context.Background(), "Acme Ltd", "Alice", "alice@example.com", registrationPassword, true)
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -92,7 +93,7 @@ func TestRegistrationService_Register_CreatesDefaultSettings(t *testing.T) {
 func TestRegistrationService_Register_FirstUserIsAlwaysAdmin(t *testing.T) {
 	f := newRegistrationTestFixture()
 
-	result, err := f.service.Register(context.Background(), "Acme Ltd", "Alice", "alice@example.com", registrationPassword)
+	result, err := f.service.Register(context.Background(), "Acme Ltd", "Alice", "alice@example.com", registrationPassword, true)
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -105,7 +106,7 @@ func TestRegistrationService_Register_FirstUserIsAlwaysAdmin(t *testing.T) {
 func TestRegistrationService_Register_NormalizesEmail(t *testing.T) {
 	f := newRegistrationTestFixture()
 
-	result, err := f.service.Register(context.Background(), "Acme Ltd", "Alice", "  Alice@Example.COM  ", registrationPassword)
+	result, err := f.service.Register(context.Background(), "Acme Ltd", "Alice", "  Alice@Example.COM  ", registrationPassword, true)
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -118,7 +119,7 @@ func TestRegistrationService_Register_NormalizesEmail(t *testing.T) {
 func TestRegistrationService_Register_PasswordStoredOnlyAsArgon2idHash(t *testing.T) {
 	f := newRegistrationTestFixture()
 
-	result, err := f.service.Register(context.Background(), "Acme Ltd", "Alice", "alice@example.com", registrationPassword)
+	result, err := f.service.Register(context.Background(), "Acme Ltd", "Alice", "alice@example.com", registrationPassword, true)
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -143,7 +144,7 @@ func TestRegistrationService_Register_PasswordStoredOnlyAsArgon2idHash(t *testin
 func TestRegistrationService_Register_MissingOrganisationName(t *testing.T) {
 	f := newRegistrationTestFixture()
 
-	_, err := f.service.Register(context.Background(), "   ", "Alice", "alice@example.com", registrationPassword)
+	_, err := f.service.Register(context.Background(), "   ", "Alice", "alice@example.com", registrationPassword, true)
 	if !errors.Is(err, ErrOrganisationNameRequired) {
 		t.Fatalf("expected ErrOrganisationNameRequired, got %v", err)
 	}
@@ -152,7 +153,7 @@ func TestRegistrationService_Register_MissingOrganisationName(t *testing.T) {
 func TestRegistrationService_Register_MissingUserName(t *testing.T) {
 	f := newRegistrationTestFixture()
 
-	_, err := f.service.Register(context.Background(), "Acme Ltd", "   ", "alice@example.com", registrationPassword)
+	_, err := f.service.Register(context.Background(), "Acme Ltd", "   ", "alice@example.com", registrationPassword, true)
 	if !errors.Is(err, ErrUserNameRequired) {
 		t.Fatalf("expected ErrUserNameRequired, got %v", err)
 	}
@@ -161,9 +162,51 @@ func TestRegistrationService_Register_MissingUserName(t *testing.T) {
 func TestRegistrationService_Register_PasswordTooShort(t *testing.T) {
 	f := newRegistrationTestFixture()
 
-	_, err := f.service.Register(context.Background(), "Acme Ltd", "Alice", "alice@example.com", "short")
+	_, err := f.service.Register(context.Background(), "Acme Ltd", "Alice", "alice@example.com", "short", true)
 	if !errors.Is(err, ErrUserPasswordTooShort) {
 		t.Fatalf("expected ErrUserPasswordTooShort, got %v", err)
+	}
+}
+
+// TestRegistrationService_Register_TermsNotAccepted proves agreedToTerms
+// is enforced server-side, not just by the signup form's checkbox: a
+// direct call with it false is rejected the same as any other invalid
+// field, before a transaction is ever begun.
+func TestRegistrationService_Register_TermsNotAccepted(t *testing.T) {
+	f := newRegistrationTestFixture()
+
+	_, err := f.service.Register(context.Background(), "Acme Ltd", "Alice", "alice@example.com", registrationPassword, false)
+	if !errors.Is(err, ErrTermsNotAccepted) {
+		t.Fatalf("expected ErrTermsNotAccepted, got %v", err)
+	}
+
+	if f.txBeginner.beginCallCount != 0 {
+		t.Errorf("expected Begin to never be called when terms are not accepted, got %d calls", f.txBeginner.beginCallCount)
+	}
+}
+
+// TestRegistrationService_Register_StampsTermsAcceptance proves a
+// successful registration records both when and to which version of the
+// Terms & Conditions the new user agreed.
+func TestRegistrationService_Register_StampsTermsAcceptance(t *testing.T) {
+	f := newRegistrationTestFixture()
+
+	before := time.Now().UTC()
+	result, err := f.service.Register(context.Background(), "Acme Ltd", "Alice", "alice@example.com", registrationPassword, true)
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	after := time.Now().UTC()
+
+	if result.User.TermsAcceptedAt == nil {
+		t.Fatal("expected TermsAcceptedAt to be set")
+	}
+	if result.User.TermsAcceptedAt.Before(before) || result.User.TermsAcceptedAt.After(after) {
+		t.Errorf("expected TermsAcceptedAt to fall between %v and %v, got %v", before, after, *result.User.TermsAcceptedAt)
+	}
+
+	if result.User.TermsVersion == nil || *result.User.TermsVersion != CurrentTermsVersion {
+		t.Errorf("expected TermsVersion %q, got %v", CurrentTermsVersion, result.User.TermsVersion)
 	}
 }
 
@@ -174,7 +217,7 @@ func TestRegistrationService_Register_PasswordTooShort(t *testing.T) {
 func TestRegistrationService_Register_ValidationFailureBeginsNoTransaction(t *testing.T) {
 	f := newRegistrationTestFixture()
 
-	if _, err := f.service.Register(context.Background(), "", "Alice", "alice@example.com", registrationPassword); err == nil {
+	if _, err := f.service.Register(context.Background(), "", "Alice", "alice@example.com", registrationPassword, true); err == nil {
 		t.Fatal("expected an error")
 	}
 
@@ -186,11 +229,11 @@ func TestRegistrationService_Register_ValidationFailureBeginsNoTransaction(t *te
 func TestRegistrationService_Register_DuplicateEmailFails(t *testing.T) {
 	f := newRegistrationTestFixture()
 
-	if _, err := f.service.Register(context.Background(), "Acme Ltd", "Alice", "alice@example.com", registrationPassword); err != nil {
+	if _, err := f.service.Register(context.Background(), "Acme Ltd", "Alice", "alice@example.com", registrationPassword, true); err != nil {
 		t.Fatalf("first registration: %v", err)
 	}
 
-	_, err := f.service.Register(context.Background(), "Second Co", "Alice Again", "alice@example.com", registrationPassword)
+	_, err := f.service.Register(context.Background(), "Second Co", "Alice Again", "alice@example.com", registrationPassword, true)
 	if !errors.Is(err, ErrUserEmailAlreadyExists) {
 		t.Fatalf("expected ErrUserEmailAlreadyExists, got %v", err)
 	}
@@ -200,7 +243,7 @@ func TestRegistrationService_Register_RollsBackOnOrganisationCreateFailure(t *te
 	f := newRegistrationTestFixture()
 	f.organisationRepository.createErr = errors.New("connection reset by peer")
 
-	_, err := f.service.Register(context.Background(), "Acme Ltd", "Alice", "alice@example.com", registrationPassword)
+	_, err := f.service.Register(context.Background(), "Acme Ltd", "Alice", "alice@example.com", registrationPassword, true)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -226,7 +269,7 @@ func TestRegistrationService_Register_RollsBackOnSettingsCreateFailure(t *testin
 	f := newRegistrationTestFixture()
 	f.settingsRepository.createErr = errors.New("connection reset by peer")
 
-	_, err := f.service.Register(context.Background(), "Acme Ltd", "Alice", "alice@example.com", registrationPassword)
+	_, err := f.service.Register(context.Background(), "Acme Ltd", "Alice", "alice@example.com", registrationPassword, true)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -248,7 +291,7 @@ func TestRegistrationService_Register_RollsBackOnUserCreateFailure(t *testing.T)
 	f := newRegistrationTestFixture()
 	f.userRepository.createErr = errors.New("connection reset by peer")
 
-	_, err := f.service.Register(context.Background(), "Acme Ltd", "Alice", "alice@example.com", registrationPassword)
+	_, err := f.service.Register(context.Background(), "Acme Ltd", "Alice", "alice@example.com", registrationPassword, true)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -266,7 +309,7 @@ func TestRegistrationService_Register_CommitFailureDoesNotReportSuccess(t *testi
 	f := newRegistrationTestFixture()
 	f.tx.commitErr = errors.New("connection reset by peer")
 
-	result, err := f.service.Register(context.Background(), "Acme Ltd", "Alice", "alice@example.com", registrationPassword)
+	result, err := f.service.Register(context.Background(), "Acme Ltd", "Alice", "alice@example.com", registrationPassword, true)
 	if err == nil {
 		t.Fatal("expected an error when commit fails")
 	}
@@ -280,7 +323,7 @@ func TestRegistrationService_Register_BeginTransactionErrorPropagates(t *testing
 	f := newRegistrationTestFixture()
 	f.txBeginner.beginErr = errors.New("pool exhausted")
 
-	_, err := f.service.Register(context.Background(), "Acme Ltd", "Alice", "alice@example.com", registrationPassword)
+	_, err := f.service.Register(context.Background(), "Acme Ltd", "Alice", "alice@example.com", registrationPassword, true)
 	if err == nil {
 		t.Fatal("expected an error")
 	}

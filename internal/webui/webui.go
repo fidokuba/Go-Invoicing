@@ -87,6 +87,7 @@ var frontendRoutePrefixes = []string{
 	"/login",
 	"/register",
 	"/terms",
+	"/privacy",
 	"/dashboard",
 	"/customers",
 	"/products",

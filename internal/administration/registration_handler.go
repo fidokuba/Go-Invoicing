@@ -40,6 +40,7 @@ func (h *RegistrationHandler) Register(w http.ResponseWriter, r *http.Request) {
 		request.User.Name,
 		request.User.Email,
 		request.User.Password,
+		request.User.AgreedToTerms,
 	)
 	if err != nil {
 		if errors.Is(err, ErrOrganisationNameRequired) ||
@@ -47,7 +48,8 @@ func (h *RegistrationHandler) Register(w http.ResponseWriter, r *http.Request) {
 			errors.Is(err, ErrUserEmailRequired) ||
 			errors.Is(err, ErrUserEmailInvalid) ||
 			errors.Is(err, ErrUserPasswordRequired) ||
-			errors.Is(err, ErrUserPasswordTooShort) {
+			errors.Is(err, ErrUserPasswordTooShort) ||
+			errors.Is(err, ErrTermsNotAccepted) {
 			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeValidationFailed, err.Error())
 			return
 		}

@@ -27,7 +27,7 @@ export function RegisterPage() {
     if (register.isPending || passwordTooShort || !agreedToTerms) return;
 
     register.mutate(
-      { organisationName, name, email, password },
+      { organisationName, name, email, password, agreedToTerms },
       { onSuccess: () => navigate("/login?registered=1", { replace: true }) },
     );
   }
@@ -104,11 +104,19 @@ export function RegisterPage() {
                 <label htmlFor="agreeToTerms" className="text-sm text-slate-700">
                   I agree to the{" "}
                   <Link to="/terms" target="_blank" rel="noopener" className="font-medium text-brand-600 hover:underline">
-                    Terms and Conditions
+                    Terms & Conditions
                   </Link>
                 </label>
               </div>
-              {touched && !agreedToTerms && <FieldError>You must agree to the Terms and Conditions.</FieldError>}
+              {touched && !agreedToTerms && <FieldError>You must agree to the Terms & Conditions.</FieldError>}
+              <p className="mt-2 text-xs text-slate-500">
+                By creating an account, you acknowledge that your personal information will be handled as described in
+                our{" "}
+                <Link to="/privacy" target="_blank" rel="noopener" className="font-medium text-brand-600 hover:underline">
+                  Privacy Policy
+                </Link>
+                .
+              </p>
             </div>
             <Button type="submit" className="w-full" disabled={register.isPending}>
               {register.isPending ? "Creating account…" : "Create account"}

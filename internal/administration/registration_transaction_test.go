@@ -31,7 +31,7 @@ func TestRegistrationService_Register_PersistsAtomically(t *testing.T) {
 	ctx := context.Background()
 	service := newPostgresRegistrationService(db)
 
-	result, err := service.Register(ctx, "Acme Ltd", "Alice", "registration-atomic@example.com", registrationPassword)
+	result, err := service.Register(ctx, "Acme Ltd", "Alice", "registration-atomic@example.com", registrationPassword, true)
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestRegistrationService_Register_RollsBackAtomicallyOnDuplicateEmail(t *tes
 
 	const email = "registration-duplicate@example.com"
 
-	first, err := service.Register(ctx, "First Co", "Alice", email, registrationPassword)
+	first, err := service.Register(ctx, "First Co", "Alice", email, registrationPassword, true)
 	if err != nil {
 		t.Fatalf("first registration: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestRegistrationService_Register_RollsBackAtomicallyOnDuplicateEmail(t *tes
 		_, _ = db.Exec(context.Background(), "DELETE FROM organisations WHERE id = $1", first.Organisation.ID)
 	})
 
-	_, err = service.Register(ctx, "Second Co", "Alice Again", email, registrationPassword)
+	_, err = service.Register(ctx, "Second Co", "Alice Again", email, registrationPassword, true)
 	if !errors.Is(err, ErrUserEmailAlreadyExists) {
 		t.Fatalf("expected ErrUserEmailAlreadyExists, got %v", err)
 	}
@@ -152,7 +152,7 @@ func TestRegistrationService_Register_ConcurrentSameEmail_ExactlyOneSucceeds(t *
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			result, err := service.Register(ctx, fmt.Sprintf("%s%d", orgNamePrefix, i), "Alice", email, registrationPassword)
+			result, err := service.Register(ctx, fmt.Sprintf("%s%d", orgNamePrefix, i), "Alice", email, registrationPassword, true)
 			results[i] = result
 			errs[i] = err
 		}(i)

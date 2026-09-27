@@ -77,10 +77,12 @@ func (r *PostgresUserRepository) Create(
 			email,
 			password_hash,
 			role,
-			is_active
+			is_active,
+			terms_accepted_at,
+			terms_version
 		)
 		VALUES (
-			$1, $2, $3, $4, $5, $6, $7
+			$1, $2, $3, $4, $5, $6, $7, $8, $9
 		)
 		RETURNING created_at, updated_at
 	`
@@ -95,6 +97,8 @@ func (r *PostgresUserRepository) Create(
 		user.PasswordHash,
 		user.Role,
 		user.IsActive,
+		user.TermsAcceptedAt,
+		user.TermsVersion,
 	).Scan(&user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
 		var pgErr *pgconn.PgError

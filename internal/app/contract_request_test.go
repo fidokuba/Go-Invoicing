@@ -44,9 +44,10 @@ func TestRequestContract_MatchesOpenAPISchema(t *testing.T) {
 		validateAgainstSchema(t, doc, "RegisterRequest", admin.RegisterRequest{
 			Organisation: admin.RegisterOrganisationRequest{Name: "Acme Consulting Ltd"},
 			User: admin.RegisterUserRequest{
-				Name:     "Ada Lovelace",
-				Email:    "ada@example.com",
-				Password: "correct-horse-battery-staple",
+				Name:          "Ada Lovelace",
+				Email:         "ada@example.com",
+				Password:      "correct-horse-battery-staple",
+				AgreedToTerms: true,
 			},
 		})
 	})

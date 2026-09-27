@@ -301,7 +301,8 @@ export interface paths {
                      *       "user": {
                      *         "name": "Ada Lovelace",
                      *         "email": "ada@example.com",
-                     *         "password": "correct-horse-battery-staple"
+                     *         "password": "correct-horse-battery-staple",
+                     *         "agreedToTerms": true
                      *       }
                      *     }
                      */
@@ -1863,6 +1864,8 @@ export interface components {
             email: string;
             /** @description Minimum 12 characters. */
             password: string;
+            /** @description Must be true — the request is rejected otherwise. Records agreement to the Terms & Conditions; there is no equivalent field for the Privacy Policy, which is acknowledged rather than opted into. */
+            agreedToTerms: boolean;
         };
         RegisterRequest: {
             organisation: components["schemas"]["RegisterOrganisationRequest"];

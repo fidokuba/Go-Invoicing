@@ -56,6 +56,7 @@ const UsersSettingsPage = lazy(() =>
   import("@/pages/settings/UsersSettingsPage").then((m) => ({ default: m.UsersSettingsPage })),
 );
 const TermsPage = lazy(() => import("@/pages/TermsPage").then((m) => ({ default: m.TermsPage })));
+const PrivacyPage = lazy(() => import("@/pages/PrivacyPage").then((m) => ({ default: m.PrivacyPage })));
 const NotFoundPage = lazy(() => import("@/pages/NotFoundPage").then((m) => ({ default: m.NotFoundPage })));
 
 export function App() {
@@ -68,6 +69,14 @@ export function App() {
         element={
           <Suspense fallback={<PageLoading />}>
             <TermsPage />
+          </Suspense>
+        }
+      />
+      <Route
+        path="/privacy"
+        element={
+          <Suspense fallback={<PageLoading />}>
+            <PrivacyPage />
           </Suspense>
         }
       />
