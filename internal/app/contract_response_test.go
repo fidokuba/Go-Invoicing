@@ -3,12 +3,16 @@ package app
 import (
 	"encoding/json"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
 
 	admin "go-invoicing/internal/administration"
 	"go-invoicing/internal/customer"
 	"go-invoicing/internal/httpx"
 	"go-invoicing/internal/invoice"
 	"go-invoicing/internal/product"
+	"go-invoicing/internal/template"
 )
 
 // TestResponseContract_MatchesOpenAPISchema is Milestone 8 Part 5 section
@@ -217,6 +221,28 @@ func TestResponseContract_MatchesOpenAPISchema(t *testing.T) {
 			Notes:         &paymentNotes,
 			CreatedAt:     "2026-09-19T09:05:00Z",
 			UpdatedAt:     "2026-09-19T09:05:00Z",
+		})
+	})
+
+	templateCreatedAt := time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC)
+	templateResponse := template.TemplateResponse{
+		ID:             uuid.MustParse("55555555-5555-5555-5555-555555555555"),
+		OrganisationID: uuid.MustParse("7c9e6679-7425-40de-944b-e07fc1f90ae7"),
+		Name:           "My Custom Layout",
+		Definition:     json.RawMessage(`{"content":[],"root":{}}`),
+		IsDefault:      true,
+		IsSystem:       false,
+		CreatedAt:      templateCreatedAt,
+		UpdatedAt:      templateCreatedAt,
+	}
+
+	t.Run("TemplateResponse", func(t *testing.T) {
+		validateAgainstSchema(t, doc, "TemplateResponse", templateResponse)
+	})
+
+	t.Run("TemplateListResponse", func(t *testing.T) {
+		validateAgainstSchema(t, doc, "TemplateListResponse", template.TemplateListResponse{
+			Items: []template.TemplateResponse{templateResponse},
 		})
 	})
 

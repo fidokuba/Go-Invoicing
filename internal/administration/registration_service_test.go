@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // registrationTestFixture bundles a RegistrationService with the same
@@ -18,24 +21,45 @@ type registrationTestFixture struct {
 	organisationRepository *fakeOrganisationRepository
 	settingsRepository     *fakeSettingsRepository
 	userRepository         *fakeUserRepository
+	templateProvisioner    *fakeTemplateProvisioner
 	tx                     *fakeTx
 	txBeginner             *fakeTxBeginner
+}
+
+// fakeTemplateProvisioner stands in for internal/template.CreateSystemTemplate
+// — a plain func value in production, so the fake is just a small struct
+// whose method has the matching signature and records what it was
+// called with, the same role fakeOrganisationRepository etc. play for
+// their own dependencies.
+type fakeTemplateProvisioner struct {
+	calls     []uuid.UUID
+	createErr error
+}
+
+func (f *fakeTemplateProvisioner) provision(_ context.Context, _ pgx.Tx, organisationID uuid.UUID) error {
+	if f.createErr != nil {
+		return f.createErr
+	}
+	f.calls = append(f.calls, organisationID)
+	return nil
 }
 
 func newRegistrationTestFixture() *registrationTestFixture {
 	organisations := newFakeOrganisationRepository()
 	settings := newFakeSettingsRepository()
 	users := newFakeUserRepository()
+	templateProvisioner := &fakeTemplateProvisioner{}
 	tx := &fakeTx{}
 	txBeginner := &fakeTxBeginner{tx: tx}
 
-	service := NewRegistrationService(organisations, settings, users, txBeginner)
+	service := NewRegistrationService(organisations, settings, users, templateProvisioner.provision, txBeginner)
 
 	return &registrationTestFixture{
 		service:                service,
 		organisationRepository: organisations,
 		settingsRepository:     settings,
 		userRepository:         users,
+		templateProvisioner:    templateProvisioner,
 		tx:                     tx,
 		txBeginner:             txBeginner,
 	}
@@ -83,6 +107,49 @@ func TestRegistrationService_Register_CreatesDefaultSettings(t *testing.T) {
 
 	if settings.InvoicePrefix != "INV-" || settings.InvoiceNumber != 0 || settings.Currency != "GBP" || settings.PaymentTerms != 30 {
 		t.Errorf("expected the same defaults OrganisationService.Create uses, got %+v", settings)
+	}
+}
+
+// TestRegistrationService_Register_ProvisionsClassicTemplate proves
+// Register calls TemplateProvisioner for the new organisation — the
+// atomic-with-everything-else counterpart to
+// TestRegistrationService_Register_CreatesDefaultSettings.
+func TestRegistrationService_Register_ProvisionsClassicTemplate(t *testing.T) {
+	f := newRegistrationTestFixture()
+
+	result, err := f.service.Register(context.Background(), "Acme Ltd", "Alice", "alice@example.com", registrationPassword, true)
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	if len(f.templateProvisioner.calls) != 1 || f.templateProvisioner.calls[0] != result.Organisation.ID {
+		t.Errorf("expected TemplateProvisioner to be called once with organisation ID %v, got %v", result.Organisation.ID, f.templateProvisioner.calls)
+	}
+}
+
+// TestRegistrationService_Register_RollsBackOnTemplateProvisionFailure
+// proves the Classic template is not a best-effort afterthought: if
+// provisioning it fails, the whole registration — organisation,
+// settings, and the first user that would otherwise have been created
+// next — rolls back together, the same as an organisation, settings, or
+// user create failure already does.
+func TestRegistrationService_Register_RollsBackOnTemplateProvisionFailure(t *testing.T) {
+	f := newRegistrationTestFixture()
+	f.templateProvisioner.createErr = errors.New("connection reset by peer")
+
+	_, err := f.service.Register(context.Background(), "Acme Ltd", "Alice", "alice@example.com", registrationPassword, true)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+
+	if !f.tx.rolledBack {
+		t.Error("expected the transaction to be rolled back")
+	}
+	if f.tx.committed {
+		t.Error("expected the transaction not to be committed")
+	}
+	if len(f.userRepository.usersByID) != 0 {
+		t.Error("expected no user to have been created")
 	}
 }
 

@@ -2,6 +2,7 @@ package invoice
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -9,6 +10,7 @@ import (
 
 	admin "go-invoicing/internal/administration"
 	"go-invoicing/internal/customer"
+	"go-invoicing/internal/template"
 )
 
 func TestInvoiceService_Send_Success(t *testing.T) {
@@ -81,6 +83,87 @@ func TestInvoiceService_Send_CapturesAllAvailableSellerFields(t *testing.T) {
 
 	if *inv.SellerName != "Acme Ltd" {
 		t.Errorf("expected SellerName %q, got %q", "Acme Ltd", *inv.SellerName)
+	}
+}
+
+// --- Template snapshot capture (Phase 4 of custom invoice layouts) ---
+
+// TestInvoiceService_Send_CapturesTemplateSnapshot proves Send captures
+// the organisation's *current default* template — id, name, definition,
+// and system status — into RenderedTemplateSnapshot, alongside the
+// party snapshot, at the same Draft -> Sent transition.
+func TestInvoiceService_Send_CapturesTemplateSnapshot(t *testing.T) {
+	f := newTestFixture()
+	invoiceID := f.addInvoice(10000, InvoiceStatusDraft)
+
+	definition := json.RawMessage(`{"content":[{"type":"SellerBlock"}],"root":{}}`)
+	defaultTemplate := template.Template{
+		ID:         uuid.New(),
+		Name:       "My Custom Layout",
+		Definition: definition,
+		IsDefault:  true,
+		IsSystem:   false,
+	}
+	f.templateRepository.defaultTemplate = defaultTemplate
+
+	inv, err := f.service.Send(context.Background(), f.organisationID, invoiceID)
+	if err != nil {
+		t.Fatalf("send invoice: %v", err)
+	}
+
+	if len(inv.RenderedTemplateSnapshot) == 0 {
+		t.Fatal("expected RenderedTemplateSnapshot to be populated")
+	}
+
+	var snapshot TemplateSnapshot
+	if err := json.Unmarshal(inv.RenderedTemplateSnapshot, &snapshot); err != nil {
+		t.Fatalf("unmarshal template snapshot: %v", err)
+	}
+
+	if snapshot.TemplateID != defaultTemplate.ID {
+		t.Errorf("expected TemplateID %v, got %v", defaultTemplate.ID, snapshot.TemplateID)
+	}
+	if snapshot.Name != defaultTemplate.Name {
+		t.Errorf("expected Name %q, got %q", defaultTemplate.Name, snapshot.Name)
+	}
+	if string(snapshot.Definition) != string(definition) {
+		t.Errorf("expected Definition %s, got %s", definition, snapshot.Definition)
+	}
+	if snapshot.IsSystem {
+		t.Error("expected IsSystem to be false, matching the live default template")
+	}
+
+	persisted := f.repository.invoices[invoiceID]
+	if len(persisted.RenderedTemplateSnapshot) == 0 {
+		t.Error("expected the persisted invoice to also carry the template snapshot")
+	}
+}
+
+// TestInvoiceService_Send_TemplateLookupFailureRollsBack proves a
+// failure resolving the organisation's default template rolls back the
+// whole Send — no lifecycle transition, no party snapshot either —
+// mirroring how an organisation-lookup failure already behaves for the
+// party snapshot (TestInvoiceService_Send_OrganisationLookupFailureRollsBack).
+func TestInvoiceService_Send_TemplateLookupFailureRollsBack(t *testing.T) {
+	f := newTestFixture()
+	invoiceID := f.addInvoice(10000, InvoiceStatusDraft)
+	f.templateRepository.getDefaultErr = errors.New("connection reset by peer")
+
+	_, err := f.service.Send(context.Background(), f.organisationID, invoiceID)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+
+	if !f.tx.rolledBack {
+		t.Error("expected the transaction to be rolled back")
+	}
+	if f.tx.committed {
+		t.Error("expected the transaction not to be committed")
+	}
+
+	persisted := f.repository.invoices[invoiceID]
+	if persisted.Status != InvoiceStatusDraft {
+		t.Errorf("expected the invoice to remain Draft, got %q", persisted.Status)
 	}
 }
 

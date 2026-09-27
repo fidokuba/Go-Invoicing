@@ -55,6 +55,12 @@ const InvoiceSettingsPage = lazy(() =>
 const UsersSettingsPage = lazy(() =>
   import("@/pages/settings/UsersSettingsPage").then((m) => ({ default: m.UsersSettingsPage })),
 );
+const InvoiceTemplatesPage = lazy(() =>
+  import("@/pages/settings/InvoiceTemplatesPage").then((m) => ({ default: m.InvoiceTemplatesPage })),
+);
+const InvoiceTemplateBuilderPage = lazy(() =>
+  import("@/pages/settings/InvoiceTemplateBuilderPage").then((m) => ({ default: m.InvoiceTemplateBuilderPage })),
+);
 const TermsPage = lazy(() => import("@/pages/TermsPage").then((m) => ({ default: m.TermsPage })));
 const PrivacyPage = lazy(() => import("@/pages/PrivacyPage").then((m) => ({ default: m.PrivacyPage })));
 const NotFoundPage = lazy(() => import("@/pages/NotFoundPage").then((m) => ({ default: m.NotFoundPage })));
@@ -80,7 +86,6 @@ export function App() {
           </Suspense>
         }
       />
-
       <Route element={<ProtectedRoute />}>
         <Route element={<AppShell />}>
           <Route
@@ -109,7 +114,14 @@ export function App() {
                     <Route path="billing-address" element={<BillingAddressSettingsPage />} />
                     <Route path="invoice" element={<InvoiceSettingsPage />} />
                     <Route path="users" element={<UsersSettingsPage />} />
+                    <Route path="invoice-templates" element={<InvoiceTemplatesPage />} />
                   </Route>
+                  {/* The builder is a sibling of, not nested under,
+                      SettingsLayout — Puck's editor wants the full page
+                      height, not the space left over below the Settings
+                      tab bar. */}
+                  <Route path="settings/invoice-templates/new" element={<InvoiceTemplateBuilderPage />} />
+                  <Route path="settings/invoice-templates/:id" element={<InvoiceTemplateBuilderPage />} />
 
                   <Route path="*" element={<NotFoundPage />} />
                 </Routes>

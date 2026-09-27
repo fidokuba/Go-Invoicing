@@ -7,18 +7,40 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// testCreateSystemTemplate is a test-local stand-in for
+// internal/template.CreateSystemTemplate: this package cannot import
+// internal/template (it already imports this package the other way, for
+// RequireAuthenticatedUser — see TemplateProvisioner's own doc comment),
+// and that restriction applies to this file too, since it stays in
+// `package admin`, not an external `admin_test` package. Unlike the
+// fakeTemplateProvisioner in registration_service_test.go, these tests
+// exercise real atomicity against real PostgreSQL, so this duplicates
+// the same INSERT migration 000020 itself uses to seed existing
+// organisations, rather than a no-op.
+func testCreateSystemTemplate(ctx context.Context, tx pgx.Tx, organisationID uuid.UUID) error {
+	const query = `
+		INSERT INTO invoice_templates (id, organisation_id, name, definition, is_default, is_system)
+		VALUES ($1, $2, 'Classic', '{"system":"classic"}'::jsonb, TRUE, TRUE)
+	`
+	_, err := tx.Exec(ctx, query, uuid.New(), organisationID)
+	return err
+}
 
 // newPostgresRegistrationService wires a real RegistrationService against
 // real PostgreSQL repositories — the same construction app.go does — for
 // tests that need to prove behaviour fakes can't (real atomicity across
-// three tables in one transaction).
+// four tables in one transaction).
 func newPostgresRegistrationService(db *pgxpool.Pool) *RegistrationService {
 	return NewRegistrationService(
 		NewPostgresOrganisationRepository(db),
 		NewPostgresSettingsRepository(db),
 		NewPostgresUserRepository(db),
+		testCreateSystemTemplate,
 		db,
 	)
 }
@@ -39,6 +61,7 @@ func TestRegistrationService_Register_PersistsAtomically(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = db.Exec(context.Background(), "DELETE FROM users WHERE id = $1", result.User.ID)
 		_, _ = db.Exec(context.Background(), "DELETE FROM settings WHERE organisation_id = $1", result.Organisation.ID)
+		_, _ = db.Exec(context.Background(), "DELETE FROM invoice_templates WHERE organisation_id = $1", result.Organisation.ID)
 		_, _ = db.Exec(context.Background(), "DELETE FROM organisations WHERE id = $1", result.Organisation.ID)
 	})
 
@@ -95,6 +118,7 @@ func TestRegistrationService_Register_RollsBackAtomicallyOnDuplicateEmail(t *tes
 	t.Cleanup(func() {
 		_, _ = db.Exec(context.Background(), "DELETE FROM users WHERE id = $1", first.User.ID)
 		_, _ = db.Exec(context.Background(), "DELETE FROM settings WHERE organisation_id = $1", first.Organisation.ID)
+		_, _ = db.Exec(context.Background(), "DELETE FROM invoice_templates WHERE organisation_id = $1", first.Organisation.ID)
 		_, _ = db.Exec(context.Background(), "DELETE FROM organisations WHERE id = $1", first.Organisation.ID)
 	})
 
@@ -186,6 +210,7 @@ func TestRegistrationService_Register_ConcurrentSameEmail_ExactlyOneSucceeds(t *
 	t.Cleanup(func() {
 		_, _ = db.Exec(context.Background(), "DELETE FROM users WHERE id = $1", winner.User.ID)
 		_, _ = db.Exec(context.Background(), "DELETE FROM settings WHERE organisation_id = $1", winner.Organisation.ID)
+		_, _ = db.Exec(context.Background(), "DELETE FROM invoice_templates WHERE organisation_id = $1", winner.Organisation.ID)
 		_, _ = db.Exec(context.Background(), "DELETE FROM organisations WHERE id = $1", winner.Organisation.ID)
 	})
 

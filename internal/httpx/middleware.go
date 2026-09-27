@@ -325,6 +325,28 @@ func (i *methodNotAllowedInterceptor) WriteHeader(status int) {
 	})
 }
 
+// recordInternalError and recordDiagnosticLogged forward to the wrapped
+// ResponseWriter's own implementation, if it has one (see statusRecorder
+// above, which does) — a Hardening-pass fix. Without this, WriteError's
+// and Recover's own type assertions against these two method names would
+// silently fail for any handler downstream of this interceptor: embedding
+// http.ResponseWriter by interface only promotes the three methods that
+// interface itself declares (Write, WriteHeader, Header), never a
+// concrete wrapped type's *extra* methods — the exact same reason
+// statusRecorder above already forwards Flush/Hijack/Push explicitly
+// rather than relying on embedding to do it automatically.
+func (i *methodNotAllowedInterceptor) recordInternalError(operation string, err error) {
+	if r, ok := i.ResponseWriter.(interface{ recordInternalError(string, error) }); ok {
+		r.recordInternalError(operation, err)
+	}
+}
+
+func (i *methodNotAllowedInterceptor) recordDiagnosticLogged() {
+	if r, ok := i.ResponseWriter.(interface{ recordDiagnosticLogged() }); ok {
+		r.recordDiagnosticLogged()
+	}
+}
+
 func (i *methodNotAllowedInterceptor) Write(b []byte) (int, error) {
 	if i.intercepting {
 		// Discard whatever body the router (or anything else that wrote
@@ -450,6 +472,22 @@ func (i *frontendFallbackInterceptor) Write(b []byte) (int, error) {
 	}
 
 	return i.ResponseWriter.Write(b)
+}
+
+// recordInternalError and recordDiagnosticLogged forward to the wrapped
+// ResponseWriter — see methodNotAllowedInterceptor's own identical pair
+// for why this forwarding is necessary at all, not just defensive
+// styling.
+func (i *frontendFallbackInterceptor) recordInternalError(operation string, err error) {
+	if r, ok := i.ResponseWriter.(interface{ recordInternalError(string, error) }); ok {
+		r.recordInternalError(operation, err)
+	}
+}
+
+func (i *frontendFallbackInterceptor) recordDiagnosticLogged() {
+	if r, ok := i.ResponseWriter.(interface{ recordDiagnosticLogged() }); ok {
+		r.recordDiagnosticLogged()
+	}
 }
 
 func isGetOrHead(method string) bool {

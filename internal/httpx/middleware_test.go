@@ -153,6 +153,60 @@ func TestWriteInternalError_LogsUnderlyingErrorOnceAndSkipsDuplicateGeneric5xx(t
 	}
 }
 
+// TestWriteInternalError_LogsUnderlyingErrorThroughFullMiddlewareChain is
+// a Hardening-pass regression test: app.go's real production chain wraps
+// RequestLogging's statusRecorder with two further layers
+// (FrontendFallback, then WrapMethodNotAllowed) before any handler ever
+// sees the ResponseWriter — unlike
+// TestWriteInternalError_LogsUnderlyingErrorOnceAndSkipsDuplicateGeneric5xx
+// above, which calls WriteInternalError from directly inside
+// RequestLogging with no further wrapping, and so could never have
+// caught this. Both interceptor types embed http.ResponseWriter only as
+// an interface field, which promotes Write/WriteHeader/Header but not a
+// wrapped statusRecorder's extra recordInternalError method — without
+// their own explicit forwarding methods, WriteInternalError's type
+// assertion silently fails through this exact chain, and the detailed
+// error is never logged at all, just a bare "http request failed".
+func TestWriteInternalError_LogsUnderlyingErrorThroughFullMiddlewareChain(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		WriteInternalError(w, r, "customer lookup", io.ErrUnexpectedEOF)
+	})
+
+	// Mirrors app.go's own Handler() ordering exactly: RequestLogging,
+	// then Recover, then FrontendFallback, then WrapMethodNotAllowed,
+	// then the actual handler.
+	handler := RequestID(RequestLogging(logger, nil)(
+		Recover(logger)(
+			FrontendFallback(func(w http.ResponseWriter, r *http.Request) {
+				t.Fatal("FrontendFallback's own serve should never run for a 500 response")
+			})(
+				WrapMethodNotAllowed(inner),
+			),
+		),
+	))
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/customers/123", nil))
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status %d, got %d", http.StatusInternalServerError, recorder.Code)
+	}
+
+	logText := logs.String()
+	if !strings.Contains(logText, "customer lookup") {
+		t.Fatal("expected diagnostic log to contain the internal operation name, even through the full middleware chain")
+	}
+	if !strings.Contains(logText, "unexpected EOF") {
+		t.Fatal("expected diagnostic log to contain the underlying error, even through the full middleware chain")
+	}
+	if strings.Count(logText, "http request failed") > 0 {
+		t.Fatal("expected no bare, detail-free fallback log line once the detailed internal error is correctly recorded")
+	}
+}
+
 func TestRequestLogging_FallbackGeneric5xxLogsOnceAndCompletesOnce(t *testing.T) {
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))

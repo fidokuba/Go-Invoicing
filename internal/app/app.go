@@ -14,6 +14,8 @@ import (
 	"go-invoicing/internal/metrics"
 	"go-invoicing/internal/product"
 	"go-invoicing/internal/ratelimit"
+	"go-invoicing/internal/renderer"
+	"go-invoicing/internal/template"
 	"go-invoicing/internal/webui"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -26,9 +28,10 @@ import (
 const apiV1Prefix = "/api/v1"
 
 type App struct {
-	db      *pgxpool.Pool
-	logger  *slog.Logger
-	metrics *metrics.Metrics
+	db          *pgxpool.Pool
+	logger      *slog.Logger
+	metrics     *metrics.Metrics
+	rendererURL string
 
 	// routes is populated by Handler() as it registers each route — see
 	// RoutePattern's own doc comment for why this exists and how tests
@@ -114,8 +117,17 @@ func (p rateLimitPolicy) newLimiter() *ratelimit.Limiter {
 // body, is section 32's preferred behaviour), and every *metrics.Metrics
 // method used elsewhere in this package's dependency graph is a nil-safe
 // no-op, so no other conditional is needed.
-func New(db *pgxpool.Pool, logger *slog.Logger, m *metrics.Metrics) *App {
-	return &App{db: db, logger: logger, metrics: m, rateLimits: defaultRateLimits, clientAddressKey: httpx.ClientAddressKey}
+//
+// rendererURL (custom invoice layouts, Phase 4; config.Config
+// .RendererURL) is where the invoice-template rendering service is
+// reachable — Handler wires a renderer.Client against it for
+// InvoicePDFService, only ever called for an invoice whose applicable
+// template is a genuine user-created one (the system Classic template
+// always renders via the existing gopdf path, regardless of this
+// value), so an unreachable renderer service only breaks that one case,
+// not every PDF.
+func New(db *pgxpool.Pool, logger *slog.Logger, m *metrics.Metrics, rendererURL string) *App {
+	return &App{db: db, logger: logger, metrics: m, rendererURL: rendererURL, rateLimits: defaultRateLimits, clientAddressKey: httpx.ClientAddressKey}
 }
 
 // RoutePattern is one application route's method and net/http.ServeMux
@@ -211,7 +223,7 @@ func (a *App) Handler() http.Handler {
 	// registered any more. RegistrationService owns its own transaction
 	// (a.db satisfies its TxBeginner directly) across the organisation,
 	// settings, and first-user inserts.
-	registrationService := admin.NewRegistrationService(organisationRepository, settingsRepository, userRepository, a.db)
+	registrationService := admin.NewRegistrationService(organisationRepository, settingsRepository, userRepository, template.CreateSystemTemplate, a.db)
 	registrationHandler := admin.NewRegistrationHandler(registrationService)
 
 	register("POST", apiV1Prefix+"/register", registerLimit(registrationHandler.Register))
@@ -317,16 +329,27 @@ func (a *App) Handler() http.Handler {
 	// organisation/customer routes) are Milestone 7 Part 2's additions:
 	// Send uses them, within its own transaction, to capture the
 	// invoice's immutable seller/customer-billing-address snapshot.
+	// templateRepository (Phase 4 of custom invoice layouts) is this
+	// same pattern one layer further: Send captures a TemplateSnapshot
+	// of the organisation's current default template alongside the
+	// party snapshot — see InvoiceService.buildTemplateSnapshot. It's
+	// also reused below, unmodified, for the /templates routes
+	// themselves (Phase 2) and for InvoicePDFService's own template
+	// resolution.
 	invoiceRepository := invoice.NewPostgresInvoiceRepository(a.db)
 	paymentRepository := invoice.NewPostgresPaymentRepository(a.db)
-	invoiceService := invoice.NewInvoiceService(invoiceRepository, customerRepository, productRepository, organisationRepository, addressRepository, settingsRepository, paymentRepository, a.db)
+	templateRepository := template.NewPostgresTemplateRepository(a.db)
+	invoiceService := invoice.NewInvoiceService(invoiceRepository, customerRepository, productRepository, organisationRepository, addressRepository, settingsRepository, paymentRepository, templateRepository, a.db)
 
 	// InvoicePDFService (Milestone 7 Part 3) reuses the exact same
 	// tenant-scoped repositories as InvoiceService — no PDF-specific
 	// repository or query exists. InvoicePDFRenderer is stateless (only
 	// holds the embedded font bytes) and safe to share across requests.
+	// htmlRendererClient (Phase 4) is the same kind of stateless,
+	// shareable client — it holds only a base URL and an *http.Client.
 	invoicePDFRenderer := invoice.NewInvoicePDFRenderer()
-	invoicePDFService := invoice.NewInvoicePDFService(invoiceRepository, paymentRepository, organisationRepository, customerRepository, addressRepository, settingsRepository, invoicePDFRenderer, a.metrics)
+	htmlRendererClient := renderer.NewClient(a.rendererURL)
+	invoicePDFService := invoice.NewInvoicePDFService(invoiceRepository, paymentRepository, organisationRepository, customerRepository, addressRepository, settingsRepository, templateRepository, invoicePDFRenderer, htmlRendererClient, a.metrics)
 
 	invoiceHandler := invoice.NewInvoiceHandler(invoiceService, invoicePDFService, a.metrics)
 
@@ -352,6 +375,33 @@ func (a *App) Handler() http.Handler {
 	// the key.
 	pdfLimit := httpx.RateLimit(metrics.RateLimiterPDF, a.rateLimits.pdf.newLimiter(), authenticatedUserKey, a.metrics)
 	register("GET", apiV1Prefix+"/invoices/{id}/pdf", authMiddleware.RequireAuth(pdfLimit(invoiceHandler.GetPDF)))
+
+	// Wire the invoice-template dependency chain: pool -> repository ->
+	// service -> handler (custom invoice layouts, Phase 2). Every route
+	// is open to every authenticated role — the same "no extra role gate
+	// unless the resource specifically warrants one" default customer/
+	// product/invoice routes already use; templates affect how an
+	// invoice looks, not tenant billing/legal identity the way
+	// PATCH /organisation does. templateRepository itself is constructed
+	// earlier (alongside the invoice dependency chain, which also needs
+	// it — see that comment) and reused here, not rebuilt.
+	templateService := template.NewTemplateService(templateRepository, a.db)
+	templateHandler := template.NewTemplateHandler(templateService)
+
+	register("GET", apiV1Prefix+"/templates", authMiddleware.RequireAuth(templateHandler.List))
+	register("POST", apiV1Prefix+"/templates", authMiddleware.RequireAuth(templateHandler.Create))
+	// GET /templates/{id}: the single-resource fetch a client calls
+	// before PATCHing, to get the current ETag to send back as
+	// If-Match — the same GET/PATCH pairing GET+PATCH
+	// /organisation/settings already uses.
+	register("GET", apiV1Prefix+"/templates/{id}", authMiddleware.RequireAuth(templateHandler.GetByID))
+	register("PATCH", apiV1Prefix+"/templates/{id}", authMiddleware.RequireAuth(templateHandler.Update))
+	register("DELETE", apiV1Prefix+"/templates/{id}", authMiddleware.RequireAuth(templateHandler.Delete))
+	// POST /templates/{id}/default ("Use This Layout") is the one
+	// dedicated action route here, the same pattern
+	// POST /invoices/{id}/send already uses for a lifecycle action that
+	// isn't a plain field edit.
+	register("POST", apiV1Prefix+"/templates/{id}/default", authMiddleware.RequireAuth(templateHandler.SetDefault))
 
 	// /health and /health/db (Milestone 1) stay unversioned and require
 	// no authentication — they are infrastructure probes, not part of the

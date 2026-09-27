@@ -1819,6 +1819,335 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/templates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List invoice templates
+         * @description Any authenticated role. Returns every saved template for the caller's organisation as a plain array, system template first — there is always at least one (Classic). Deliberately not the limit/offset pagination envelope other list endpoints use: an organisation's template count is always small.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The caller's organisation's templates. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["TemplateListResponse"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                500: components["responses"]["InternalServerError"];
+            };
+        };
+        put?: never;
+        /**
+         * Create an invoice template
+         * @description Any authenticated role. The new template is never the organisation's default and never a system template — see POST /api/v1/templates/{id}/default ("Use This Layout") for how a template becomes the default.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["CreateTemplateRequest"];
+                };
+            };
+            responses: {
+                /** @description The created template. */
+                201: {
+                    headers: {
+                        ETag: components["headers"]["VersionETag"];
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["TemplateResponse"];
+                    };
+                };
+                400: components["responses"]["BadRequest"];
+                401: components["responses"]["Unauthorized"];
+                413: components["responses"]["PayloadTooLarge"];
+                415: components["responses"]["UnsupportedMediaType"];
+                500: components["responses"]["InternalServerError"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/templates/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get an invoice template
+         * @description Any authenticated role. The single-resource fetch a client calls before PATCHing, to get the current ETag to send back as If-Match — the same GET/PATCH pairing GET+PATCH /api/v1/organisation/settings already uses.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["IdPathParam"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The requested template. */
+                200: {
+                    headers: {
+                        ETag: components["headers"]["VersionETag"];
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["TemplateResponse"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                /** @description No such template in the caller's organisation. */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        /**
+                         * @example {
+                         *       "error": {
+                         *         "code": "template_not_found",
+                         *         "message": "template not found"
+                         *       }
+                         *     }
+                         */
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                500: components["responses"]["InternalServerError"];
+            };
+        };
+        put?: never;
+        post?: never;
+        /**
+         * Delete an invoice template
+         * @description Any authenticated role. The system Classic template can never be deleted (409) — the frontend hides/disables its own Delete action entirely, but this is the enforcement that actually matters. Deleting the organisation's current default template automatically reverts the default to Classic in the same operation — an organisation is never left with zero default templates.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["IdPathParam"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The template was deleted (and the default reverted to Classic, if it was the default). */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: components["responses"]["Unauthorized"];
+                /** @description No such template in the caller's organisation. */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        /**
+                         * @example {
+                         *       "error": {
+                         *         "code": "template_not_found",
+                         *         "message": "template not found"
+                         *       }
+                         *     }
+                         */
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                /** @description The system default template cannot be deleted. */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        /**
+                         * @example {
+                         *       "error": {
+                         *         "code": "template_is_system",
+                         *         "message": "the system default template cannot be deleted"
+                         *       }
+                         *     }
+                         */
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                500: components["responses"]["InternalServerError"];
+            };
+        };
+        options?: never;
+        head?: never;
+        /**
+         * Update an invoice template ("Save")
+         * @description Any authenticated role. The system Classic template is read-only through this route — this always returns 409, regardless of If-Match — so it always remains a trustworthy fallback (see DELETE's own description). Requires `If-Match` with the ETag from your last GET of this resource; a stale version returns 412 and writes nothing.
+         */
+        patch: {
+            parameters: {
+                query?: never;
+                header: {
+                    /**
+                     * @description Exactly one strong ETag previously returned by GET (or a successful PATCH) of this resource, e.g. `"3"`. Missing is 428; a weak tag (`W/"3"`), the wildcard (`*`), a list or repeated header, or any other malformed value is 400; a well-formed but no-longer-current ETag is 412.
+                     * @example "3"
+                     */
+                    "If-Match": components["parameters"]["IfMatchHeader"];
+                };
+                path: {
+                    id: components["parameters"]["IdPathParam"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["UpdateTemplateRequest"];
+                };
+            };
+            responses: {
+                /** @description The updated template. */
+                200: {
+                    headers: {
+                        ETag: components["headers"]["VersionETag"];
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["TemplateResponse"];
+                    };
+                };
+                400: components["responses"]["BadRequest"];
+                401: components["responses"]["Unauthorized"];
+                /** @description No such template in the caller's organisation. */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        /**
+                         * @example {
+                         *       "error": {
+                         *         "code": "template_not_found",
+                         *         "message": "template not found"
+                         *       }
+                         *     }
+                         */
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                /** @description The system default template cannot be edited. */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        /**
+                         * @example {
+                         *       "error": {
+                         *         "code": "template_is_system",
+                         *         "message": "the system default template cannot be edited"
+                         *       }
+                         *     }
+                         */
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                412: components["responses"]["PreconditionFailed"];
+                413: components["responses"]["PayloadTooLarge"];
+                415: components["responses"]["UnsupportedMediaType"];
+                428: components["responses"]["PreconditionRequired"];
+                500: components["responses"]["InternalServerError"];
+            };
+        };
+        trace?: never;
+    };
+    "/api/v1/templates/{id}/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Make this the organisation's default template ("Use This Layout")
+         * @description Any authenticated role. Any non-deleted template may become the default, including the system Classic one — that's how an organisation returns to Classic deliberately, not only via DELETE's automatic fallback. No If-Match: this changes which template is active, not a template's own content, so there is nothing for a lost-update to clobber.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["IdPathParam"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description This template is now the organisation's default. */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: components["responses"]["Unauthorized"];
+                /** @description No such template in the caller's organisation. */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        /**
+                         * @example {
+                         *       "error": {
+                         *         "code": "template_not_found",
+                         *         "message": "template not found"
+                         *       }
+                         *     }
+                         */
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                500: components["responses"]["InternalServerError"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2210,6 +2539,34 @@ export interface components {
             createdAt: string;
             /** Format: date-time */
             updatedAt: string;
+        };
+        CreateTemplateRequest: {
+            name: string;
+            /** @description The template builder's own document — opaque to this API, stored and returned verbatim. No structure is enforced here beyond "valid JSON" and a server-side size limit (413 if exceeded). */
+            definition: Record<string, never>;
+        };
+        UpdateTemplateRequest: {
+            name: string;
+            definition: Record<string, never>;
+        };
+        TemplateResponse: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            organisationId: string;
+            name: string;
+            definition: Record<string, never>;
+            /** @description True for exactly one template per organisation. */
+            isDefault: boolean;
+            /** @description True only for the organisation's permanent Classic template — the one template that can never be edited or deleted. */
+            isSystem: boolean;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        TemplateListResponse: {
+            items: components["schemas"]["TemplateResponse"][];
         };
     };
     responses: {

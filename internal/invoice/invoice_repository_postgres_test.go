@@ -12,6 +12,7 @@ import (
 	admin "go-invoicing/internal/administration"
 	"go-invoicing/internal/customer"
 	"go-invoicing/internal/product"
+	"go-invoicing/internal/template"
 )
 
 func newTestPool(t *testing.T) *pgxpool.Pool {
@@ -36,7 +37,14 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 
 // createTestOrganisation inserts a minimal organisation row directly (not
 // via the administration package, to avoid a cross-package test
-// dependency) and registers cleanup for it.
+// dependency) and registers cleanup for it. It also seeds the
+// organisation's permanent Classic template (Phase 4 of custom invoice
+// layouts) — every real organisation has exactly one from the moment it
+// exists (migration 000020's backfill, or RegistrationService.Register),
+// and InvoicePDFService.resolveTemplate now depends on that invariant
+// for every Draft invoice's PDF, so this test helper honours it too
+// rather than silently faking an organisation the real system could
+// never actually produce.
 func createTestOrganisation(t *testing.T, db *pgxpool.Pool) uuid.UUID {
 	t.Helper()
 
@@ -55,6 +63,20 @@ func createTestOrganisation(t *testing.T, db *pgxpool.Pool) uuid.UUID {
 
 	t.Cleanup(func() {
 		_, _ = db.Exec(context.Background(), "DELETE FROM organisations WHERE id = $1", organisationID)
+	})
+
+	tx, err := db.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin create classic template: %v", err)
+	}
+	if err := template.CreateSystemTemplate(context.Background(), tx, organisationID); err != nil {
+		t.Fatalf("create classic template: %v", err)
+	}
+	if err := tx.Commit(context.Background()); err != nil {
+		t.Fatalf("commit create classic template: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Exec(context.Background(), "DELETE FROM invoice_templates WHERE organisation_id = $1", organisationID)
 	})
 
 	return organisationID

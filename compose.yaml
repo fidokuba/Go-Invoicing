@@ -16,5 +16,27 @@ services:
       timeout: 5s
       retries: 5
 
+  # Invoice-template rendering service (Phases 1 and 4 of custom invoice
+  # layouts) — see renderer/src/server.js's own doc comment. Only ever
+  # called by the Go API for an invoice whose applicable template is a
+  # genuine user-created one (see InvoicePDFService.Generate); the
+  # system Classic template always renders via the existing in-process
+  # gopdf path, so `docker compose up -d postgres` alone still works for
+  # anyone who never customises a layout. context is the repository
+  # root, not renderer/ alone — the build also needs one file from web/
+  # (see renderer/Dockerfile's own comment).
+  renderer:
+    build:
+      context: .
+      dockerfile: renderer/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   postgres_data:

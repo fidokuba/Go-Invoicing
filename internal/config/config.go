@@ -83,6 +83,18 @@ type Config struct {
 	// X-Forwarded-For the rate limiter may use to find the real client
 	// address. Empty (the default) trusts no forwarding header at all.
 	TrustedProxies []netip.Prefix
+
+	// RendererURL (custom invoice layouts, Phase 4; RENDERER_URL) is the
+	// base URL of the invoice-template rendering service (see renderer/
+	// and internal/renderer.Client) — only ever called to render an
+	// invoice whose applicable template is a genuine user-created one;
+	// the system Classic template always renders via the existing
+	// in-process gopdf path regardless of this value. Defaults to
+	// "http://localhost:3000", matching compose.yaml's port mapping for
+	// local development; a real deployment sets this to wherever that
+	// service is actually reachable (e.g. "http://renderer:3000" inside
+	// Docker Compose's own network).
+	RendererURL string
 }
 
 func Load() (Config, error) {
@@ -155,6 +167,8 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	cfg.TrustedProxies = trustedProxies
+
+	cfg.RendererURL = getEnv("RENDERER_URL", "http://localhost:3000")
 
 	return cfg, nil
 }

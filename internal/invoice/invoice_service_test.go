@@ -15,6 +15,7 @@ import (
 	admin "go-invoicing/internal/administration"
 	"go-invoicing/internal/customer"
 	"go-invoicing/internal/product"
+	"go-invoicing/internal/template"
 )
 
 // fakeInvoiceRepository is an in-memory InvoiceRepository used to test the
@@ -701,6 +702,7 @@ type testFixture struct {
 	organisationRepository *fakeOrganisationRepository
 	addressRepository      *fakeAddressRepository
 	customerRepository     *fakeCustomerRepository
+	templateRepository     *fakeTemplateRepository
 	tx                     *fakeTx
 	organisationID         uuid.UUID
 	customerID             uuid.UUID
@@ -729,10 +731,12 @@ func newTestFixture() *testFixture {
 	// No billing address by default — Send must succeed without one
 	// (Milestone 7 Part 2); tests that need one call addresses.add(...).
 
+	templates := newFakeTemplateRepository()
+
 	tx := &fakeTx{}
 	txBeginner := &fakeTxBeginner{tx: tx}
 
-	service := NewInvoiceService(repository, customers, products, organisations, addresses, settingsRepository, paymentRepository, txBeginner)
+	service := NewInvoiceService(repository, customers, products, organisations, addresses, settingsRepository, paymentRepository, templates, txBeginner)
 
 	return &testFixture{
 		service:                service,
@@ -742,11 +746,76 @@ func newTestFixture() *testFixture {
 		organisationRepository: organisations,
 		addressRepository:      addresses,
 		customerRepository:     customers,
+		templateRepository:     templates,
 		tx:                     tx,
 		organisationID:         organisationID,
 		customerID:             customerID,
 		productID:              productID,
 	}
+}
+
+// fakeTemplateRepository is an in-memory template.TemplateRepository —
+// this package's own local fake for a type it doesn't own, the same
+// role fakeSettingsRepository plays for admin.SettingsRepository above.
+// Its default GetDefault/GetSystemTemplate return (a system/Classic
+// template) means every existing Send/PDF test keeps exercising exactly
+// the paths it always has (gopdf, no htmlRenderer call) without needing
+// to know this dependency exists at all — only a test that specifically
+// wants to prove the custom-template path sets defaultTemplate to a
+// non-system one, or getDefaultErr to force a failure.
+type fakeTemplateRepository struct {
+	defaultTemplate template.Template
+	getDefaultErr   error
+}
+
+func newFakeTemplateRepository() *fakeTemplateRepository {
+	return &fakeTemplateRepository{
+		defaultTemplate: template.Template{
+			ID:        uuid.New(),
+			Name:      template.ClassicTemplateName,
+			IsDefault: true,
+			IsSystem:  true,
+		},
+	}
+}
+
+func (f *fakeTemplateRepository) WithTx(tx pgx.Tx) template.TemplateRepository { return f }
+
+func (f *fakeTemplateRepository) Create(ctx context.Context, t *template.Template) error {
+	return nil
+}
+
+func (f *fakeTemplateRepository) GetByID(ctx context.Context, organisationID, id uuid.UUID) (*template.Template, error) {
+	return nil, template.ErrTemplateNotFound
+}
+
+func (f *fakeTemplateRepository) GetSystemTemplate(ctx context.Context, organisationID uuid.UUID) (*template.Template, error) {
+	t := f.defaultTemplate
+	return &t, nil
+}
+
+func (f *fakeTemplateRepository) GetDefault(ctx context.Context, organisationID uuid.UUID) (*template.Template, error) {
+	if f.getDefaultErr != nil {
+		return nil, f.getDefaultErr
+	}
+	t := f.defaultTemplate
+	return &t, nil
+}
+
+func (f *fakeTemplateRepository) List(ctx context.Context, organisationID uuid.UUID) ([]*template.Template, error) {
+	return nil, nil
+}
+
+func (f *fakeTemplateRepository) Update(ctx context.Context, organisationID uuid.UUID, t *template.Template, expectedVersion int64) error {
+	return nil
+}
+
+func (f *fakeTemplateRepository) SoftDelete(ctx context.Context, organisationID, id uuid.UUID) error {
+	return nil
+}
+
+func (f *fakeTemplateRepository) SetDefault(ctx context.Context, organisationID, id uuid.UUID) error {
+	return nil
 }
 
 // addInvoice seeds the fixture's fake invoice repository directly with a
@@ -795,7 +864,9 @@ func (f *testFixture) pdfService() *InvoicePDFService {
 		f.customerRepository,
 		f.addressRepository,
 		f.settingsRepository,
+		f.templateRepository,
 		NewInvoicePDFRenderer(),
+		nil,
 		nil,
 	)
 }

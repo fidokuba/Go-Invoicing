@@ -11,11 +11,17 @@ import (
 
 	admin "go-invoicing/internal/administration"
 	"go-invoicing/internal/customer"
+	"go-invoicing/internal/template"
 )
 
 // realPDFService wires an InvoicePDFService against real PostgreSQL
 // repositories — the same construction app.go does — mirroring
 // newPaymentTestService's own pattern in payment_transaction_test.go.
+// htmlRenderer is nil: every test in this file exercises the
+// Draft-vs-issued party-data split, not the custom-template rendering
+// path, and createTestOrganisation's seeded Classic template means
+// resolveTemplate always resolves isSystem true here, so htmlRenderer is
+// never called.
 func realPDFService(db *pgxpool.Pool) *InvoicePDFService {
 	return NewInvoicePDFService(
 		NewPostgresInvoiceRepository(db),
@@ -24,7 +30,9 @@ func realPDFService(db *pgxpool.Pool) *InvoicePDFService {
 		customer.NewPostgresCustomerRepository(db),
 		customer.NewPostgresAddressRepository(db),
 		admin.NewPostgresSettingsRepository(db),
+		template.NewPostgresTemplateRepository(db),
 		NewInvoicePDFRenderer(),
+		nil,
 		nil,
 	)
 }

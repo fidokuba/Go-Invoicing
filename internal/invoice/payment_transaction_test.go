@@ -13,6 +13,7 @@ import (
 	admin "go-invoicing/internal/administration"
 	"go-invoicing/internal/customer"
 	"go-invoicing/internal/product"
+	"go-invoicing/internal/template"
 )
 
 // createTestInvoiceWithTotal inserts an invoice with a specific Total and
@@ -66,6 +67,7 @@ func newPaymentTestService(db *pgxpool.Pool) *InvoiceService {
 		customer.NewPostgresAddressRepository(db),
 		admin.NewPostgresSettingsRepository(db),
 		NewPostgresPaymentRepository(db),
+		template.NewPostgresTemplateRepository(db),
 		db,
 	)
 }

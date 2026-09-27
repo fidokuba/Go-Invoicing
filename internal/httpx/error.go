@@ -30,6 +30,7 @@ const (
 	CodeRequestTooLarge      = "request_too_large"
 	CodeMethodNotAllowed     = "method_not_allowed"
 	CodeRateLimited          = "rate_limited"
+	CodeServiceUnavailable   = "service_unavailable"
 )
 
 // ErrorBody is the one JSON shape every application-generated error

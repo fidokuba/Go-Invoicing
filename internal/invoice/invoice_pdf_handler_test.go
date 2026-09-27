@@ -1,6 +1,8 @@
 package invoice
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,6 +11,8 @@ import (
 	"github.com/google/uuid"
 
 	admin "go-invoicing/internal/administration"
+	"go-invoicing/internal/renderer"
+	"go-invoicing/internal/template"
 )
 
 func TestInvoiceHandler_GetPDF_Success(t *testing.T) {
@@ -189,6 +193,46 @@ func TestInvoiceHandler_GetPDF_RendererFailureReturnsGenericServerError(t *testi
 		if strings.Contains(body, leaked) {
 			t.Errorf("expected the generic 500 body not to leak renderer-internal detail, but it contained %q: %s", leaked, body)
 		}
+	}
+}
+
+// TestInvoiceHandler_GetPDF_RendererAtCapacityReturns503 is the
+// Hardening pass's own regression guard on the handler side: when the
+// renderer service rejects a render with its own 503 (see server.js's
+// MAX_CONCURRENT_RENDERS guard), GetPDF must surface that to the client
+// as a 503 with Retry-After — a distinct, honest "try again shortly" —
+// rather than folding it into the generic 500 every other htmlRenderer
+// failure gets (TestInvoiceHandler_GetPDF_RendererFailureReturnsGenericServerError).
+func TestInvoiceHandler_GetPDF_RendererAtCapacityReturns503(t *testing.T) {
+	f := newTestFixture()
+	invoiceID := f.addInvoice(1000, InvoiceStatusDraft)
+	f.templateRepository.defaultTemplate = template.Template{
+		ID:         uuid.New(),
+		Name:       "My Custom Layout",
+		Definition: json.RawMessage(`{"content":[],"root":{}}`),
+		IsDefault:  true,
+		IsSystem:   false,
+	}
+
+	htmlRenderer := &fakeHTMLRenderer{err: fmt.Errorf("%w: renderer at capacity", renderer.ErrRendererUnavailable)}
+	pdfService := f.pdfServiceWithHTMLRenderer(htmlRenderer)
+	handler := NewInvoiceHandler(f.service, pdfService, nil)
+
+	request := httptest.NewRequest(http.MethodGet, "/invoices/"+invoiceID.String()+"/pdf", nil)
+	request.SetPathValue("id", invoiceID.String())
+	request = withAuthenticatedOrganisation(request, f.organisationID)
+	recorder := httptest.NewRecorder()
+
+	handler.GetPDF(recorder, request)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusServiceUnavailable, recorder.Code, recorder.Body.String())
+	}
+	if retryAfter := recorder.Header().Get("Retry-After"); retryAfter == "" {
+		t.Error("expected a Retry-After header on the 503 response")
+	}
+	if !strings.Contains(recorder.Body.String(), "service_unavailable") {
+		t.Errorf("expected the error body to carry the service_unavailable code, got %s", recorder.Body.String())
 	}
 }
 

@@ -7,6 +7,7 @@ const TABS = [
   { to: "/settings/organisation", label: "Organisation" },
   { to: "/settings/billing-address", label: "Billing Address" },
   { to: "/settings/invoice", label: "Invoice Settings" },
+  { to: "/settings/invoice-templates", label: "Invoice Templates" },
   { to: "/settings/users", label: "Users", roles: ["admin", "manager"] as const },
 ];
 

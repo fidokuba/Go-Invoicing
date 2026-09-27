@@ -147,6 +147,12 @@ tags:
     description: Invoices, their lifecycle, and their PDF.
   - name: Payments
     description: Payments recorded against an invoice.
+  - name: Templates
+    description: >-
+      Custom invoice layouts. Every organisation has exactly one
+      permanent, non-deletable "Classic" system template from the moment
+      it exists; user-created templates may be freely created, edited,
+      deleted, and selected as the organisation's default.
   - name: Health
     description: Unauthenticated infrastructure probes and this specification document.
 
@@ -1326,6 +1332,8 @@ paths:
           $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /api/v1/invoices/{id}/payments:
     post:
@@ -1474,6 +1482,220 @@ paths:
                 $ref: "#/components/schemas/ErrorBody"
               example:
                 error: { code: invoice_not_found, message: invoice not found }
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/v1/templates:
+    get:
+      tags: [Templates]
+      summary: List invoice templates
+      description: >-
+        Any authenticated role. Returns every saved template for the
+        caller's organisation as a plain array, system template first —
+        there is always at least one (Classic). Deliberately not the
+        limit/offset pagination envelope other list endpoints use: an
+        organisation's template count is always small.
+      responses:
+        "200":
+          description: The caller's organisation's templates.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TemplateListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    post:
+      tags: [Templates]
+      summary: Create an invoice template
+      description: >-
+        Any authenticated role. The new template is never the
+        organisation's default and never a system template — see
+        POST /api/v1/templates/{id}/default ("Use This Layout") for how a
+        template becomes the default.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTemplateRequest"
+      responses:
+        "201":
+          description: The created template.
+          headers:
+            ETag:
+              $ref: "#/components/headers/VersionETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TemplateResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/v1/templates/{id}:
+    get:
+      tags: [Templates]
+      summary: Get an invoice template
+      description: >-
+        Any authenticated role. The single-resource fetch a client calls
+        before PATCHing, to get the current ETag to send back as
+        If-Match — the same GET/PATCH pairing
+        GET+PATCH /api/v1/organisation/settings already uses.
+      parameters:
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "200":
+          description: The requested template.
+          headers:
+            ETag:
+              $ref: "#/components/headers/VersionETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TemplateResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: No such template in the caller's organisation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorBody"
+              example:
+                error: { code: template_not_found, message: template not found }
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    patch:
+      tags: [Templates]
+      summary: Update an invoice template ("Save")
+      description: >-
+        Any authenticated role. The system Classic template is read-only
+        through this route — this always returns 409, regardless of
+        If-Match — so it always remains a trustworthy fallback (see
+        DELETE's own description). Requires `If-Match` with the ETag from
+        your last GET of this resource; a stale version returns 412
+        and writes nothing.
+      parameters:
+        - $ref: "#/components/parameters/IdPathParam"
+        - $ref: "#/components/parameters/IfMatchHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTemplateRequest"
+      responses:
+        "200":
+          description: The updated template.
+          headers:
+            ETag:
+              $ref: "#/components/headers/VersionETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TemplateResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: No such template in the caller's organisation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorBody"
+              example:
+                error: { code: template_not_found, message: template not found }
+        "409":
+          description: The system default template cannot be edited.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorBody"
+              example:
+                error: { code: template_is_system, message: the system default template cannot be edited }
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    delete:
+      tags: [Templates]
+      summary: Delete an invoice template
+      description: >-
+        Any authenticated role. The system Classic template can never be
+        deleted (409) — the frontend hides/disables its own Delete
+        action entirely, but this is the enforcement that actually
+        matters. Deleting the organisation's current default template
+        automatically reverts the default to Classic in the same
+        operation — an organisation is never left with zero default
+        templates.
+      parameters:
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "204":
+          description: The template was deleted (and the default reverted to Classic, if it was the default).
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: No such template in the caller's organisation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorBody"
+              example:
+                error: { code: template_not_found, message: template not found }
+        "409":
+          description: The system default template cannot be deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorBody"
+              example:
+                error: { code: template_is_system, message: the system default template cannot be deleted }
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /api/v1/templates/{id}/default:
+    post:
+      tags: [Templates]
+      summary: Make this the organisation's default template ("Use This Layout")
+      description: >-
+        Any authenticated role. Any non-deleted template may become the
+        default, including the system Classic one — that's how an
+        organisation returns to Classic deliberately, not only via
+        DELETE's automatic fallback. No If-Match: this changes which
+        template is active, not a template's own content, so there is
+        nothing for a lost-update to clobber.
+      parameters:
+        - $ref: "#/components/parameters/IdPathParam"
+      responses:
+        "204":
+          description: This template is now the organisation's default.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: No such template in the caller's organisation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorBody"
+              example:
+                error: { code: template_not_found, message: template not found }
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -1654,6 +1876,27 @@ components:
             $ref: "#/components/schemas/ErrorBody"
           example:
             error: { code: internal_error, message: internal server error }
+    ServiceUnavailable:
+      description: >-
+        PDF rendering is temporarily at capacity (a custom invoice
+        layout's PDF is rendered via a shared, concurrency-limited
+        rendering service). Nothing was processed; wait for the number of
+        seconds given in Retry-After before trying again. This is
+        distinct from 429: it reflects the server's own shared rendering
+        capacity, not this caller's request rate.
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying (a whole number, at least 1).
+          schema:
+            type: integer
+            minimum: 1
+          example: 2
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+          example:
+            error: { code: service_unavailable, message: "PDF rendering is temporarily at capacity, please try again shortly" }
 
   schemas:
     HealthStatus:
@@ -2421,3 +2664,68 @@ components:
         updatedAt:
           type: string
           format: date-time
+
+    CreateTemplateRequest:
+      type: object
+      additionalProperties: false
+      required: [name, definition]
+      properties:
+        name:
+          type: string
+        definition:
+          description: >-
+            The template builder's own document — opaque to this API,
+            stored and returned verbatim. No structure is enforced here
+            beyond "valid JSON" and a server-side size limit (413 if
+            exceeded).
+          type: object
+
+    UpdateTemplateRequest:
+      type: object
+      additionalProperties: false
+      required: [name, definition]
+      properties:
+        name:
+          type: string
+        definition:
+          type: object
+
+    TemplateResponse:
+      type: object
+      additionalProperties: false
+      required: [id, organisationId, name, definition, isDefault, isSystem, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        organisationId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        definition:
+          type: object
+        isDefault:
+          type: boolean
+          description: True for exactly one template per organisation.
+        isSystem:
+          type: boolean
+          description: >-
+            True only for the organisation's permanent Classic template —
+            the one template that can never be edited or deleted.
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    TemplateListResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TemplateResponse"

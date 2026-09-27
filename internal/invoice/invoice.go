@@ -1,7 +1,9 @@
 package invoice
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -114,6 +116,13 @@ type Invoice struct {
 
 	Currency *string
 
+	// RenderedTemplateSnapshot (Phase 4 of custom invoice layouts) is the
+	// JSON-encoded TemplateSnapshot captured by MarkSent, alongside the
+	// party snapshot above — nil for a Draft invoice, and nil for any
+	// invoice sent before this feature existed. See migration 000021 and
+	// TemplateSnapshot's own doc comments for the full reasoning.
+	RenderedTemplateSnapshot json.RawMessage
+
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	DeletedAt *time.Time
@@ -128,7 +137,9 @@ func (i *Invoice) TableName() string {
 // snapshot to be valid (see InvoicePartySnapshot.Validate) — a Draft
 // invoice can only become Sent together with its immutable party
 // snapshot, never without one. On success it sets Status to Sent, SentAt
-// to sentAt, and copies every snapshot field onto the invoice. Every
+// to sentAt, copies every snapshot field onto the invoice, and marshals
+// templateSnapshot into RenderedTemplateSnapshot (Phase 4 of custom
+// invoice layouts — see TemplateSnapshot's own doc comment). Every
 // non-Draft status — already Sent, Paid, or (defensively) anything else —
 // is rejected with ErrInvoiceAlreadySent before snapshot is even
 // examined, which is what makes a repeated Send attempt provably never
@@ -145,7 +156,7 @@ func (i *Invoice) TableName() string {
 // No generic state-machine abstraction: with exactly one guarded
 // transition, an explicit method reads more clearly than a table of
 // transitions would.
-func (i *Invoice) MarkSent(sentAt time.Time, snapshot InvoicePartySnapshot) error {
+func (i *Invoice) MarkSent(sentAt time.Time, snapshot InvoicePartySnapshot, templateSnapshot TemplateSnapshot) error {
 	if i.Status != InvoiceStatusDraft {
 		return ErrInvoiceAlreadySent
 	}
@@ -183,6 +194,12 @@ func (i *Invoice) MarkSent(sentAt time.Time, snapshot InvoicePartySnapshot) erro
 
 	currency := snapshot.Currency
 	i.Currency = &currency
+
+	marshaledTemplateSnapshot, err := json.Marshal(templateSnapshot)
+	if err != nil {
+		return fmt.Errorf("marshal template snapshot: %w", err)
+	}
+	i.RenderedTemplateSnapshot = marshaledTemplateSnapshot
 
 	return nil
 }

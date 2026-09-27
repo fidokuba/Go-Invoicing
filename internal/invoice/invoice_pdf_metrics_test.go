@@ -23,7 +23,9 @@ func (f *testFixture) pdfServiceWithMetrics(m *metrics.Metrics) *InvoicePDFServi
 		f.customerRepository,
 		f.addressRepository,
 		f.settingsRepository,
+		f.templateRepository,
 		NewInvoicePDFRenderer(),
+		nil,
 		m,
 	)
 }

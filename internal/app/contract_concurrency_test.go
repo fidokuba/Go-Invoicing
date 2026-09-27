@@ -1,8 +1,11 @@
 package app
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -13,7 +16,7 @@ import (
 // must cover exactly the four operations that implement it, and match
 // what the server actually sends.
 
-var concurrencyProtectedPaths = []string{"/api/v1/organisation", "/api/v1/organisation/settings"}
+var concurrencyProtectedPaths = []string{"/api/v1/organisation", "/api/v1/organisation/settings", "/api/v1/templates/{id}"}
 
 func TestConcurrencyContract_ETagAndIfMatchDocumented(t *testing.T) {
 	doc := loadSpec(t)
@@ -61,12 +64,35 @@ func TestConcurrencyContract_RuntimeETagMatchesSpec(t *testing.T) {
 	pattern := regexp.MustCompile(doc.Components.Headers["VersionETag"].Value.Schema.Value.Pattern)
 
 	for _, path := range concurrencyProtectedPaths {
-		etag := etagOf(t, handler, path, tenant.token)
-		if !pattern.MatchString(etag) {
-			t.Errorf("GET %s: ETag %q doesn't match the documented pattern", path, etag)
+		concretePath, patchBody := path, `{}`
+
+		// /api/v1/organisation and /api/v1/organisation/settings are
+		// self-resource routes with no {id} at all, and accept an empty
+		// partial-update body — /api/v1/templates/{id} is neither: it
+		// needs a real template's ID substituted in, and Update requires
+		// both name and definition on every PATCH (there is no partial
+		// update for a template — see UpdateTemplateRequest).
+		if strings.Contains(path, "{id}") {
+			created := doRequest(handler, http.MethodPost, "/api/v1/templates", tenant.token, bytes.NewBufferString(`{"name":"OCC Test Template","definition":{}}`))
+			if created.Code != http.StatusCreated {
+				t.Fatalf("create template for concurrency test: status %d (body: %s)", created.Code, created.Body.String())
+			}
+			var body struct {
+				ID string `json:"id"`
+			}
+			if err := json.NewDecoder(created.Body).Decode(&body); err != nil {
+				t.Fatalf("decode created template: %v", err)
+			}
+			concretePath = strings.ReplaceAll(path, "{id}", body.ID)
+			patchBody = `{"name":"OCC Test Template Renamed","definition":{}}`
 		}
-		if recorder := doRequestWithIfMatch(handler, path, tenant.token, `{}`, etag); recorder.Code != http.StatusOK || !pattern.MatchString(recorder.Header().Get("ETag")) {
-			t.Errorf("PATCH %s: expected 200 with a documented-format ETag, got %d %q", path, recorder.Code, recorder.Header().Get("ETag"))
+
+		etag := etagOf(t, handler, concretePath, tenant.token)
+		if !pattern.MatchString(etag) {
+			t.Errorf("GET %s: ETag %q doesn't match the documented pattern", concretePath, etag)
+		}
+		if recorder := doRequestWithIfMatch(handler, concretePath, tenant.token, patchBody, etag); recorder.Code != http.StatusOK || !pattern.MatchString(recorder.Header().Get("ETag")) {
+			t.Errorf("PATCH %s: expected 200 with a documented-format ETag, got %d %q", concretePath, recorder.Code, recorder.Header().Get("ETag"))
 		}
 	}
 }

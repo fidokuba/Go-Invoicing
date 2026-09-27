@@ -15,6 +15,7 @@ import (
 	admin "go-invoicing/internal/administration"
 	"go-invoicing/internal/customer"
 	"go-invoicing/internal/product"
+	"go-invoicing/internal/template"
 )
 
 var (
@@ -110,6 +111,12 @@ type TxBeginner interface {
 // organisation's own party details and the invoice's customer's billing
 // address, once, at the Draft -> Sent transition. Nothing else in this
 // service touches either.
+//
+// templateRepository (Phase 4 of custom invoice layouts) exists for the
+// same reason, one level up: Send also captures a TemplateSnapshot of
+// the organisation's *current default* invoice template, so which
+// layout an issued invoice renders with is frozen at the same moment
+// its party details are.
 type InvoiceService struct {
 	repository             InvoiceRepository
 	customerRepository     customer.CustomerRepository
@@ -118,6 +125,7 @@ type InvoiceService struct {
 	addressRepository      customer.AddressRepository
 	settingsRepository     admin.SettingsRepository
 	paymentRepository      PaymentRepository
+	templateRepository     template.TemplateRepository
 	txBeginner             TxBeginner
 }
 
@@ -129,6 +137,7 @@ func NewInvoiceService(
 	addressRepository customer.AddressRepository,
 	settingsRepository admin.SettingsRepository,
 	paymentRepository PaymentRepository,
+	templateRepository template.TemplateRepository,
 	txBeginner TxBeginner,
 ) *InvoiceService {
 	return &InvoiceService{
@@ -139,6 +148,7 @@ func NewInvoiceService(
 		addressRepository:      addressRepository,
 		settingsRepository:     settingsRepository,
 		paymentRepository:      paymentRepository,
+		templateRepository:     templateRepository,
 		txBeginner:             txBeginner,
 	}
 }
@@ -627,9 +637,14 @@ func (s *InvoiceService) Send(
 		return nil, err
 	}
 
+	templateSnapshot, err := s.buildTemplateSnapshot(ctx, tx, organisationID)
+	if err != nil {
+		return nil, err
+	}
+
 	sentAt := time.Now().UTC()
 
-	if err := inv.MarkSent(sentAt, snapshot); err != nil {
+	if err := inv.MarkSent(sentAt, snapshot, templateSnapshot); err != nil {
 		return nil, err
 	}
 
@@ -721,6 +736,39 @@ func (s *InvoiceService) buildPartySnapshot(
 	}
 
 	return snapshot, nil
+}
+
+// buildTemplateSnapshot loads the organisation's current default invoice
+// template (through tx, so it's read within the same transaction and
+// under the same row lock Send already holds) and captures it as a
+// TemplateSnapshot — the Phase 4 counterpart to buildPartySnapshot
+// above, run alongside it for the same reason: whichever layout an
+// issued invoice renders with must be frozen at Send, not left to
+// reflect however the organisation's templates happen to look whenever
+// the PDF is later generated.
+//
+// Every organisation has exactly one default template from the moment
+// it exists (migration 000020's backfill, or RegistrationService
+// .Register for one created after) — GetDefault failing here indicates
+// that invariant has somehow been violated, not an expected, recoverable
+// case, so it's wrapped and surfaced as ErrInvoiceSnapshotDataUnavailable
+// exactly like a missing organisation/customer/settings row above.
+func (s *InvoiceService) buildTemplateSnapshot(
+	ctx context.Context,
+	tx pgx.Tx,
+	organisationID uuid.UUID,
+) (TemplateSnapshot, error) {
+	tmpl, err := s.templateRepository.WithTx(tx).GetDefault(ctx, organisationID)
+	if err != nil {
+		return TemplateSnapshot{}, fmt.Errorf("%w: look up default template: %v", ErrInvoiceSnapshotDataUnavailable, err)
+	}
+
+	return TemplateSnapshot{
+		TemplateID: tmpl.ID,
+		Name:       tmpl.Name,
+		Definition: tmpl.Definition,
+		IsSystem:   tmpl.IsSystem,
+	}, nil
 }
 
 // CreatePaymentRequest is the caller-supplied shape for recording a

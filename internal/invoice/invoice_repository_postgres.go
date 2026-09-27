@@ -2,6 +2,7 @@ package invoice
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -191,6 +192,7 @@ func (r *PostgresInvoiceRepository) GetByID(
 			customer_tax_id, customer_address, customer_city, customer_state,
 			customer_postal_code, customer_country,
 			currency,
+			rendered_template_snapshot,
 			created_at,
 			updated_at,
 			deleted_at
@@ -201,6 +203,7 @@ func (r *PostgresInvoiceRepository) GetByID(
 	`
 
 	var inv Invoice
+	var renderedTemplateSnapshot []byte
 
 	err := r.db.QueryRow(
 		ctx,
@@ -228,6 +231,7 @@ func (r *PostgresInvoiceRepository) GetByID(
 		&inv.CustomerTaxID, &inv.CustomerAddress, &inv.CustomerCity, &inv.CustomerState,
 		&inv.CustomerPostalCode, &inv.CustomerCountry,
 		&inv.Currency,
+		&renderedTemplateSnapshot,
 		&inv.CreatedAt,
 		&inv.UpdatedAt,
 		&inv.DeletedAt,
@@ -239,6 +243,8 @@ func (r *PostgresInvoiceRepository) GetByID(
 
 		return nil, fmt.Errorf("get invoice by id: %w", err)
 	}
+
+	inv.RenderedTemplateSnapshot = json.RawMessage(renderedTemplateSnapshot)
 
 	return &inv, nil
 }
@@ -279,6 +285,7 @@ func (r *PostgresInvoiceRepository) GetForUpdate(
 			customer_tax_id, customer_address, customer_city, customer_state,
 			customer_postal_code, customer_country,
 			currency,
+			rendered_template_snapshot,
 			created_at,
 			updated_at,
 			deleted_at
@@ -290,6 +297,7 @@ func (r *PostgresInvoiceRepository) GetForUpdate(
 	`
 
 	var inv Invoice
+	var renderedTemplateSnapshot []byte
 
 	err := r.db.QueryRow(
 		ctx,
@@ -317,6 +325,7 @@ func (r *PostgresInvoiceRepository) GetForUpdate(
 		&inv.CustomerTaxID, &inv.CustomerAddress, &inv.CustomerCity, &inv.CustomerState,
 		&inv.CustomerPostalCode, &inv.CustomerCountry,
 		&inv.Currency,
+		&renderedTemplateSnapshot,
 		&inv.CreatedAt,
 		&inv.UpdatedAt,
 		&inv.DeletedAt,
@@ -328,6 +337,8 @@ func (r *PostgresInvoiceRepository) GetForUpdate(
 
 		return nil, fmt.Errorf("get invoice for update: %w", err)
 	}
+
+	inv.RenderedTemplateSnapshot = json.RawMessage(renderedTemplateSnapshot)
 
 	return &inv, nil
 }
@@ -407,9 +418,10 @@ func (r *PostgresInvoiceRepository) MarkSentWithSnapshot(
 			customer_tax_id = $17, customer_address = $18, customer_city = $19, customer_state = $20,
 			customer_postal_code = $21, customer_country = $22,
 			currency = $23,
+			rendered_template_snapshot = $24,
 			updated_at = NOW()
-		WHERE id = $24
-			AND organisation_id = $25
+		WHERE id = $25
+			AND organisation_id = $26
 			AND deleted_at IS NULL
 	`
 
@@ -425,6 +437,7 @@ func (r *PostgresInvoiceRepository) MarkSentWithSnapshot(
 		inv.CustomerTaxID, inv.CustomerAddress, inv.CustomerCity, inv.CustomerState,
 		inv.CustomerPostalCode, inv.CustomerCountry,
 		inv.Currency,
+		[]byte(inv.RenderedTemplateSnapshot),
 		invoiceID,
 		organisationID,
 	)

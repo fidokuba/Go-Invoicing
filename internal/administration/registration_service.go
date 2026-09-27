@@ -8,7 +8,19 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
+
+// TemplateProvisioner creates an organisation's permanent Classic
+// invoice template — internal/template.CreateSystemTemplate satisfies
+// this exact signature and is what app.go actually passes in. It's a
+// plain function type here, not an interface backed by importing
+// internal/template's own types, because that package already imports
+// this one (for RequireAuthenticatedUser) — importing back would be a
+// circular import. A function type sidesteps that entirely: this
+// package need not know anything about internal/template beyond this
+// one signature.
+type TemplateProvisioner func(ctx context.Context, tx pgx.Tx, organisationID uuid.UUID) error
 
 // ErrTermsNotAccepted is returned when Register is called with
 // agreedToTerms false. The signup form's checkbox already prevents this
@@ -41,6 +53,7 @@ type RegistrationService struct {
 	organisationRepository OrganisationRepository
 	settingsRepository     SettingsRepository
 	userRepository         UserRepository
+	templateProvisioner    TemplateProvisioner
 	txBeginner             TxBeginner
 }
 
@@ -48,31 +61,34 @@ func NewRegistrationService(
 	organisationRepository OrganisationRepository,
 	settingsRepository SettingsRepository,
 	userRepository UserRepository,
+	templateProvisioner TemplateProvisioner,
 	txBeginner TxBeginner,
 ) *RegistrationService {
 	return &RegistrationService{
 		organisationRepository: organisationRepository,
 		settingsRepository:     settingsRepository,
 		userRepository:         userRepository,
+		templateProvisioner:    templateProvisioner,
 		txBeginner:             txBeginner,
 	}
 }
 
 // Register validates the organisation name and the first user's fields,
 // then atomically creates the organisation, its default settings (the
-// same defaults OrganisationService.Create uses today — see below), and
-// the first user with role hardcoded to UserRoleAdmin — never read from
+// same defaults OrganisationService.Create uses today — see below), its
+// permanent Classic invoice template (see TemplateProvisioner), and the
+// first user with role hardcoded to UserRoleAdmin — never read from
 // request input, so an anonymous caller cannot request any other initial
 // role.
 //
-// BEGIN/COMMIT below is a single transaction across all three writes:
-// if any of them fails, everything is rolled back, so a failed
-// registration never leaves an orphan organisation, an orphan settings
-// row, or a partially-created user. This closes a gap the old
-// OrganisationService.Create explicitly accepted (organisation and
-// settings were two separate, non-atomic writes) as well as bootstrap's
-// original problem (an organisation could exist with no user able to log
-// into it).
+// BEGIN/COMMIT below is a single transaction across all four writes: if
+// any of them fails, everything is rolled back, so a failed registration
+// never leaves an orphan organisation, an orphan settings row, an
+// organisation with no Classic template, or a partially-created user.
+// This closes a gap the old OrganisationService.Create explicitly
+// accepted (organisation and settings were two separate, non-atomic
+// writes) as well as bootstrap's original problem (an organisation could
+// exist with no user able to log into it).
 //
 // Register does not create a session and does not authenticate the
 // caller — it only creates rows. The client must call AuthService.Login
@@ -159,6 +175,10 @@ func (s *RegistrationService) Register(
 
 	if err := s.settingsRepository.WithTx(tx).Create(ctx, settings); err != nil {
 		return nil, fmt.Errorf("create organisation settings: %w", err)
+	}
+
+	if err := s.templateProvisioner(ctx, tx, organisation.ID); err != nil {
+		return nil, fmt.Errorf("create classic template: %w", err)
 	}
 
 	if err := s.userRepository.WithTx(tx).Create(ctx, user); err != nil {

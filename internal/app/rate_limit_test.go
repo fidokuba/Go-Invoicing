@@ -17,7 +17,7 @@ import (
 func newDefaultLimitedApp(t *testing.T) http.Handler {
 	t.Helper()
 
-	return New(newTestPool(t), testLogger, nil).Handler()
+	return New(newTestPool(t), testLogger, nil, "http://localhost:3000").Handler()
 }
 
 func postFrom(handler http.Handler, remoteAddr, path, body string) *httptest.ResponseRecorder {
@@ -82,7 +82,7 @@ func TestApp_RateLimit_Register(t *testing.T) {
 
 	registration := func() string {
 		email := "rl-register-" + uuid.NewString() + "@example.com"
-		return `{"organisation":{"name":"RL Register Org"},"user":{"name":"Admin","email":"` + email + `","password":"` + testPassword + `"}}`
+		return `{"organisation":{"name":"RL Register Org"},"user":{"name":"Admin","email":"` + email + `","password":"` + testPassword + `","agreedToTerms":true}}`
 	}
 
 	for i := 0; i < 5; i++ {

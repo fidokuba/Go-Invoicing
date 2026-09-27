@@ -17,7 +17,7 @@ import (
 // envelope — when metrics are enabled (a non-nil *metrics.Metrics passed
 // to New).
 func TestApp_MetricsRoute_ServedWhenEnabled(t *testing.T) {
-	handler := New(nil, testLogger, metrics.New(nil)).Handler()
+	handler := New(nil, testLogger, metrics.New(nil), "http://localhost:3000").Handler()
 
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
@@ -45,7 +45,7 @@ func TestApp_MetricsRoute_ServedWhenEnabled(t *testing.T) {
 // removed business route). Section 32's explicit preference: absent
 // route over a bespoke "metrics disabled" body.
 func TestApp_MetricsRoute_AbsentWhenDisabled(t *testing.T) {
-	handler := New(nil, testLogger, nil).Handler()
+	handler := New(nil, testLogger, nil, "http://localhost:3000").Handler()
 
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
@@ -63,7 +63,7 @@ func TestApp_MetricsRoute_AbsentWhenDisabled(t *testing.T) {
 // goes through AuthMiddleware — an operational scrape endpoint must not
 // depend on a bearer token, exactly like /health and /health/db.
 func TestApp_MetricsRoute_RequiresNoAuthentication(t *testing.T) {
-	handler := New(nil, testLogger, metrics.New(nil)).Handler()
+	handler := New(nil, testLogger, metrics.New(nil), "http://localhost:3000").Handler()
 
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
@@ -78,7 +78,7 @@ func TestApp_MetricsRoute_RequiresNoAuthentication(t *testing.T) {
 // TestRoutes_MatchOpenAPISpec (route_spec_test.go), since it is
 // deliberately excluded from api/openapi.yaml (section 34).
 func TestApp_MetricsRoute_NotInRoutePatterns(t *testing.T) {
-	application := New(nil, testLogger, metrics.New(nil))
+	application := New(nil, testLogger, metrics.New(nil), "http://localhost:3000")
 	_ = application.Handler()
 
 	for _, r := range application.RoutePatterns() {
@@ -94,7 +94,7 @@ func TestApp_MetricsRoute_NotInRoutePatterns(t *testing.T) {
 // confirming section 9's decision that health checks ARE included.
 func TestApp_MetricsScrape_ExcludedFromOwnHTTPMetrics(t *testing.T) {
 	m := metrics.New(nil)
-	handler := New(nil, testLogger, m).Handler()
+	handler := New(nil, testLogger, m, "http://localhost:3000").Handler()
 
 	for i := 0; i < 3; i++ {
 		recorder := httptest.NewRecorder()
@@ -137,7 +137,7 @@ func TestApp_MetricsScrape_ExcludedFromOwnHTTPMetrics(t *testing.T) {
 // this is standard library behaviour, not anything this application
 // added.
 func TestApp_MetricsRoute_NonGETMethodGets405WithAllowHeader(t *testing.T) {
-	handler := New(nil, testLogger, metrics.New(nil)).Handler()
+	handler := New(nil, testLogger, metrics.New(nil), "http://localhost:3000").Handler()
 
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/metrics", nil))
@@ -165,7 +165,7 @@ func TestApp_MetricsRoute_NonGETMethodGets405WithAllowHeader(t *testing.T) {
 // NeverContainsBusinessData below, gated on DATABASE_URL.
 func TestApp_MetricsExposition_NeverContainsAdversarialMarkers(t *testing.T) {
 	m := metrics.New(nil)
-	handler := New(nil, testLogger, m).Handler()
+	handler := New(nil, testLogger, m, "http://localhost:3000").Handler()
 
 	const (
 		authMarker  = "Bearer ATTACKER-BEARER-TOKEN-MARKER"
@@ -215,7 +215,7 @@ func TestApp_MetricsExposition_NeverContainsAdversarialMarkers(t *testing.T) {
 func TestApp_MetricsExposition_RealRequestData_NeverContainsBusinessData(t *testing.T) {
 	db := newTestPool(t)
 	m := metrics.New(db)
-	handler := New(db, testLogger, m).Handler()
+	handler := New(db, testLogger, m, "http://localhost:3000").Handler()
 
 	const (
 		orgName       = "Metrics Privacy Org"
@@ -226,7 +226,7 @@ func TestApp_MetricsExposition_RealRequestData_NeverContainsBusinessData(t *test
 
 	registerBody := bytes.NewBufferString(`{
 		"organisation": {"name": "` + orgName + `"},
-		"user": {"name": "Metrics Admin", "email": "` + adminEmail + `", "password": "` + adminPassword + `"}
+		"user": {"name": "Metrics Admin", "email": "` + adminEmail + `", "password": "` + adminPassword + `", "agreedToTerms": true}
 	}`)
 	registerRecorder := doRequest(handler, http.MethodPost, "/api/v1/register", "", registerBody)
 	if registerRecorder.Code != http.StatusCreated {
@@ -267,7 +267,7 @@ func TestApp_MetricsExposition_RealRequestData_NeverContainsBusinessData(t *test
 // that.
 func TestApp_ConcurrentRequests_MetricsInstrumentationIsRaceFree(t *testing.T) {
 	m := metrics.New(nil)
-	handler := New(nil, testLogger, m).Handler()
+	handler := New(nil, testLogger, m, "http://localhost:3000").Handler()
 
 	const goroutines = 50
 	const requestsPerGoroutine = 20

@@ -12,6 +12,7 @@ import (
 	admin "go-invoicing/internal/administration"
 	"go-invoicing/internal/httpx"
 	"go-invoicing/internal/metrics"
+	"go-invoicing/internal/renderer"
 )
 
 // InvoiceHandler owns the HTTP-specific concerns for invoices: decoding
@@ -538,12 +539,26 @@ func (h *InvoiceHandler) GetPDF(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Renderer failures, a genuine organisation/customer/settings
-		// lookup failure (ErrInvoicePDFDataUnavailable), and any other
-		// unexpected repository error are all genuine server-side
-		// problems — mapped to a single generic message so no gopdf
-		// error, SQL detail, or filesystem path is ever exposed to the
-		// client.
+		// The renderer service's own MAX_CONCURRENT_RENDERS guard
+		// (Hardening pass) rejecting this request is a deliberate,
+		// expected backpressure signal, not a bug — surfaced to the
+		// client as its own 503 (with Retry-After, mirroring the
+		// renderer's own response) rather than falling into the
+		// generic 500 below, which would both mislabel it as an
+		// unexpected server error and log it as one via
+		// WriteInternalError's recordInternalError.
+		if errors.Is(err, renderer.ErrRendererUnavailable) {
+			w.Header().Set("Retry-After", "2")
+			httpx.WriteError(w, http.StatusServiceUnavailable, httpx.CodeServiceUnavailable, "PDF rendering is temporarily at capacity, please try again shortly")
+			return
+		}
+
+		// Any other renderer failure, a genuine
+		// organisation/customer/settings lookup failure
+		// (ErrInvoicePDFDataUnavailable), and any other unexpected
+		// repository error are all genuine server-side problems —
+		// mapped to a single generic message so no gopdf error, SQL
+		// detail, or filesystem path is ever exposed to the client.
 		httpx.WriteInternalError(w, r, "invoice.generate_pdf", err)
 		return
 	}

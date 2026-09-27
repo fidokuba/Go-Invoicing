@@ -1,12 +1,14 @@
 package app
 
 import (
+	"encoding/json"
 	"testing"
 
 	admin "go-invoicing/internal/administration"
 	"go-invoicing/internal/customer"
 	"go-invoicing/internal/invoice"
 	"go-invoicing/internal/product"
+	"go-invoicing/internal/template"
 )
 
 // strPtr and intPtr exist because every *string/*int field on the
@@ -143,6 +145,20 @@ func TestRequestContract_MatchesOpenAPISchema(t *testing.T) {
 			PaymentDate:   "2026-09-19",
 			Reference:     "TX-90210",
 			Notes:         "Paid via wire transfer.",
+		})
+	})
+
+	t.Run("CreateTemplateRequest", func(t *testing.T) {
+		validateAgainstSchema(t, doc, "CreateTemplateRequest", template.CreateTemplateRequest{
+			Name:       "My Custom Layout",
+			Definition: json.RawMessage(`{"content":[],"root":{}}`),
+		})
+	})
+
+	t.Run("UpdateTemplateRequest", func(t *testing.T) {
+		validateAgainstSchema(t, doc, "UpdateTemplateRequest", template.UpdateTemplateRequest{
+			Name:       "My Renamed Layout",
+			Definition: json.RawMessage(`{"content":[{"type":"SellerBlock","props":{"id":"a"}}],"root":{}}`),
 		})
 	})
 }

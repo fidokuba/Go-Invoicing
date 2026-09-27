@@ -2,6 +2,7 @@ package invoice
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -12,7 +13,19 @@ import (
 	admin "go-invoicing/internal/administration"
 	"go-invoicing/internal/customer"
 	"go-invoicing/internal/metrics"
+	"go-invoicing/internal/renderer"
+	"go-invoicing/internal/template"
 )
+
+// HTMLRenderer is the one thing InvoicePDFService needs from
+// internal/renderer.Client — defined here, as a narrow interface,
+// rather than depending on that concrete type directly, so tests can
+// fake it without a real running renderer service (Node + headless
+// Chromium). *renderer.Client satisfies this signature exactly; app.go
+// wires the real one in.
+type HTMLRenderer interface {
+	Render(ctx context.Context, req renderer.RenderRequest) ([]byte, error)
+}
 
 // PDF-specific business-data-incompleteness sentinels (Milestone 7 Part
 // 3). These are deliberately separate from Part 2's Send-time
@@ -60,12 +73,20 @@ type InvoicePDFService struct {
 	customerRepository     customer.CustomerRepository
 	addressRepository      customer.AddressRepository
 	settingsRepository     admin.SettingsRepository
+	templateRepository     template.TemplateRepository
 	renderer               *InvoicePDFRenderer
+	htmlRenderer           HTMLRenderer
 	metrics                *metrics.Metrics
 }
 
 // m may be nil (metrics disabled — see config.Config.MetricsEnabled):
 // every *metrics.Metrics method Generate calls below is a nil-safe no-op.
+//
+// templateRepository/htmlRenderer (Phase 4 of custom invoice layouts):
+// renderer stays the sole renderer for the system Classic template
+// (unchanged, proven gopdf path); htmlRenderer is only ever called for
+// a genuine user-created template — see resolveTemplate and Generate's
+// own branch.
 func NewInvoicePDFService(
 	invoiceRepository InvoiceRepository,
 	paymentRepository PaymentRepository,
@@ -73,7 +94,9 @@ func NewInvoicePDFService(
 	customerRepository customer.CustomerRepository,
 	addressRepository customer.AddressRepository,
 	settingsRepository admin.SettingsRepository,
+	templateRepository template.TemplateRepository,
 	renderer *InvoicePDFRenderer,
+	htmlRenderer HTMLRenderer,
 	m *metrics.Metrics,
 ) *InvoicePDFService {
 	return &InvoicePDFService{
@@ -83,7 +106,9 @@ func NewInvoicePDFService(
 		customerRepository:     customerRepository,
 		addressRepository:      addressRepository,
 		settingsRepository:     settingsRepository,
+		templateRepository:     templateRepository,
 		renderer:               renderer,
+		htmlRenderer:           htmlRenderer,
 		metrics:                m,
 	}
 }
@@ -127,12 +152,67 @@ func (s *InvoicePDFService) Generate(
 		return nil, "", err
 	}
 
-	pdfBytes, err = s.renderer.Render(data)
+	_, definition, isSystem, err := s.resolveTemplate(ctx, organisationID, invoiceID)
+	if err != nil {
+		return nil, "", err
+	}
+
+	if isSystem {
+		pdfBytes, err = s.renderer.Render(data)
+	} else {
+		pdfBytes, err = s.htmlRenderer.Render(ctx, data.ToRenderRequest(definition))
+	}
 	if err != nil {
 		return nil, "", fmt.Errorf("render invoice pdf: %w", err)
 	}
 
 	return pdfBytes, data.InvoiceNumber, nil
+}
+
+// resolveTemplate decides which template governs invoiceID's PDF: the
+// organisation's live current default for a Draft invoice (its PDF is
+// always a preview of "what would this look like right now" — the same
+// reasoning BuildData's own Draft-vs-issued party-data branch already
+// uses), or the immutable TemplateSnapshot captured by
+// InvoiceService.Send for any issued (Sent/Paid) invoice. definition is
+// nil and unused whenever isSystem is true: the system Classic template
+// still renders via gopdf (s.renderer), never htmlRenderer — see
+// Generate's own branch.
+//
+// An issued invoice with no snapshot at all (sent before this feature
+// existed) resolves as isSystem — Classic, via gopdf — rather than
+// erroring: a historical invoice keeps rendering exactly as it always
+// has, the same graceful-fallback spirit migration 000021's own comment
+// describes.
+func (s *InvoicePDFService) resolveTemplate(
+	ctx context.Context,
+	organisationID uuid.UUID,
+	invoiceID uuid.UUID,
+) (name string, definition json.RawMessage, isSystem bool, err error) {
+	inv, err := s.invoiceRepository.GetByID(ctx, organisationID, invoiceID)
+	if err != nil {
+		return "", nil, false, err
+	}
+
+	if inv.Status == InvoiceStatusDraft {
+		tmpl, err := s.templateRepository.GetDefault(ctx, organisationID)
+		if err != nil {
+			return "", nil, false, fmt.Errorf("%w: look up default template: %v", ErrInvoicePDFDataUnavailable, err)
+		}
+
+		return tmpl.Name, tmpl.Definition, tmpl.IsSystem, nil
+	}
+
+	if len(inv.RenderedTemplateSnapshot) == 0 {
+		return "", nil, true, nil
+	}
+
+	var snapshot TemplateSnapshot
+	if err := json.Unmarshal(inv.RenderedTemplateSnapshot, &snapshot); err != nil {
+		return "", nil, false, fmt.Errorf("%w: parse template snapshot: %v", ErrInvoicePDFDataUnavailable, err)
+	}
+
+	return snapshot.Name, snapshot.Definition, snapshot.IsSystem, nil
 }
 
 // BuildData assembles the InvoicePDFData for one invoice without

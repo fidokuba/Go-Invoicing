@@ -2,7 +2,9 @@ package invoice
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -11,7 +13,44 @@ import (
 
 	admin "go-invoicing/internal/administration"
 	"go-invoicing/internal/customer"
+	"go-invoicing/internal/renderer"
+	"go-invoicing/internal/template"
 )
+
+// fakeHTMLRenderer is an in-memory HTMLRenderer, recording every call so
+// tests can assert Generate routed to it instead of gopdf, and exactly
+// what RenderRequest (including Definition) it was given.
+type fakeHTMLRenderer struct {
+	calls []renderer.RenderRequest
+	err   error
+}
+
+func (f *fakeHTMLRenderer) Render(ctx context.Context, req renderer.RenderRequest) ([]byte, error) {
+	f.calls = append(f.calls, req)
+	if f.err != nil {
+		return nil, f.err
+	}
+	return []byte("%PDF-1.4 fake custom-template pdf"), nil
+}
+
+// pdfServiceWithHTMLRenderer is pdfService (invoice_service_test.go) but
+// wires htmlRenderer in place of that helper's hard-coded nil, so tests
+// below can prove Generate actually calls it for a non-system template
+// and inspect exactly what it was called with.
+func (f *testFixture) pdfServiceWithHTMLRenderer(htmlRenderer HTMLRenderer) *InvoicePDFService {
+	return NewInvoicePDFService(
+		f.repository,
+		f.paymentRepository,
+		f.organisationRepository,
+		f.customerRepository,
+		f.addressRepository,
+		f.settingsRepository,
+		f.templateRepository,
+		NewInvoicePDFRenderer(),
+		htmlRenderer,
+		nil,
+	)
+}
 
 // --- Draft: uses live data ---
 
@@ -422,5 +461,151 @@ func TestInvoicePDFService_Generate_ProducesValidPDFBytes(t *testing.T) {
 
 	if invoiceNumber == "" {
 		t.Error("expected a non-empty invoice number")
+	}
+}
+
+// --- Phase 4: template resolution (system Classic via gopdf vs a real
+// custom template via htmlRenderer) ---
+
+// TestInvoicePDFService_Generate_DraftWithCustomDefaultUsesHTMLRenderer
+// proves a Draft invoice's PDF reflects the organisation's *current*
+// default template — mirroring BuildData's own Draft-uses-live-data
+// rule — by switching that default to a non-system template and
+// checking Generate calls htmlRenderer (with that template's own
+// Definition), never gopdf.
+func TestInvoicePDFService_Generate_DraftWithCustomDefaultUsesHTMLRenderer(t *testing.T) {
+	f := newTestFixture()
+	invoiceID := f.addInvoice(1000, InvoiceStatusDraft)
+	f.repository.lines[invoiceID] = []*Line{
+		{ID: uuid.New(), InvoiceID: invoiceID, Description: "Consulting", Quantity: 1, UnitPrice: 1000, VATRate: 0, VATAmount: 0, Total: 1000},
+	}
+
+	definition := json.RawMessage(`{"content":[{"type":"TotalsBlock"}],"root":{}}`)
+	f.templateRepository.defaultTemplate = template.Template{
+		ID:         uuid.New(),
+		Name:       "My Custom Layout",
+		Definition: definition,
+		IsDefault:  true,
+		IsSystem:   false,
+	}
+
+	htmlRenderer := &fakeHTMLRenderer{}
+	pdfBytes, _, err := f.pdfServiceWithHTMLRenderer(htmlRenderer).Generate(context.Background(), f.organisationID, invoiceID)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	if len(htmlRenderer.calls) != 1 {
+		t.Fatalf("expected htmlRenderer to be called once, got %d calls", len(htmlRenderer.calls))
+	}
+	if string(htmlRenderer.calls[0].Definition) != string(definition) {
+		t.Errorf("expected htmlRenderer called with the default template's own Definition %s, got %s", definition, htmlRenderer.calls[0].Definition)
+	}
+	if string(pdfBytes) != "%PDF-1.4 fake custom-template pdf" {
+		t.Errorf("expected Generate to return htmlRenderer's own bytes, got %q", pdfBytes)
+	}
+}
+
+// TestInvoicePDFService_Generate_HTMLRendererCapacityErrorPropagates is
+// the Hardening pass's own regression guard: renderer.ErrRendererUnavailable
+// (the sentinel Client.Render returns for the renderer service's own 503,
+// see server.js's MAX_CONCURRENT_RENDERS guard) must survive Generate's
+// own %w wrap intact, so invoice_handler.go's GetPDF can still find it
+// with errors.Is and return a meaningful 503 instead of the generic 500
+// every other htmlRenderer failure gets.
+func TestInvoicePDFService_Generate_HTMLRendererCapacityErrorPropagates(t *testing.T) {
+	f := newTestFixture()
+	invoiceID := f.addInvoice(1000, InvoiceStatusDraft)
+	f.templateRepository.defaultTemplate = template.Template{
+		ID:         uuid.New(),
+		Name:       "My Custom Layout",
+		Definition: json.RawMessage(`{"content":[],"root":{}}`),
+		IsDefault:  true,
+		IsSystem:   false,
+	}
+
+	htmlRenderer := &fakeHTMLRenderer{err: fmt.Errorf("%w: renderer at capacity", renderer.ErrRendererUnavailable)}
+	_, _, err := f.pdfServiceWithHTMLRenderer(htmlRenderer).Generate(context.Background(), f.organisationID, invoiceID)
+	if !errors.Is(err, renderer.ErrRendererUnavailable) {
+		t.Fatalf("expected Generate's error to satisfy errors.Is(err, renderer.ErrRendererUnavailable), got %v", err)
+	}
+}
+
+// TestInvoicePDFService_Generate_IssuedWithNoSnapshotFallsBackToSystem
+// proves an issued invoice sent before this feature existed (no
+// RenderedTemplateSnapshot at all) still renders via gopdf — never
+// htmlRenderer — even when the organisation's *current* default
+// template is a real custom one: an issued invoice's PDF must reflect
+// what governed it at Send, and "nothing captured" means "Classic",
+// exactly as migration 000021's own comment describes.
+func TestInvoicePDFService_Generate_IssuedWithNoSnapshotFallsBackToSystem(t *testing.T) {
+	f := newTestFixture()
+	invoiceID := f.addIssuedInvoiceWithSnapshot(1000, InvoiceStatusSent, time.Now().UTC().AddDate(0, 0, 30))
+
+	f.templateRepository.defaultTemplate = template.Template{
+		ID:         uuid.New(),
+		Name:       "My Custom Layout",
+		Definition: json.RawMessage(`{"content":[],"root":{}}`),
+		IsDefault:  true,
+		IsSystem:   false,
+	}
+
+	htmlRenderer := &fakeHTMLRenderer{}
+	pdfBytes, _, err := f.pdfServiceWithHTMLRenderer(htmlRenderer).Generate(context.Background(), f.organisationID, invoiceID)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	if len(htmlRenderer.calls) != 0 {
+		t.Errorf("expected htmlRenderer never to be called for a legacy issued invoice with no snapshot, got %d calls", len(htmlRenderer.calls))
+	}
+	requireValidPDFHeader(t, pdfBytes)
+}
+
+// TestInvoicePDFService_Generate_IssuedUsesStoredSnapshotNotLiveDefault
+// is the core Phase 4 guarantee at the unit level (see the end-to-end
+// proof this mirrors): an issued invoice's PDF uses the template
+// snapshot captured at Send, not whatever the organisation's default
+// happens to be now — even when the two are deliberately different
+// non-system templates.
+func TestInvoicePDFService_Generate_IssuedUsesStoredSnapshotNotLiveDefault(t *testing.T) {
+	f := newTestFixture()
+	invoiceID := f.addIssuedInvoiceWithSnapshot(1000, InvoiceStatusSent, time.Now().UTC().AddDate(0, 0, 30))
+
+	snapshotDefinition := json.RawMessage(`{"content":[{"type":"SellerBlock"}],"root":{}}`)
+	snapshot := TemplateSnapshot{
+		TemplateID: uuid.New(),
+		Name:       "Snapshot-Time Layout",
+		Definition: snapshotDefinition,
+		IsSystem:   false,
+	}
+	marshaled, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+	inv := f.repository.invoices[invoiceID]
+	inv.RenderedTemplateSnapshot = marshaled
+	f.repository.invoices[invoiceID] = inv
+
+	// Deliberately different from the snapshot, to prove it's ignored.
+	f.templateRepository.defaultTemplate = template.Template{
+		ID:         uuid.New(),
+		Name:       "Currently-Live Layout",
+		Definition: json.RawMessage(`{"content":[{"type":"TotalsBlock"}],"root":{}}`),
+		IsDefault:  true,
+		IsSystem:   false,
+	}
+
+	htmlRenderer := &fakeHTMLRenderer{}
+	_, _, err = f.pdfServiceWithHTMLRenderer(htmlRenderer).Generate(context.Background(), f.organisationID, invoiceID)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	if len(htmlRenderer.calls) != 1 {
+		t.Fatalf("expected htmlRenderer to be called once, got %d calls", len(htmlRenderer.calls))
+	}
+	if string(htmlRenderer.calls[0].Definition) != string(snapshotDefinition) {
+		t.Errorf("expected htmlRenderer called with the snapshot's Definition %s, got %s", snapshotDefinition, htmlRenderer.calls[0].Definition)
 	}
 }

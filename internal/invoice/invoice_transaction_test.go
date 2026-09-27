@@ -9,6 +9,7 @@ import (
 	admin "go-invoicing/internal/administration"
 	"go-invoicing/internal/customer"
 	"go-invoicing/internal/product"
+	"go-invoicing/internal/template"
 )
 
 // TestInvoiceService_Create_CommitsAllRowsTogether proves the success case
@@ -33,6 +34,7 @@ func TestInvoiceService_Create_CommitsAllRowsTogether(t *testing.T) {
 		customer.NewPostgresAddressRepository(db),
 		admin.NewPostgresSettingsRepository(db),
 		NewPostgresPaymentRepository(db),
+		template.NewPostgresTemplateRepository(db),
 		db,
 	)
 
@@ -112,6 +114,7 @@ func TestInvoiceService_Create_SequentialInvoiceNumbers(t *testing.T) {
 		customer.NewPostgresAddressRepository(db),
 		admin.NewPostgresSettingsRepository(db),
 		NewPostgresPaymentRepository(db),
+		template.NewPostgresTemplateRepository(db),
 		db,
 	)
 
@@ -175,6 +178,7 @@ func TestInvoiceService_Create_IndependentSequencesPerOrganisation(t *testing.T)
 		customer.NewPostgresAddressRepository(db),
 		admin.NewPostgresSettingsRepository(db),
 		NewPostgresPaymentRepository(db),
+		template.NewPostgresTemplateRepository(db),
 		db,
 	)
 
@@ -270,6 +274,7 @@ func TestInvoiceService_Create_RollsBackAtomicallyOnLineFailure(t *testing.T) {
 		customer.NewPostgresAddressRepository(db),
 		settingsRepository,
 		NewPostgresPaymentRepository(db),
+		template.NewPostgresTemplateRepository(db),
 		db,
 	)
 
@@ -355,6 +360,7 @@ func TestInvoiceService_Create_ConcurrentInvoiceCreation(t *testing.T) {
 		customer.NewPostgresAddressRepository(db),
 		admin.NewPostgresSettingsRepository(db),
 		NewPostgresPaymentRepository(db),
+		template.NewPostgresTemplateRepository(db),
 		db,
 	)
 

@@ -64,13 +64,28 @@ func minimalValidSnapshot() InvoicePartySnapshot {
 	}
 }
 
+// testTemplateSnapshot is a representative TemplateSnapshot for
+// MarkSent's own unit tests below — MarkSent doesn't validate its
+// fields the way it validates InvoicePartySnapshot (there is no
+// equivalent "must have a template" business rule to enforce here; a
+// missing default template is InvoiceService.buildTemplateSnapshot's
+// concern, before MarkSent is ever called), so any value works, but a
+// realistic one keeps these tests reading naturally.
+func testTemplateSnapshot() TemplateSnapshot {
+	return TemplateSnapshot{
+		TemplateID: uuid.New(),
+		Name:       "Classic",
+		IsSystem:   true,
+	}
+}
+
 // --- MarkSent ---
 
 func TestInvoice_MarkSent_DraftSucceeds(t *testing.T) {
 	inv := draftInvoice()
 	sentAt := time.Date(2026, 1, 15, 12, 30, 0, 0, time.UTC)
 
-	if err := inv.MarkSent(sentAt, validSnapshot()); err != nil {
+	if err := inv.MarkSent(sentAt, validSnapshot(), testTemplateSnapshot()); err != nil {
 		t.Fatalf("expected Draft -> Sent to succeed, got %v", err)
 	}
 
@@ -94,7 +109,7 @@ func TestInvoice_MarkSent_CopiesSnapshotCorrectly(t *testing.T) {
 	inv := draftInvoice()
 	snapshot := validSnapshot()
 
-	if err := inv.MarkSent(time.Now().UTC(), snapshot); err != nil {
+	if err := inv.MarkSent(time.Now().UTC(), snapshot, testTemplateSnapshot()); err != nil {
 		t.Fatalf("mark sent: %v", err)
 	}
 
@@ -146,7 +161,7 @@ func derefOrNil(s *string) string {
 func TestInvoice_MarkSent_OptionalFieldsAbsentSucceeds(t *testing.T) {
 	inv := draftInvoice()
 
-	if err := inv.MarkSent(time.Now().UTC(), minimalValidSnapshot()); err != nil {
+	if err := inv.MarkSent(time.Now().UTC(), minimalValidSnapshot(), testTemplateSnapshot()); err != nil {
 		t.Fatalf("expected Draft -> Sent with only required fields to succeed, got %v", err)
 	}
 
@@ -160,7 +175,7 @@ func TestInvoice_MarkSent_MissingSellerNameRejected(t *testing.T) {
 	snapshot := minimalValidSnapshot()
 	snapshot.SellerName = ""
 
-	err := inv.MarkSent(time.Now().UTC(), snapshot)
+	err := inv.MarkSent(time.Now().UTC(), snapshot, testTemplateSnapshot())
 	if !errors.Is(err, ErrInvoiceSnapshotSellerNameRequired) {
 		t.Fatalf("expected ErrInvoiceSnapshotSellerNameRequired, got %v", err)
 	}
@@ -175,7 +190,7 @@ func TestInvoice_MarkSent_MissingCustomerNameRejected(t *testing.T) {
 	snapshot := minimalValidSnapshot()
 	snapshot.CustomerName = ""
 
-	err := inv.MarkSent(time.Now().UTC(), snapshot)
+	err := inv.MarkSent(time.Now().UTC(), snapshot, testTemplateSnapshot())
 	if !errors.Is(err, ErrInvoiceSnapshotCustomerNameRequired) {
 		t.Fatalf("expected ErrInvoiceSnapshotCustomerNameRequired, got %v", err)
 	}
@@ -186,7 +201,7 @@ func TestInvoice_MarkSent_MissingCurrencyRejected(t *testing.T) {
 	snapshot := minimalValidSnapshot()
 	snapshot.Currency = ""
 
-	err := inv.MarkSent(time.Now().UTC(), snapshot)
+	err := inv.MarkSent(time.Now().UTC(), snapshot, testTemplateSnapshot())
 	if !errors.Is(err, ErrInvoiceSnapshotCurrencyRequired) {
 		t.Fatalf("expected ErrInvoiceSnapshotCurrencyRequired, got %v", err)
 	}
@@ -197,7 +212,7 @@ func TestInvoice_MarkSent_InvalidCurrencyRejected(t *testing.T) {
 	snapshot := minimalValidSnapshot()
 	snapshot.Currency = "gbp" // lowercase — not the normalized shape
 
-	err := inv.MarkSent(time.Now().UTC(), snapshot)
+	err := inv.MarkSent(time.Now().UTC(), snapshot, testTemplateSnapshot())
 	if !errors.Is(err, ErrInvoiceSnapshotCurrencyInvalid) {
 		t.Fatalf("expected ErrInvoiceSnapshotCurrencyInvalid, got %v", err)
 	}
@@ -207,7 +222,7 @@ func TestInvoice_MarkSent_SentRejects(t *testing.T) {
 	inv := draftInvoice()
 	inv.Status = InvoiceStatusSent
 
-	err := inv.MarkSent(time.Now().UTC(), validSnapshot())
+	err := inv.MarkSent(time.Now().UTC(), validSnapshot(), testTemplateSnapshot())
 	if !errors.Is(err, ErrInvoiceAlreadySent) {
 		t.Fatalf("expected ErrInvoiceAlreadySent, got %v", err)
 	}
@@ -221,7 +236,7 @@ func TestInvoice_MarkSent_PaidRejects(t *testing.T) {
 	inv := draftInvoice()
 	inv.Status = InvoiceStatusPaid
 
-	err := inv.MarkSent(time.Now().UTC(), validSnapshot())
+	err := inv.MarkSent(time.Now().UTC(), validSnapshot(), testTemplateSnapshot())
 	if !errors.Is(err, ErrInvoiceAlreadySent) {
 		t.Fatalf("expected ErrInvoiceAlreadySent, got %v", err)
 	}
@@ -241,7 +256,7 @@ func TestInvoice_MarkSent_NonDraftCannotRecaptureSnapshot(t *testing.T) {
 	firstSnapshot := validSnapshot()
 	firstSentAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	if err := inv.MarkSent(firstSentAt, firstSnapshot); err != nil {
+	if err := inv.MarkSent(firstSentAt, firstSnapshot, testTemplateSnapshot()); err != nil {
 		t.Fatalf("first mark sent: %v", err)
 	}
 
@@ -250,7 +265,7 @@ func TestInvoice_MarkSent_NonDraftCannotRecaptureSnapshot(t *testing.T) {
 	differentSnapshot.CustomerName = "A Totally Different Customer"
 	differentSnapshot.Currency = "USD"
 
-	err := inv.MarkSent(time.Now().UTC(), differentSnapshot)
+	err := inv.MarkSent(time.Now().UTC(), differentSnapshot, testTemplateSnapshot())
 	if !errors.Is(err, ErrInvoiceAlreadySent) {
 		t.Fatalf("expected ErrInvoiceAlreadySent, got %v", err)
 	}

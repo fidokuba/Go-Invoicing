@@ -25,6 +25,8 @@ var jsonBodiedOperations = map[string]bool{
 	"POST /api/v1/products":                    true,
 	"POST /api/v1/invoices":                    true,
 	"POST /api/v1/invoices/{}/payments":        true,
+	"POST /api/v1/templates":                   true,
+	"PATCH /api/v1/templates/{}":               true,
 }
 
 // TestRequestBodyContract_OnlyJSONBodiedOperationsDeclareARequestBody is
@@ -161,7 +163,8 @@ func TestPathParameterContract_IdParamsAreRequiredUUIDStrings(t *testing.T) {
 	// every handler): every {id} route's handler
 	// (UserHandler.GetByID, CustomerHandler.GetByID/GetBillingAddress/
 	// UpsertBillingAddress, ProductHandler.GetByID,
-	// InvoiceHandler.GetByID/Send/CreatePayment/GetPayments/GetPDF) calls
+	// InvoiceHandler.GetByID/Send/CreatePayment/GetPayments/GetPDF,
+	// TemplateHandler.GetByID/Update/Delete/SetDefault) calls
 	// uuid.Parse(r.PathValue("id")) and returns 400 invalid_request on a
 	// parse failure — confirmed by reading each handler directly during
 	// this milestone's investigation. No {id} route in this application

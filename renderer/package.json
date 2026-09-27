@@ -1,0 +1,23 @@
+{
+  "name": "go-invoicing-renderer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Invoice-template rendering service (custom invoice layouts, Phases 1 and 4). Renders a template + invoice data to HTML — either the system Classic template's own hardcoded HTML, or a real saved template interpreted via Puck's Render component (see src/renderTemplate.jsx) — then prints that HTML to PDF via headless Chromium. A deliberately separate Node service, not folded into web/ or the Go API — the Go API's own production image stays Node-free (see Dockerfile/README's 'no Node runtime' guarantee); this is the one place in the project that legitimately needs Node + a browser engine at request time.",
+  "type": "module",
+  "scripts": {
+    "sync": "node scripts/sync-template-config.mjs",
+    "prestart": "npm run sync",
+    "start": "node --import tsx/esm src/server.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "puppeteer": "^25.12.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "@puckeditor/core": "^0.23.0",
+    "tsx": "^4.19.2"
+  }
+}
