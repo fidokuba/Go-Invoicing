@@ -171,7 +171,7 @@ jobs:
       # cmd/release's own frontendLooksBuilt warning, asserted against
       # explicitly below, as a second, independent guard on top of this.
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
