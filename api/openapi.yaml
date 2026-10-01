@@ -153,6 +153,11 @@ tags:
       permanent, non-deletable "Classic" system template from the moment
       it exists; user-created templates may be freely created, edited,
       deleted, and selected as the organisation's default.
+  - name: Test Data
+    description: >-
+      An admin-only convenience action that seeds the caller's own
+      organisation with fake customers, products, and invoices for
+      testing — nothing about it is exposed to any other role.
   - name: Health
     description: Unauthenticated infrastructure probes and this specification document.
 
@@ -1699,6 +1704,38 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
+  /api/v1/test-data:
+    post:
+      tags: [Test Data]
+      summary: Create Test Data
+      description: >-
+        Admin only (403 for any other role). Creates 5 fake customers, a
+        shared pool of 6-12 fake products (the exact count varies each
+        call), and for each customer a varying number of invoices (1-4)
+        against a varying selection of those products — including both
+        single-line and multi-line invoices, and a mix of Draft, Sent,
+        and Paid outcomes. Every record is created through this API's own
+        real customer/product/invoice creation (and Send/payment) logic,
+        so generated data behaves identically to anything a real client
+        created — the same VAT-registration rule, the same invoice
+        numbering sequence, the same lifecycle rules. Safe to call more
+        than once: every generated SKU/email includes a per-call random
+        suffix, so repeated calls add another batch rather than
+        colliding with the last one.
+      responses:
+        "201":
+          description: What was actually created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateTestDataResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -2729,3 +2766,31 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/TemplateResponse"
+
+    CreateTestDataResponse:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          customersCreated,
+          productsCreated,
+          invoicesCreated,
+          invoicesSent,
+          invoicesPaid,
+        ]
+      properties:
+        customersCreated:
+          type: integer
+          example: 5
+        productsCreated:
+          type: integer
+          example: 9
+        invoicesCreated:
+          type: integer
+          example: 12
+        invoicesSent:
+          type: integer
+          example: 7
+        invoicesPaid:
+          type: integer
+          example: 3

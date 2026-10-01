@@ -1,5 +1,7 @@
 import { useState, type FormEvent } from "react";
+import { Sparkles } from "lucide-react";
 import { useVersionedOrganisation, useUpdateOrganisation } from "@/api/queries/organisation";
+import { useCreateTestData } from "@/api/queries/testData";
 import { useAuth, hasRole } from "@/lib/useAuth";
 import { friendlyMessage, isStaleWriteError } from "@/api/errors";
 import { Card, CardContent } from "@/components/ui/card";
@@ -139,6 +141,50 @@ function OrganisationForm({
   );
 }
 
+// TestDataCard is the "Create Test Data" action: admin only (same gate
+// the server itself enforces — see internal/sampledata.Handler.Create
+// — so this is belt-and-braces, not the only thing standing between a
+// non-admin and this button). Purely additive: every call creates a new
+// batch of fake customers/products/invoices rather than touching
+// anything that already exists, so there's nothing destructive here to
+// confirm the way Delete elsewhere in Settings does.
+function TestDataCard() {
+  const createTestData = useCreateTestData();
+
+  return (
+    <Card>
+      <CardContent>
+        <h2 className="text-sm font-medium text-slate-900">Test data</h2>
+        <p className="mt-1 text-sm text-slate-500">
+          Create 5 fake customers, a handful of fake products, and a varying number of invoices for each
+          customer (a mix of draft, sent, and paid) — useful for trying the app out without entering real data
+          by hand. Safe to run more than once; each run adds another batch.
+        </p>
+        {createTestData.isError && (
+          <div className="mt-4">
+            <Alert>{friendlyMessage(createTestData.error)}</Alert>
+          </div>
+        )}
+        {createTestData.isSuccess && (
+          <div className="mt-4">
+            <Alert tone="info" title="Test data created">
+              {createTestData.data.customersCreated} customers, {createTestData.data.productsCreated} products,{" "}
+              {createTestData.data.invoicesCreated} invoices ({createTestData.data.invoicesSent} sent,{" "}
+              {createTestData.data.invoicesPaid} paid).
+            </Alert>
+          </div>
+        )}
+        <div className="mt-4">
+          <Button variant="secondary" disabled={createTestData.isPending} onClick={() => createTestData.mutate()}>
+            <Sparkles className="h-4 w-4" aria-hidden="true" />
+            {createTestData.isPending ? "Creating…" : "Create Test Data"}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export function OrganisationSettingsPage() {
   const query = useVersionedOrganisation();
   // Bumped by Reload after a 412, remounting the form from the freshly
@@ -152,16 +198,19 @@ export function OrganisationSettingsPage() {
   const canEdit = hasRole(user, "admin");
 
   return (
-    <QueryBoundary query={query}>
-      {(versioned) => (
-        <OrganisationForm
-          key={formKey}
-          organisation={versioned.data}
-          etag={versioned.etag}
-          canEdit={canEdit}
-          onReload={reload}
-        />
-      )}
-    </QueryBoundary>
+    <div className="space-y-6">
+      <QueryBoundary query={query}>
+        {(versioned) => (
+          <OrganisationForm
+            key={formKey}
+            organisation={versioned.data}
+            etag={versioned.etag}
+            canEdit={canEdit}
+            onReload={reload}
+          />
+        )}
+      </QueryBoundary>
+      {canEdit && <TestDataCard />}
+    </div>
   );
 }

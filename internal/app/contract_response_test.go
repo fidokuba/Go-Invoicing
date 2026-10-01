@@ -12,6 +12,7 @@ import (
 	"go-invoicing/internal/httpx"
 	"go-invoicing/internal/invoice"
 	"go-invoicing/internal/product"
+	"go-invoicing/internal/sampledata"
 	"go-invoicing/internal/template"
 )
 
@@ -243,6 +244,16 @@ func TestResponseContract_MatchesOpenAPISchema(t *testing.T) {
 	t.Run("TemplateListResponse", func(t *testing.T) {
 		validateAgainstSchema(t, doc, "TemplateListResponse", template.TemplateListResponse{
 			Items: []template.TemplateResponse{templateResponse},
+		})
+	})
+
+	t.Run("CreateTestDataResponse", func(t *testing.T) {
+		validateAgainstSchema(t, doc, "CreateTestDataResponse", sampledata.CreateTestDataResponse{
+			CustomersCreated: 5,
+			ProductsCreated:  9,
+			InvoicesCreated:  12,
+			InvoicesSent:     7,
+			InvoicesPaid:     3,
 		})
 	})
 

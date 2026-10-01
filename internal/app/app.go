@@ -15,6 +15,7 @@ import (
 	"go-invoicing/internal/product"
 	"go-invoicing/internal/ratelimit"
 	"go-invoicing/internal/renderer"
+	"go-invoicing/internal/sampledata"
 	"go-invoicing/internal/template"
 	"go-invoicing/internal/webui"
 
@@ -402,6 +403,25 @@ func (a *App) Handler() http.Handler {
 	// POST /invoices/{id}/send already uses for a lifecycle action that
 	// isn't a plain field edit.
 	register("POST", apiV1Prefix+"/templates/{id}/default", authMiddleware.RequireAuth(templateHandler.SetDefault))
+
+	// POST /test-data ("Create Test Data", Settings page) is admin-only:
+	// unlike every other action in this file, it writes a whole batch of
+	// records at once purely for the caller's own convenience, not a
+	// single resource the caller asked for by value — the same
+	// restriction level PATCH /organisation already uses for "affects the
+	// whole tenant, not freely available to every role". It depends on
+	// customerService/productService/invoiceService, all already
+	// constructed above, and organisationRepository (constructed earlier
+	// still, alongside the organisation routes) — nothing new to wire at
+	// the repository layer, since sampledata.Service is pure orchestration
+	// over those three services' own real Create/Send/CreatePayment
+	// methods, not a new domain of its own.
+	testDataService := sampledata.NewService(organisationRepository, customerService, productService, invoiceService)
+	testDataHandler := sampledata.NewHandler(testDataService)
+	register(
+		"POST", apiV1Prefix+"/test-data",
+		authMiddleware.RequireAuth(admin.RequireRole(admin.UserRoleAdmin)(testDataHandler.Create)),
+	)
 
 	// /health and /health/db (Milestone 1) stay unversioned and require
 	// no authentication — they are infrastructure probes, not part of the

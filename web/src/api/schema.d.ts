@@ -2149,6 +2149,48 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/test-data": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Test Data
+         * @description Admin only (403 for any other role). Creates 5 fake customers, a shared pool of 6-12 fake products (the exact count varies each call), and for each customer a varying number of invoices (1-4) against a varying selection of those products — including both single-line and multi-line invoices, and a mix of Draft, Sent, and Paid outcomes. Every record is created through this API's own real customer/product/invoice creation (and Send/payment) logic, so generated data behaves identically to anything a real client created — the same VAT-registration rule, the same invoice numbering sequence, the same lifecycle rules. Safe to call more than once: every generated SKU/email includes a per-call random suffix, so repeated calls add another batch rather than colliding with the last one.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description What was actually created. */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CreateTestDataResponse"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+                500: components["responses"]["InternalServerError"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2568,6 +2610,18 @@ export interface components {
         };
         TemplateListResponse: {
             items: components["schemas"]["TemplateResponse"][];
+        };
+        CreateTestDataResponse: {
+            /** @example 5 */
+            customersCreated: number;
+            /** @example 9 */
+            productsCreated: number;
+            /** @example 12 */
+            invoicesCreated: number;
+            /** @example 7 */
+            invoicesSent: number;
+            /** @example 3 */
+            invoicesPaid: number;
         };
     };
     responses: {
