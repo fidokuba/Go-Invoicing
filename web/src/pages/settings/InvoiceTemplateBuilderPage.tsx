@@ -96,7 +96,23 @@ function ExistingTemplateBuilder({ id }: { id: string }) {
       {(versioned) => {
         const template = versioned.data;
         const currentName = name ?? template.name;
-        const error = updateTemplate.error ?? setDefaultTemplate.error ?? deleteTemplate.error;
+        // A regression fix: each of these mutations starts in React
+        // Query's idle state with .error === null, never undefined — so
+        // `a ?? b ?? c` here always evaluated to null, and the stale
+        // `error !== undefined` check below was true for that null on
+        // every single render, not just after a real failure. The
+        // result was the generic error banner appearing unconditionally
+        // on every visit to any existing template's edit page, success
+        // or not (see InvoiceTemplatesPage.tsx's sibling list page,
+        // which already used the correct `.isError` boolean throughout
+        // — this file was the one place that didn't).
+        const error = updateTemplate.isError
+          ? updateTemplate.error
+          : setDefaultTemplate.isError
+            ? setDefaultTemplate.error
+            : deleteTemplate.isError
+              ? deleteTemplate.error
+              : undefined;
 
         return (
           <div className="flex h-[calc(100vh-1px)] flex-col">
@@ -135,18 +151,40 @@ function ExistingTemplateBuilder({ id }: { id: string }) {
               {error !== undefined && <Alert>{friendlyMessage(error)}</Alert>}
             </BuilderHeader>
             <div className="min-h-0 flex-1">
-              <Puck
-                key={`${template.id}-${template.updatedAt}`}
-                config={templateBuilderConfig}
-                data={template.definition as unknown as Data}
-                onPublish={(data) => {
-                  if (template.isSystem) return;
-                  updateTemplate.mutate({
-                    body: { name: currentName.trim() || template.name, definition: data as unknown as Record<string, never> },
-                    etag: versioned.etag,
-                  });
-                }}
-              />
+              {template.isSystem ? (
+                // Classic's stored "definition" is a placeholder marker
+                // ({"system":"classic"}), not a real Puck document — it
+                // is drawn by its own hand-written HTML template
+                // (renderer/src/classicTemplate.js), never interpreted
+                // by Puck at all, so there is nothing real to show here.
+                // Showing the editor anyway produced an empty, dead-end
+                // canvas that looked like a crash, especially once paired
+                // with the (now-fixed) false error banner above — this
+                // explains the gap and points at the one actual way to
+                // customize an invoice's layout instead.
+                <div className="flex h-full flex-col items-center justify-center gap-4 p-8 text-center">
+                  <p className="max-w-md text-sm text-slate-600">
+                    Classic is the system's built-in layout and isn't a design you can open and edit
+                    here. To customize your invoice's appearance, create a new layout — Classic stays
+                    available as a fallback for as long as nothing else is set as default.
+                  </p>
+                  <Button onClick={() => navigate("/settings/invoice-templates/new")}>
+                    Create a new layout
+                  </Button>
+                </div>
+              ) : (
+                <Puck
+                  key={`${template.id}-${template.updatedAt}`}
+                  config={templateBuilderConfig}
+                  data={template.definition as unknown as Data}
+                  onPublish={(data) => {
+                    updateTemplate.mutate({
+                      body: { name: currentName.trim() || template.name, definition: data as unknown as Record<string, never> },
+                      etag: versioned.etag,
+                    });
+                  }}
+                />
+              )}
             </div>
             <Dialog
               open={deleteConfirmOpen}
