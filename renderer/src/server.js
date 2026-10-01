@@ -45,14 +45,34 @@ app.use(express.json({ limit: MAX_REQUEST_BODY_BYTES }));
 // request, never a fresh browser) — launching Chromium per-request would
 // make every render pay startup cost; a single long-lived instance is
 // the standard Puppeteer pattern for a server workload.
+//
+// getBrowser also checks that the cached instance is still actually
+// connected before handing it back, and relaunches if not — caught live
+// during development: this process had been running for several days
+// (across a long session) and its one cached browser's underlying CDP
+// connection had silently dropped, so every render failed with
+// "Connection closed" from browser.newPage() — a real, permanent outage
+// (every subsequent render fails identically, forever) that previously
+// needed a manual restart of this whole process to recover from. A
+// browser can disconnect for reasons that have nothing to do with any
+// individual request — the Chromium process crashing, an OOM-kill, a
+// container's own health-check cycling something — so recovering
+// automatically here matters independently of how rare any one cause
+// is.
 let browserPromise;
-function getBrowser() {
-  if (!browserPromise) {
-    browserPromise = puppeteer.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
-    });
+async function getBrowser() {
+  if (browserPromise) {
+    const browser = await browserPromise;
+    if (browser.connected) {
+      return browser;
+    }
+    console.error("cached browser is disconnected; relaunching");
   }
+
+  browserPromise = puppeteer.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+  });
   return browserPromise;
 }
 
