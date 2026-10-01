@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -42,7 +42,12 @@ function keyOf(call: number): string {
 }
 
 let queryClient: QueryClient;
-let onOpenChange: ReturnType<typeof vi.fn>;
+// vitest 5's vi.fn() defaults to a broader Mock<Procedure | Constructable>
+// signature unless explicitly parameterized (vitest 3's bare
+// `ReturnType<typeof vi.fn>` inferred the narrower shape this prop
+// actually needs) — give it the dialog's own onOpenChange signature
+// explicitly, both here and at the assignment below.
+let onOpenChange: Mock<(open: boolean) => void>;
 
 function renderDialog() {
   return render(
@@ -68,7 +73,7 @@ async function submit(user: ReturnType<typeof userEvent.setup>) {
 beforeEach(() => {
   post.mockReset();
   queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
-  onOpenChange = vi.fn();
+  onOpenChange = vi.fn<(open: boolean) => void>();
 });
 
 afterEach(() => {
