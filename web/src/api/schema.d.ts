@@ -1634,6 +1634,7 @@ export interface paths {
                 };
                 429: components["responses"]["TooManyRequests"];
                 500: components["responses"]["InternalServerError"];
+                503: components["responses"]["ServiceUnavailable"];
             };
         };
         put?: never;
@@ -2740,6 +2741,28 @@ export interface components {
                  *       "error": {
                  *         "code": "internal_error",
                  *         "message": "internal server error"
+                 *       }
+                 *     }
+                 */
+                "application/json": components["schemas"]["ErrorBody"];
+            };
+        };
+        /** @description PDF rendering is temporarily at capacity (a custom invoice layout's PDF is rendered via a shared, concurrency-limited rendering service). Nothing was processed; wait for the number of seconds given in Retry-After before trying again. This is distinct from 429: it reflects the server's own shared rendering capacity, not this caller's request rate. */
+        ServiceUnavailable: {
+            headers: {
+                /**
+                 * @description Seconds to wait before retrying (a whole number, at least 1).
+                 * @example 2
+                 */
+                "Retry-After"?: number;
+                [name: string]: unknown;
+            };
+            content: {
+                /**
+                 * @example {
+                 *       "error": {
+                 *         "code": "service_unavailable",
+                 *         "message": "PDF rendering is temporarily at capacity, please try again shortly"
                  *       }
                  *     }
                  */
