@@ -28,6 +28,20 @@ WORKDIR /app
 COPY --chown=pptruser:pptruser renderer/package.json ./
 RUN npm install --omit=dev
 
+# tsconfig.json's jsx:"react-jsx" is what makes CMD's own `tsx/esm`
+# loader use React's automatic JSX runtime (no `React` identifier needed
+# in scope) for every .jsx file under src/ — including, critically,
+# src/generated/templateBuilderConfig.tsx (synced in below), which is
+# written assuming that runtime, the same as every other consumer of
+# that shared file. Caught live on the first real deployment of this
+# image: without this file present, tsx finds no tsconfig at all under
+# /app and falls back to the classic runtime instead, which failed every
+# custom-template render with "ReferenceError: React is not defined" —
+# never caught locally, since every local run of this service so far
+# started from inside the actual renderer/ directory, where tsx's own
+# upward config search already found this same file at its normal,
+# uncontainerized path.
+COPY --chown=pptruser:pptruser renderer/tsconfig.json ./
 COPY --chown=pptruser:pptruser renderer/scripts ./scripts
 COPY --chown=pptruser:pptruser renderer/src ./src
 
