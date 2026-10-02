@@ -38,7 +38,24 @@ COPY --chown=pptruser:pptruser renderer/src ./src
 # regenerated at container start), then discarded: nothing else in this
 # image ever needs web/'s source again.
 COPY --chown=pptruser:pptruser web/src/components/templates/templateBuilderConfig.tsx /web/src/components/templates/templateBuilderConfig.tsx
-RUN npm run sync && rm -rf /web
+RUN npm run sync
+
+# This Dockerfile never sets USER explicitly, so every instruction above
+# ran as the base image's own default (pptruser, non-root) — including
+# this COPY's own --chown target. That's exactly why removing it needs a
+# deliberate switch to root first: deleting a directory entry needs
+# write permission on its *parent* (/, owned by root), not the entry's
+# own ownership, so pptruser owning every file under /web still can't
+# rm it — caught for real the first time this image was actually built
+# (this Dockerfile had never been through a working `docker build`
+# before then). Switched back to pptruser immediately after, the same
+# effective user every instruction before this block already ran as, so
+# the running container is still non-root — Puppeteer's own base image
+# deliberately avoids running headless Chrome as root, and this doesn't
+# undo that.
+USER root
+RUN rm -rf /web
+USER pptruser
 
 EXPOSE 3000
 CMD ["node", "--import", "tsx/esm", "src/server.js"]

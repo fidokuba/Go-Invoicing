@@ -95,6 +95,23 @@ type Config struct {
 	// service is actually reachable (e.g. "http://renderer:3000" inside
 	// Docker Compose's own network).
 	RendererURL string
+
+	// RendererSharedSecret (Hardening pass, RENDERER_SHARED_SECRET) is
+	// sent as a header on every call to the renderer service and checked
+	// there — the renderer itself has no auth, no tenant awareness, and
+	// no rate limiting of its own (see renderer/src/server.js's own doc
+	// comment), which was a deliberate design choice back when it was
+	// only ever reachable on a private network. A deployment that can't
+	// get that network isolation (e.g. a Render plan without Private
+	// Service support) instead exposes it as an ordinary public URL, so
+	// this is what stands between that URL and anyone on the internet
+	// who finds it. Empty (the default) sends no header at all and
+	// disables the check on the renderer's own side too — correct for
+	// local development (compose.yaml's network already isn't public)
+	// and for a deployment that *does* have real network isolation,
+	// where this would just be one more secret to manage for no actual
+	// security benefit.
+	RendererSharedSecret string
 }
 
 func Load() (Config, error) {
@@ -169,6 +186,7 @@ func Load() (Config, error) {
 	cfg.TrustedProxies = trustedProxies
 
 	cfg.RendererURL = getEnv("RENDERER_URL", "http://localhost:3000")
+	cfg.RendererSharedSecret = getEnv("RENDERER_SHARED_SECRET", "")
 
 	return cfg, nil
 }

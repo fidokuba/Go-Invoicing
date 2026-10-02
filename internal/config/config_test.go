@@ -54,6 +54,31 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.LogLevel != "info" {
 		t.Errorf("expected LogLevel to default to \"info\", got %q", cfg.LogLevel)
 	}
+
+	if cfg.RendererURL != "http://localhost:3000" {
+		t.Errorf("expected RendererURL to default to \"http://localhost:3000\", got %q", cfg.RendererURL)
+	}
+
+	if cfg.RendererSharedSecret != "" {
+		t.Errorf("expected RendererSharedSecret to default to \"\" (no header sent), got %q", cfg.RendererSharedSecret)
+	}
+}
+
+// TestLoad_RendererSharedSecretOverride is the Hardening pass's own
+// regression guard: RENDERER_SHARED_SECRET must actually reach
+// Config.RendererSharedSecret, the same as every other override test in
+// this file proves for its own variable.
+func TestLoad_RendererSharedSecretOverride(t *testing.T) {
+	t.Setenv("RENDERER_SHARED_SECRET", "a-real-secret")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if cfg.RendererSharedSecret != "a-real-secret" {
+		t.Errorf("expected RendererSharedSecret %q, got %q", "a-real-secret", cfg.RendererSharedSecret)
+	}
 }
 
 // --- Milestone 11 Part 2: production DATABASE_URL safety ---

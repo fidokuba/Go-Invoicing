@@ -6,12 +6,50 @@
 // service doesn't feel like a foreign piece of the system: a /health
 // endpoint, a request body size limit, and graceful shutdown.
 
+import crypto from "node:crypto";
 import express from "express";
 import puppeteer from "puppeteer";
 import { renderClassicTemplate } from "./classicTemplate.js";
 import { renderTemplateToHtml } from "./renderTemplate.jsx";
 
 const PORT = process.env.PORT || 3000;
+
+// RENDERER_SHARED_SECRET (Hardening pass) — see
+// internal/config.Config.RendererSharedSecret's own doc comment on the
+// Go side for why this exists at all: a deployment that can't put this
+// service on a genuinely private network (no Render Private Service
+// support on a free plan, e.g.) has to expose it as an ordinary public
+// URL instead, and this is what stands between that URL and anyone on
+// the internet who finds it. Unset (the default — correct for
+// compose.yaml's own local-dev network, which already isn't public)
+// accepts every request unchecked, mirroring the Go client's own "empty
+// means send no header" behaviour on the other side of this same
+// setting.
+const RENDERER_SHARED_SECRET = process.env.RENDERER_SHARED_SECRET || "";
+
+// requireSharedSecret compares constant-time (crypto.timingSafeEqual)
+// rather than with === — a publicly-reachable, otherwise-unauthenticated
+// endpoint is exactly where a timing side-channel on secret comparison
+// is a real concern, not a theoretical one. Only guards /render, never
+// /health: Render's own health checker has to reach that one without
+// knowing any secret at all, and it reveals nothing more sensitive than
+// "this process is up" anyway.
+function requireSharedSecret(req, res, next) {
+  if (!RENDERER_SHARED_SECRET) {
+    next();
+    return;
+  }
+
+  const provided = Buffer.from(req.get("X-Renderer-Shared-Secret") || "");
+  const expected = Buffer.from(RENDERER_SHARED_SECRET);
+
+  if (provided.length !== expected.length || !crypto.timingSafeEqual(provided, expected)) {
+    res.status(401).json({ error: { message: "unauthorized" } });
+    return;
+  }
+
+  next();
+}
 
 // MAX_REQUEST_BODY_BYTES mirrors internal/httpx.MaxRequestBodyBytes (2
 // MiB) — an invoice's rendering payload is line items and formatted
@@ -94,7 +132,7 @@ app.get("/health", (_req, res) => {
 // instead — see that method's own doc comment) — this fallback exists
 // for direct/manual calls to this endpoint (Phase 1's own proof, e.g.)
 // and as a reasonable default, not because real traffic depends on it.
-app.post("/render", async (req, res) => {
+app.post("/render", requireSharedSecret, async (req, res) => {
   // Capacity check first, before anything else costs a Chromium page —
   // rejected outright rather than queued (see MAX_CONCURRENT_RENDERS's
   // own comment for why). 503 + Retry-After is the standard HTTP idiom

@@ -17,7 +17,7 @@ import (
 func newDefaultLimitedApp(t *testing.T) http.Handler {
 	t.Helper()
 
-	return New(newTestPool(t), testLogger, nil, "http://localhost:3000").Handler()
+	return New(newTestPool(t), testLogger, nil, "http://localhost:3000", "").Handler()
 }
 
 func postFrom(handler http.Handler, remoteAddr, path, body string) *httptest.ResponseRecorder {

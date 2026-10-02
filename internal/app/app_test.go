@@ -61,7 +61,7 @@ func newTestApp(t *testing.T) (http.Handler, *pgxpool.Pool) {
 	t.Helper()
 
 	db := newTestPool(t)
-	application := New(db, testLogger, nil, "http://localhost:3000")
+	application := New(db, testLogger, nil, "http://localhost:3000", "")
 	// Every httptest request comes from the same client address, so the
 	// production login/register limits would trip tests that simply log
 	// in many times. The limits themselves are tested explicitly (see

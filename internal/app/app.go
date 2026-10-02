@@ -29,10 +29,11 @@ import (
 const apiV1Prefix = "/api/v1"
 
 type App struct {
-	db          *pgxpool.Pool
-	logger      *slog.Logger
-	metrics     *metrics.Metrics
-	rendererURL string
+	db                   *pgxpool.Pool
+	logger               *slog.Logger
+	metrics              *metrics.Metrics
+	rendererURL          string
+	rendererSharedSecret string
 
 	// routes is populated by Handler() as it registers each route — see
 	// RoutePattern's own doc comment for why this exists and how tests
@@ -127,8 +128,20 @@ func (p rateLimitPolicy) newLimiter() *ratelimit.Limiter {
 // always renders via the existing gopdf path, regardless of this
 // value), so an unreachable renderer service only breaks that one case,
 // not every PDF.
-func New(db *pgxpool.Pool, logger *slog.Logger, m *metrics.Metrics, rendererURL string) *App {
-	return &App{db: db, logger: logger, metrics: m, rendererURL: rendererURL, rateLimits: defaultRateLimits, clientAddressKey: httpx.ClientAddressKey}
+//
+// rendererSharedSecret (Hardening pass; config.Config
+// .RendererSharedSecret) is passed straight through to that same
+// renderer.Client — see that config field's own doc comment.
+func New(db *pgxpool.Pool, logger *slog.Logger, m *metrics.Metrics, rendererURL string, rendererSharedSecret string) *App {
+	return &App{
+		db:                   db,
+		logger:               logger,
+		metrics:              m,
+		rendererURL:          rendererURL,
+		rendererSharedSecret: rendererSharedSecret,
+		rateLimits:           defaultRateLimits,
+		clientAddressKey:     httpx.ClientAddressKey,
+	}
 }
 
 // RoutePattern is one application route's method and net/http.ServeMux
@@ -349,7 +362,7 @@ func (a *App) Handler() http.Handler {
 	// htmlRendererClient (Phase 4) is the same kind of stateless,
 	// shareable client — it holds only a base URL and an *http.Client.
 	invoicePDFRenderer := invoice.NewInvoicePDFRenderer()
-	htmlRendererClient := renderer.NewClient(a.rendererURL)
+	htmlRendererClient := renderer.NewClient(a.rendererURL, a.rendererSharedSecret)
 	invoicePDFService := invoice.NewInvoicePDFService(invoiceRepository, paymentRepository, organisationRepository, customerRepository, addressRepository, settingsRepository, templateRepository, invoicePDFRenderer, htmlRendererClient, a.metrics)
 
 	invoiceHandler := invoice.NewInvoiceHandler(invoiceService, invoicePDFService, a.metrics)

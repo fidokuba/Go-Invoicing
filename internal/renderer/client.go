@@ -3,9 +3,9 @@
 // InvoicePDFService as the path a real custom template renders through,
 // alongside gopdf's continuing to serve the system Classic template —
 // see internal/invoice/invoice_pdf_service.go's own doc comment on that
-// split). It holds no PostgreSQL access, no HTTP handler, no
-// authentication — a thin HTTP client and the wire-format DTOs it
-// sends, nothing else.
+// split). It holds no PostgreSQL access and no HTTP handler of its own —
+// a thin HTTP client, the wire-format DTOs it sends, and (Hardening
+// pass) an optional shared-secret header, nothing else.
 //
 // This package deliberately does not import internal/invoice, even
 // though RenderRequest mirrors InvoicePDFData field-for-field: the
@@ -42,22 +42,32 @@ const requestTimeout = 20 * time.Second
 // repository lookups.
 var ErrRendererUnavailable = errors.New("renderer service is at capacity")
 
+// sharedSecretHeader is the one header name both this client and the
+// renderer's own server.js agree on — see config.Config
+// .RendererSharedSecret's own doc comment for why this exists at all.
+const sharedSecretHeader = "X-Renderer-Shared-Secret"
+
 // Client calls the renderer service's HTTP API. It holds no per-request
 // state, so a single Client is safe to share and reuse across requests —
 // the same shape as PostgresUserRepository and friends holding only a
 // connection pool, never a request's own data.
 type Client struct {
-	baseURL    string
-	httpClient *http.Client
+	baseURL      string
+	sharedSecret string
+	httpClient   *http.Client
 }
 
 // NewClient wires a client against the renderer service reachable at
 // baseURL (e.g. "http://renderer:3000" inside Docker Compose, or
 // "http://localhost:3000" for local development — see compose.yaml).
-func NewClient(baseURL string) *Client {
+// sharedSecret is sent as a header on every request if non-empty (empty
+// sends no header at all — see config.Config.RendererSharedSecret's own
+// doc comment for when that's the correct setting, not an oversight).
+func NewClient(baseURL string, sharedSecret string) *Client {
 	return &Client{
-		baseURL:    baseURL,
-		httpClient: &http.Client{Timeout: requestTimeout},
+		baseURL:      baseURL,
+		sharedSecret: sharedSecret,
+		httpClient:   &http.Client{Timeout: requestTimeout},
 	}
 }
 
@@ -144,6 +154,9 @@ func (c *Client) Render(ctx context.Context, req RenderRequest) ([]byte, error) 
 		return nil, fmt.Errorf("build render request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	if c.sharedSecret != "" {
+		httpReq.Header.Set(sharedSecretHeader, c.sharedSecret)
+	}
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {

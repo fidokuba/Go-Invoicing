@@ -306,7 +306,7 @@ func main() {
 	}
 
 	// Create the app
-	application := app.New(db, logger, m, cfg.RendererURL)
+	application := app.New(db, logger, m, cfg.RendererURL, cfg.RendererSharedSecret)
 	if len(cfg.TrustedProxies) > 0 {
 		application.TrustProxies(cfg.TrustedProxies)
 		logger.Info("trusting X-Forwarded-For from configured proxies for rate limiting", "trusted_proxies", len(cfg.TrustedProxies))

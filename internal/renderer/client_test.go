@@ -3,6 +3,8 @@ package renderer_test
 import (
 	"bytes"
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 
@@ -25,7 +27,7 @@ func newTestClient(t *testing.T) *renderer.Client {
 		t.Skip("RENDERER_URL is not set")
 	}
 
-	return renderer.NewClient(rendererURL)
+	return renderer.NewClient(rendererURL, "")
 }
 
 // TestClient_Render_ProducesAValidPDF is Phase 1's actual proof: a
@@ -110,5 +112,50 @@ func TestClient_Render_NonVATRegisteredOmitsVATColumns(t *testing.T) {
 
 	if !bytes.HasPrefix(pdf, []byte("%PDF-")) {
 		t.Fatalf("expected a valid PDF, got %d bytes", len(pdf))
+	}
+}
+
+// TestClient_Render_SendsSharedSecretHeaderWhenConfigured and
+// TestClient_Render_OmitsSharedSecretHeaderWhenNotConfigured are the
+// Hardening pass's own regression guard for config.Config
+// .RendererSharedSecret: unlike every other test in this file, these
+// need no real renderer service (RENDERER_URL/Chromium) at all — only a
+// fake HTTP server to inspect what header actually arrived, so they run
+// unconditionally rather than skipping without a live renderer.
+func TestClient_Render_SendsSharedSecretHeaderWhenConfigured(t *testing.T) {
+	var gotHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Get("X-Renderer-Shared-Secret")
+		w.Header().Set("Content-Type", "application/pdf")
+		w.Write([]byte("%PDF-1.4 fake"))
+	}))
+	defer server.Close()
+
+	client := renderer.NewClient(server.URL, "a-real-secret")
+	if _, err := client.Render(context.Background(), renderer.RenderRequest{}); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+
+	if gotHeader != "a-real-secret" {
+		t.Errorf("expected X-Renderer-Shared-Secret header %q, got %q", "a-real-secret", gotHeader)
+	}
+}
+
+func TestClient_Render_OmitsSharedSecretHeaderWhenNotConfigured(t *testing.T) {
+	var headerPresent bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, headerPresent = r.Header["X-Renderer-Shared-Secret"]
+		w.Header().Set("Content-Type", "application/pdf")
+		w.Write([]byte("%PDF-1.4 fake"))
+	}))
+	defer server.Close()
+
+	client := renderer.NewClient(server.URL, "")
+	if _, err := client.Render(context.Background(), renderer.RenderRequest{}); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+
+	if headerPresent {
+		t.Error("expected no X-Renderer-Shared-Secret header at all when no secret is configured")
 	}
 }
