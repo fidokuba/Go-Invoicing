@@ -27,8 +27,11 @@ import (
 
 // requestTimeout bounds one render call. Generous relative to the
 // renderer service's own RENDER_TIMEOUT_MS (15s) so a slow render
-// surfaces as the service's own timeout error, not this client's.
-const requestTimeout = 20 * time.Second
+// surfaces as the service's own timeout error, not this client's — and
+// long enough to cover a cold start: a renderer hosted on a plan that
+// idle-suspends it (Render's free tier) takes up to about a minute to
+// wake before it can answer at all. Kept below invoice.pdfWriteTimeout.
+const requestTimeout = 90 * time.Second
 
 // ErrRendererUnavailable is returned when the renderer service responds
 // 503 (Hardening pass: renderer/src/server.js's own MAX_CONCURRENT_RENDERS

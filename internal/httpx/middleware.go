@@ -307,6 +307,12 @@ type methodNotAllowedInterceptor struct {
 	intercepting bool
 }
 
+// Unwrap lets http.ResponseController reach the underlying writer (e.g.
+// GetPDF extending its own write deadline), mirroring statusRecorder's.
+func (i *methodNotAllowedInterceptor) Unwrap() http.ResponseWriter {
+	return i.ResponseWriter
+}
+
 func (i *methodNotAllowedInterceptor) WriteHeader(status int) {
 	if status != http.StatusMethodNotAllowed {
 		i.ResponseWriter.WriteHeader(status)
@@ -440,6 +446,12 @@ type frontendFallbackInterceptor struct {
 	serve        http.HandlerFunc
 	handled      bool
 	intercepting bool
+}
+
+// Unwrap lets http.ResponseController reach the underlying writer,
+// mirroring statusRecorder's.
+func (i *frontendFallbackInterceptor) Unwrap() http.ResponseWriter {
+	return i.ResponseWriter
 }
 
 func (i *frontendFallbackInterceptor) WriteHeader(status int) {

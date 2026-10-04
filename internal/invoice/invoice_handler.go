@@ -500,12 +500,27 @@ func (h *InvoiceHandler) GetPayments(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, response)
 }
 
+// pdfWriteTimeout must comfortably exceed renderer.Client's own request
+// timeout, so a slow render surfaces as a proper JSON error rather than
+// a dropped connection.
+const pdfWriteTimeout = 100 * time.Second
+
 // GetPDF handles GET /invoices/{id}/pdf — synchronously generates and
 // returns the invoice's PDF document (Milestone 7 Part 3). Tenant
 // identity comes exclusively from the authenticated caller, exactly like
 // every other invoice route; there is no organisationId query/body input
 // anywhere in this handler for a client to influence.
 func (h *InvoiceHandler) GetPDF(w http.ResponseWriter, r *http.Request) {
+	// A custom-layout PDF goes through the renderer service, which can
+	// take far longer than the server-wide serverWriteTimeout (15s): a
+	// renderer that has been idle-suspended by its host (Render's free
+	// tier spins services down after ~15 minutes) needs up to a minute
+	// to wake, plus Chromium's own first launch. Without this, the
+	// server-wide deadline silently cut the response off mid-render and
+	// the browser saw a failed request ("Something went wrong") even
+	// though nothing was actually broken. Extended for this route only.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(pdfWriteTimeout))
+
 	identity, ok := admin.RequireAuthenticatedUser(w, r)
 	if !ok {
 		return

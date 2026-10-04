@@ -107,9 +107,25 @@ async function getBrowser() {
     console.error("cached browser is disconnected; relaunching");
   }
 
+  // headless: "shell" runs chrome-headless-shell (installed alongside
+  // full Chrome by puppeteer's own postinstall) instead of full Chrome
+  // in headless mode. Measured locally rendering a real saved layout:
+  // full Chrome sat at ~575 MB idle and grew past 1 GB after three
+  // renders; the headless shell held steady at ~300 MB. On a 512 MB
+  // host (Render's free plan) full Chrome got the container OOM-killed,
+  // so every custom-layout PDF came back as Render's own 502 page.
+  // --disable-dev-shm-usage: Docker's default /dev/shm is only 64 MB,
+  // which Chromium otherwise uses for shared memory and can exhaust.
   browserPromise = puppeteer.launch({
-    headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    headless: "shell",
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--disable-extensions",
+      "--no-zygote",
+    ],
   });
   return browserPromise;
 }
@@ -178,6 +194,10 @@ app.post("/render", requireSharedSecret, async (req, res) => {
 
 const server = app.listen(PORT, () => {
   console.log(`renderer listening on :${PORT}`);
+  // Launch Chromium now rather than on the first /render — on a small
+  // or freshly-woken instance that launch alone can take many seconds,
+  // and paying it here keeps it out of a user's PDF request.
+  getBrowser().catch((err) => console.error("browser warm-up failed:", err));
 });
 
 // Graceful shutdown — closes the browser before exiting, mirroring
