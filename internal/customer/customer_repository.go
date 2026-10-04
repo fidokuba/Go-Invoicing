@@ -57,4 +57,9 @@ type CustomerRepository interface {
 	// Postgres implementation for how the two queries share one WHERE
 	// clause so they can never drift apart.
 	List(ctx context.Context, organisationID uuid.UUID, filter ListFilter) ([]*Customer, int64, error)
+
+	// SoftDelete marks the customer deleted, refusing with
+	// ErrCustomerHasOpenInvoices while any Draft or unpaid Sent invoice
+	// still belongs to them — see the Postgres implementation.
+	SoftDelete(ctx context.Context, organisationID uuid.UUID, customerID uuid.UUID) error
 }

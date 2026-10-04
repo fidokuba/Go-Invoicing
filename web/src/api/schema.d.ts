@@ -926,7 +926,68 @@ export interface paths {
         };
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete a customer
+         * @description Admin or Manager only. A soft delete: the customer no longer appears in lists or lookups and can't be put on a new invoice, but their existing invoices are kept and still show the customer's name (from each invoice's own snapshot). Refused with 409 while the customer has any open invoice — Draft, Sent or Overdue — which must be settled or cancelled first.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["IdPathParam"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The customer was deleted. */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["BadRequest"];
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+                /** @description No such customer in the caller's organisation (including one already deleted). */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        /**
+                         * @example {
+                         *       "error": {
+                         *         "code": "customer_not_found",
+                         *         "message": "customer not found"
+                         *       }
+                         *     }
+                         */
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                /** @description The customer still has open invoices. */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        /**
+                         * @example {
+                         *       "error": {
+                         *         "code": "customer_has_open_invoices",
+                         *         "message": "customer has open invoices; cancel or settle them before deleting this customer"
+                         *       }
+                         *     }
+                         */
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                500: components["responses"]["InternalServerError"];
+            };
+        };
         options?: never;
         head?: never;
         patch?: never;
@@ -1250,7 +1311,7 @@ export interface paths {
                     /** @description Field to sort by. */
                     sort?: "invoiceNumber" | "issueDate" | "dueDate" | "total" | "createdAt";
                     /** @description Filter to exactly one effective status. */
-                    status?: "draft" | "sent" | "overdue" | "paid";
+                    status?: "draft" | "sent" | "overdue" | "paid" | "cancelled";
                     /** @description Filter to invoices for exactly one customer. */
                     customerId?: string;
                     /** @description Case-insensitive substring match against the invoice number. */
@@ -1283,6 +1344,7 @@ export interface paths {
                          *           "id": "22222222-2222-2222-2222-222222222222",
                          *           "invoiceNumber": "INV-1",
                          *           "customerId": "11111111-1111-1111-1111-111111111111",
+                         *           "customerName": "Acme Ltd",
                          *           "issueDate": "2026-09-19",
                          *           "dueDate": "2026-10-19",
                          *           "status": "sent",
@@ -1366,6 +1428,7 @@ export interface paths {
                          *       "id": "22222222-2222-2222-2222-222222222222",
                          *       "organisationId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
                          *       "customerId": "11111111-1111-1111-1111-111111111111",
+                         *       "customerName": "Acme Ltd",
                          *       "invoiceNumber": "INV-1",
                          *       "issueDate": "2026-09-19",
                          *       "dueDate": "2026-10-19",
@@ -1558,6 +1621,85 @@ export interface paths {
                          *       "error": {
                          *         "code": "invoice_already_sent",
                          *         "message": "invoice has already been sent"
+                         *       }
+                         *     }
+                         */
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                500: components["responses"]["InternalServerError"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/invoices/{id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel an invoice
+         * @description Admin or Manager only. Invoices are never deleted; this moves one to Cancelled instead, keeping it in the system as a record. Only an unpaid invoice can be cancelled: a Draft, or a Sent/Overdue invoice with no payment recorded. Cancelling a Draft captures the same seller/customer/currency/layout snapshot Send would, so the cancelled invoice (and its PDF) stays readable even if the customer is later deleted. A cancelled invoice can't be sent or paid.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["IdPathParam"];
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The now-Cancelled invoice, with lines. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["InvoiceResponse"];
+                    };
+                };
+                400: components["responses"]["BadRequest"];
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+                /** @description No such invoice in the caller's organisation. */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        /**
+                         * @example {
+                         *       "error": {
+                         *         "code": "invoice_not_found",
+                         *         "message": "invoice not found"
+                         *       }
+                         *     }
+                         */
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                /** @description The invoice is already Cancelled, is Paid or has a payment recorded, or (for a Draft) a required snapshot field is unavailable. */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        /**
+                         * @example {
+                         *       "error": {
+                         *         "code": "conflict",
+                         *         "message": "invoice has payments recorded against it and cannot be cancelled"
                          *       }
                          *     }
                          */
@@ -2479,6 +2621,8 @@ export interface components {
             organisationId: string;
             /** Format: uuid */
             customerId: string;
+            /** @description The customer's company name, or name if they have none — from the invoice's own snapshot once issued or cancelled, otherwise the customer's current details. Still present after the customer has been deleted. */
+            customerName: string;
             invoiceNumber: string;
             /** Format: date */
             issueDate: string;
@@ -2502,12 +2646,17 @@ export interface components {
              * @description The invoice's effective status, not necessarily its persisted one — see the Invoices tag's overdue rule.
              * @enum {string}
              */
-            status: "draft" | "sent" | "overdue" | "paid";
+            status: "draft" | "sent" | "overdue" | "paid" | "cancelled";
             /**
              * Format: date-time
              * @description Present only once the invoice has been sent.
              */
             sentAt?: string;
+            /**
+             * Format: date-time
+             * @description Present only once the invoice has been cancelled.
+             */
+            cancelledAt?: string;
             notes?: string;
             lines: components["schemas"]["InvoiceLineResponse"][];
             /** Format: date-time */
@@ -2522,12 +2671,14 @@ export interface components {
             invoiceNumber: string;
             /** Format: uuid */
             customerId: string;
+            /** @description The customer's company name, or name if they have none — from the invoice's own snapshot once issued or cancelled, otherwise the customer's current details. Still present after the customer has been deleted. */
+            customerName: string;
             /** Format: date */
             issueDate: string;
             /** Format: date */
             dueDate: string;
             /** @enum {string} */
-            status: "draft" | "sent" | "overdue" | "paid";
+            status: "draft" | "sent" | "overdue" | "paid" | "cancelled";
             currency: string;
             /** Format: int64 */
             subtotal: number;
@@ -2541,6 +2692,11 @@ export interface components {
             amountOutstanding: number;
             /** Format: date-time */
             sentAt?: string;
+            /**
+             * Format: date-time
+             * @description Present only once the invoice has been cancelled.
+             */
+            cancelledAt?: string;
             /** Format: date-time */
             createdAt: string;
             /** Format: date-time */

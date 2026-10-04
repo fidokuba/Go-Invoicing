@@ -18,12 +18,33 @@ import (
 // tests exercise that behaviour too.
 type fakeCustomerRepository struct {
 	customers map[uuid.UUID]Customer
+
+	// openInvoices marks customers SoftDelete must refuse, standing in for
+	// the real repository's NOT EXISTS (open invoices) check.
+	openInvoices map[uuid.UUID]bool
 }
 
 func newFakeCustomerRepository() *fakeCustomerRepository {
 	return &fakeCustomerRepository{
-		customers: make(map[uuid.UUID]Customer),
+		customers:    make(map[uuid.UUID]Customer),
+		openInvoices: make(map[uuid.UUID]bool),
 	}
+}
+
+// SoftDelete mirrors PostgresCustomerRepository.SoftDelete's contract:
+// not found (or another organisation's) is ErrCustomerNotFound, open
+// invoices block with ErrCustomerHasOpenInvoices, and a deleted customer
+// is no longer returned by GetByID.
+func (f *fakeCustomerRepository) SoftDelete(ctx context.Context, organisationID, customerID uuid.UUID) error {
+	c, ok := f.customers[customerID]
+	if !ok || c.OrganisationID != organisationID {
+		return ErrCustomerNotFound
+	}
+	if f.openInvoices[customerID] {
+		return ErrCustomerHasOpenInvoices
+	}
+	delete(f.customers, customerID)
+	return nil
 }
 
 // WithTx ignores its tx argument and returns the same fake — it has no

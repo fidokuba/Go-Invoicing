@@ -82,6 +82,7 @@ type InvoiceResponse struct {
 	ID                string                `json:"id"`
 	OrganisationID    string                `json:"organisationId"`
 	CustomerID        string                `json:"customerId"`
+	CustomerName      string                `json:"customerName"`
 	InvoiceNumber     string                `json:"invoiceNumber"`
 	IssueDate         string                `json:"issueDate"`
 	DueDate           string                `json:"dueDate"`
@@ -94,6 +95,7 @@ type InvoiceResponse struct {
 	AmountOutstanding int64                 `json:"amountOutstanding"`
 	Status            string                `json:"status"`
 	SentAt            *string               `json:"sentAt,omitempty"`
+	CancelledAt       *string               `json:"cancelledAt,omitempty"`
 	Notes             *string               `json:"notes,omitempty"`
 	Lines             []InvoiceLineResponse `json:"lines"`
 	CreatedAt         string                `json:"createdAt"`
@@ -115,11 +117,15 @@ type InvoiceResponse struct {
 // caller already knows its own organisation from having authenticated as
 // it, and there is no genuine client need to see it echoed back). Do not
 // add joined display fields (e.g. a customer name) speculatively — a
-// future frontend can resolve those from its own customer data.
+// future frontend can resolve those from its own customer data. The one
+// exception is CustomerName: once customers can be deleted, the frontend's
+// own customer data no longer covers every invoice's customer, so the
+// name (snapshot, or live for a Draft) comes back on the row itself.
 type InvoiceListItemResponse struct {
 	ID                string  `json:"id"`
 	InvoiceNumber     string  `json:"invoiceNumber"`
 	CustomerID        string  `json:"customerId"`
+	CustomerName      string  `json:"customerName"`
 	IssueDate         string  `json:"issueDate"`
 	DueDate           string  `json:"dueDate"`
 	Status            string  `json:"status"`
@@ -130,6 +136,7 @@ type InvoiceListItemResponse struct {
 	AmountPaid        int64   `json:"amountPaid"`
 	AmountOutstanding int64   `json:"amountOutstanding"`
 	SentAt            *string `json:"sentAt,omitempty"`
+	CancelledAt       *string `json:"cancelledAt,omitempty"`
 	CreatedAt         string  `json:"createdAt"`
 	UpdatedAt         string  `json:"updatedAt"`
 }
@@ -151,6 +158,7 @@ func toInvoiceListItemResponse(item InvoiceListItem, now time.Time) InvoiceListI
 		ID:                inv.ID.String(),
 		InvoiceNumber:     inv.InvoiceNumber,
 		CustomerID:        inv.CustomerID.String(),
+		CustomerName:      inv.CustomerDisplayName,
 		IssueDate:         inv.IssueDate.Format(dateLayout),
 		DueDate:           inv.DueDate.Format(dateLayout),
 		Status:            inv.EffectiveStatus(now),
@@ -159,8 +167,9 @@ func toInvoiceListItemResponse(item InvoiceListItem, now time.Time) InvoiceListI
 		VATTotal:          inv.VATTotal,
 		Total:             inv.Total,
 		AmountPaid:        item.AmountPaid,
-		AmountOutstanding: inv.Total - item.AmountPaid,
+		AmountOutstanding: inv.AmountOutstanding(item.AmountPaid),
 		SentAt:            sentAt,
+		CancelledAt:       formatOptionalTimestamp(inv.CancelledAt),
 		CreatedAt:         inv.CreatedAt.UTC().Format(time.RFC3339),
 		UpdatedAt:         inv.UpdatedAt.UTC().Format(time.RFC3339),
 	}
@@ -168,10 +177,9 @@ func toInvoiceListItemResponse(item InvoiceListItem, now time.Time) InvoiceListI
 
 // toInvoiceResponse maps the internal domain model onto the API's response
 // shape. It performs no database calls: amountPaid is supplied by the
-// caller rather than fetched here, and amountOutstanding is simply
-// inv.Total - amountPaid — the same formula CreatePayment already uses
-// for its own outstanding-balance check, just recomputed rather than
-// shared, since it's a single subtraction.
+// caller rather than fetched here, and amountOutstanding comes from
+// Invoice.AmountOutstanding — inv.Total - amountPaid, or 0 once
+// cancelled.
 //
 // Callers currently pass two different things for amountPaid: Create's
 // handler passes the literal 0 (a brand-new invoice cannot have any
@@ -218,6 +226,7 @@ func toInvoiceResponse(inv *Invoice, lines []*Line, amountPaid int64, currency s
 		ID:                inv.ID.String(),
 		OrganisationID:    inv.OrganisationID.String(),
 		CustomerID:        inv.CustomerID.String(),
+		CustomerName:      inv.CustomerDisplayName,
 		InvoiceNumber:     inv.InvoiceNumber,
 		IssueDate:         inv.IssueDate.Format(dateLayout),
 		DueDate:           inv.DueDate.Format(dateLayout),
@@ -227,12 +236,23 @@ func toInvoiceResponse(inv *Invoice, lines []*Line, amountPaid int64, currency s
 		VATTotal:          inv.VATTotal,
 		Total:             inv.Total,
 		AmountPaid:        amountPaid,
-		AmountOutstanding: inv.Total - amountPaid,
+		AmountOutstanding: inv.AmountOutstanding(amountPaid),
 		Status:            inv.EffectiveStatus(now),
 		SentAt:            sentAt,
+		CancelledAt:       formatOptionalTimestamp(inv.CancelledAt),
 		Notes:             inv.Notes,
 		Lines:             lineResponses,
 		CreatedAt:         inv.CreatedAt.UTC().Format(time.RFC3339),
 		UpdatedAt:         inv.UpdatedAt.UTC().Format(time.RFC3339),
 	}
+}
+
+// formatOptionalTimestamp formats t as RFC 3339 UTC, or nil when unset.
+func formatOptionalTimestamp(t *time.Time) *string {
+	if t == nil {
+		return nil
+	}
+
+	s := t.UTC().Format(time.RFC3339)
+	return &s
 }

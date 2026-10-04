@@ -166,6 +166,7 @@ func TestFilterEnumContract_MatchesDomainConstants(t *testing.T) {
 			invoice.InvoiceStatusSent,
 			invoice.InvoiceStatusOverdue,
 			invoice.InvoiceStatusPaid,
+			invoice.InvoiceStatusCancelled,
 		}
 		if !equalSet(got, want) {
 			t.Errorf("invoice status filter enum %v does not match domain constants %v", got, want)

@@ -298,6 +298,11 @@ func (h *InvoiceHandler) Send(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		if errors.Is(err, ErrInvoiceAlreadyCancelled) {
+			httpx.WriteError(w, http.StatusConflict, "invoice_cancelled", err.Error())
+			return
+		}
+
 		// Milestone 7 Part 2: the invoice exists and is a valid Draft, but
 		// a required snapshot field (seller name, customer name,
 		// currency) resolved to blank, or the organisation genuinely has
@@ -333,6 +338,50 @@ func (h *InvoiceHandler) Send(w http.ResponseWriter, r *http.Request) {
 	response := toInvoiceResponse(inv, lines, amountPaid, currency, time.Now().UTC())
 
 	httpx.WriteJSON(w, http.StatusOK, response)
+}
+
+// Cancel handles POST /invoices/{id}/cancel — moves an unpaid invoice to
+// Cancelled (invoices are never deleted; see InvoiceService.Cancel).
+// Admin/Manager only, enforced by the route's RequireRole. Responds with
+// the full InvoiceResponse, re-fetched through GetByID exactly as Send
+// does, for the same reason.
+func (h *InvoiceHandler) Cancel(w http.ResponseWriter, r *http.Request) {
+	identity, ok := admin.RequireAuthenticatedUser(w, r)
+	if !ok {
+		return
+	}
+
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, "invalid invoice ID")
+		return
+	}
+
+	if _, err := h.service.Cancel(r.Context(), identity.OrganisationID, id); err != nil {
+		switch {
+		case errors.Is(err, ErrInvoiceNotFound):
+			httpx.WriteError(w, http.StatusNotFound, "invoice_not_found", "invoice not found")
+		case errors.Is(err, ErrInvoiceAlreadyCancelled):
+			httpx.WriteError(w, http.StatusConflict, "invoice_cancelled", err.Error())
+		case errors.Is(err, ErrInvoiceCannotBeCancelled):
+			httpx.WriteError(w, http.StatusConflict, httpx.CodeConflict, err.Error())
+		case isSnapshotIncompleteError(err):
+			// Cancelling a Draft captures the same snapshot Send does,
+			// so it can hit the same "can't currently be finalised" 409s.
+			httpx.WriteError(w, http.StatusConflict, httpx.CodeConflict, err.Error())
+		default:
+			httpx.WriteInternalError(w, r, "invoice.cancel", err)
+		}
+		return
+	}
+
+	inv, lines, amountPaid, currency, err := h.service.GetByID(r.Context(), identity.OrganisationID, id)
+	if err != nil {
+		httpx.WriteInternalError(w, r, "invoice.cancel_after_cancel_get", err)
+		return
+	}
+
+	httpx.WriteJSON(w, http.StatusOK, toInvoiceResponse(inv, lines, amountPaid, currency, time.Now().UTC()))
 }
 
 // idempotencyKeyHeader is the request header carrying a payment

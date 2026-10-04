@@ -2,7 +2,6 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Plus, Search } from "lucide-react";
 import { useInvoices } from "@/api/queries/invoices";
-import { useCustomerLookup } from "@/api/queries/customers";
 import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -22,7 +21,6 @@ export function InvoicesListPage() {
   const [status, setStatus] = useState<InvoiceStatus | "">("");
   const [offset, setOffset] = useState(0);
   const debouncedSearch = useDebouncedValue(search);
-  const customerLookup = useCustomerLookup();
 
   const query = useInvoices({
     limit: PAGE_SIZE,
@@ -74,6 +72,7 @@ export function InvoicesListPage() {
           <option value="sent">Sent</option>
           <option value="overdue">Overdue</option>
           <option value="paid">Paid</option>
+          <option value="cancelled">Cancelled</option>
         </Select>
       </div>
 
@@ -114,7 +113,7 @@ export function InvoicesListPage() {
                         {invoice.invoiceNumber}
                       </Link>
                     </Td>
-                    <Td>{customerLookup.lookup.get(invoice.customerId) ?? "—"}</Td>
+                    <Td>{invoice.customerName || "—"}</Td>
                     <Td>{formatDateOnly(invoice.issueDate)}</Td>
                     <Td>{formatDateOnly(invoice.dueDate)}</Td>
                     <Td>

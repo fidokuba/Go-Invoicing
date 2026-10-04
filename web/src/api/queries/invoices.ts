@@ -10,7 +10,7 @@ type CreatePaymentRequest = components["schemas"]["CreatePaymentHTTPRequest"];
 export interface InvoicesListParams {
   limit?: number;
   offset?: number;
-  status?: "draft" | "sent" | "overdue" | "paid";
+  status?: "draft" | "sent" | "overdue" | "paid" | "cancelled";
   customerId?: string;
   search?: string;
   issueDateFrom?: string;
@@ -53,6 +53,19 @@ export function useSendInvoice(id: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: () => unwrap(client.POST("/api/v1/invoices/{id}/send", { params: { path: { id } } })),
+    onSuccess: (data) => {
+      queryClient.setQueryData(["invoices", id], data);
+      queryClient.invalidateQueries({ queryKey: ["invoices"], exact: false });
+    },
+  });
+}
+
+/** Cancels an unpaid invoice (Admin/Manager only) — invoices are never
+ * deleted, only moved to Cancelled. */
+export function useCancelInvoice(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => unwrap(client.POST("/api/v1/invoices/{id}/cancel", { params: { path: { id } } })),
     onSuccess: (data) => {
       queryClient.setQueryData(["invoices", id], data);
       queryClient.invalidateQueries({ queryKey: ["invoices"], exact: false });

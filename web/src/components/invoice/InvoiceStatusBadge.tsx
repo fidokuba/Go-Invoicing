@@ -1,6 +1,6 @@
 import { Badge, type BadgeTone } from "@/components/ui/badge";
 
-export type InvoiceStatus = "draft" | "sent" | "overdue" | "paid";
+export type InvoiceStatus = "draft" | "sent" | "overdue" | "paid" | "cancelled";
 
 // The invoice's effective status is computed and returned by the backend
 // (InvoiceResponse.status) — "overdue" is a derived, non-persisted state
@@ -12,6 +12,7 @@ const LABELS: Record<InvoiceStatus, string> = {
   sent: "Sent",
   overdue: "Overdue",
   paid: "Paid",
+  cancelled: "Cancelled",
 };
 
 const TONES: Record<InvoiceStatus, BadgeTone> = {
@@ -19,6 +20,7 @@ const TONES: Record<InvoiceStatus, BadgeTone> = {
   sent: "blue",
   overdue: "amber",
   paid: "green",
+  cancelled: "red",
 };
 
 export function InvoiceStatusBadge({ status }: { status: InvoiceStatus }) {

@@ -224,7 +224,8 @@ func (s *InvoiceService) Create(
 
 	// Existence checks happen only after every structural rule above has
 	// passed, so a malformed request never triggers a database lookup.
-	if _, err := s.customerRepository.GetByID(ctx, organisationID, customerID); err != nil {
+	invoiceCustomer, err := s.customerRepository.GetByID(ctx, organisationID, customerID)
+	if err != nil {
 		if errors.Is(err, customer.ErrCustomerNotFound) {
 			return nil, nil, "", ErrInvoiceCustomerNotFound
 		}
@@ -334,6 +335,8 @@ func (s *InvoiceService) Create(
 		Status:         InvoiceStatusDraft,
 		Notes:          nilIfEmpty(request.Notes),
 		VATRegistered:  organisation.VATRegistered,
+
+		CustomerDisplayName: customerDisplayName(invoiceCustomer),
 	}
 
 	txRepository := s.repository.WithTx(tx)
@@ -503,7 +506,7 @@ func (s *InvoiceService) List(
 	now time.Time,
 ) ([]InvoiceListItem, int64, error) {
 	switch filter.Status {
-	case "", InvoiceStatusDraft, InvoiceStatusSent, InvoiceStatusOverdue, InvoiceStatusPaid:
+	case "", InvoiceStatusDraft, InvoiceStatusSent, InvoiceStatusOverdue, InvoiceStatusPaid, InvoiceStatusCancelled:
 	default:
 		return nil, 0, ErrInvoiceListStatusInvalid
 	}
@@ -628,6 +631,10 @@ func (s *InvoiceService) Send(
 		return nil, err
 	}
 
+	if inv.Status == InvoiceStatusCancelled {
+		return nil, ErrInvoiceAlreadyCancelled
+	}
+
 	if inv.Status != InvoiceStatusDraft {
 		return nil, ErrInvoiceAlreadySent
 	}
@@ -654,6 +661,76 @@ func (s *InvoiceService) Send(
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit send transaction: %w", err)
+	}
+
+	return inv, nil
+}
+
+// Cancel moves an invoice to Cancelled — the replacement for deleting
+// one, which this system never does. It runs in one transaction holding
+// the invoice row's FOR UPDATE lock, exactly like Send and CreatePayment,
+// so it can't race a concurrent payment or send:
+//
+//   - lock the invoice (GetForUpdate) and total its payments
+//   - reject it via Invoice.CheckCancellable: already Cancelled, Paid, or
+//     anything already paid against it
+//   - for a Draft only, build the party and template snapshots Send
+//     would have captured (see Invoice.Cancel for why a cancelled Draft
+//     gets one)
+//   - apply Invoice.Cancel and persist it (MarkCancelled), then commit
+func (s *InvoiceService) Cancel(
+	ctx context.Context,
+	organisationID uuid.UUID,
+	invoiceID uuid.UUID,
+) (*Invoice, error) {
+	tx, err := s.txBeginner.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin cancel transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	txRepository := s.repository.WithTx(tx)
+
+	inv, err := txRepository.GetForUpdate(ctx, organisationID, invoiceID)
+	if err != nil {
+		return nil, err
+	}
+
+	amountPaid, err := s.paymentRepository.WithTx(tx).GetTotalPaidByInvoiceID(ctx, organisationID, invoiceID)
+	if err != nil {
+		return nil, fmt.Errorf("get amount paid for cancel: %w", err)
+	}
+
+	if err := inv.CheckCancellable(amountPaid); err != nil {
+		return nil, err
+	}
+
+	var (
+		snapshot         InvoicePartySnapshot
+		templateSnapshot TemplateSnapshot
+	)
+	if inv.Status == InvoiceStatusDraft {
+		snapshot, err = s.buildPartySnapshot(ctx, tx, organisationID, inv.CustomerID)
+		if err != nil {
+			return nil, err
+		}
+
+		templateSnapshot, err = s.buildTemplateSnapshot(ctx, tx, organisationID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if err := inv.Cancel(time.Now().UTC(), amountPaid, snapshot, templateSnapshot); err != nil {
+		return nil, err
+	}
+
+	if err := txRepository.MarkCancelled(ctx, organisationID, invoiceID, inv); err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit cancel transaction: %w", err)
 	}
 
 	return inv, nil
@@ -1116,4 +1193,15 @@ func sellerVATNumber(organisation *admin.Organisation) *string {
 	}
 
 	return organisation.TaxID
+}
+
+// customerDisplayName is the same company-name-else-name rule the
+// repository's CustomerDisplayName SQL applies, for the one place an
+// invoice is returned without being read back (Create).
+func customerDisplayName(c *customer.Customer) string {
+	if c.CompanyName != nil && strings.TrimSpace(*c.CompanyName) != "" {
+		return *c.CompanyName
+	}
+
+	return c.Name
 }

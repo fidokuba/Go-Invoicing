@@ -178,6 +178,40 @@ func (h *CustomerHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, response)
 }
 
+// Delete handles DELETE /customers/{id} — a soft delete (see
+// PostgresCustomerRepository.SoftDelete). Admin/Manager only, enforced
+// by the route's RequireRole. 409 while the customer still has open
+// invoices; 204 on success.
+func (h *CustomerHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	identity, ok := admin.RequireAuthenticatedUser(w, r)
+	if !ok {
+		return
+	}
+
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, "invalid customer ID")
+		return
+	}
+
+	if err := h.service.Delete(r.Context(), identity.OrganisationID, id); err != nil {
+		if errors.Is(err, ErrCustomerNotFound) {
+			httpx.WriteError(w, http.StatusNotFound, "customer_not_found", "customer not found")
+			return
+		}
+
+		if errors.Is(err, ErrCustomerHasOpenInvoices) {
+			httpx.WriteError(w, http.StatusConflict, "customer_has_open_invoices", err.Error())
+			return
+		}
+
+		httpx.WriteInternalError(w, r, "customer.delete", err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // GetBillingAddress handles GET /customers/{id}/billing-address.
 func (h *CustomerHandler) GetBillingAddress(w http.ResponseWriter, r *http.Request) {
 	identity, ok := admin.RequireAuthenticatedUser(w, r)

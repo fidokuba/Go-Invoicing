@@ -41,6 +41,20 @@ export function useCreateCustomer() {
   });
 }
 
+/** Deletes a customer (Admin/Manager only). The API refuses with 409
+ * while the customer still has open invoices; their existing invoices
+ * are kept and still show the customer's name. */
+export function useDeleteCustomer(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => unwrap(client.DELETE("/api/v1/customers/{id}", { params: { path: { id } } })),
+    onSuccess: () => {
+      queryClient.removeQueries({ queryKey: ["customers", id] });
+      queryClient.invalidateQueries({ queryKey: ["customers"] });
+    },
+  });
+}
+
 /** A customer has at most one billing address; "not found" is a normal,
  * expected state (no address set yet), so it resolves to `null` rather
  * than surfacing as a query error banner — see CustomerDetailPage. */
@@ -59,26 +73,6 @@ export function useCustomerBillingAddress(id: string | undefined) {
     },
     enabled: Boolean(id),
   });
-}
-
-/**
- * A single, page-scoped lookup of customer id -> display name, used by
- * the invoices list/editor so a "Customer" column/select doesn't fetch
- * one customer per invoice row (Milestone 12 section 45's N+1 warning).
- * One bounded request (the API's own maximum page size) stands in for a
- * per-row join; an organisation with more than 200 customers will have
- * some invoice rows fall back to showing a raw id — a known, documented
- * scale limit rather than unbounded per-row fetching.
- */
-const CUSTOMER_LOOKUP_LIMIT = 200;
-
-export function useCustomerLookup() {
-  const query = useCustomers({ limit: CUSTOMER_LOOKUP_LIMIT, sort: "name", order: "asc" });
-  const lookup = new Map<string, string>();
-  for (const customer of query.data?.items ?? []) {
-    lookup.set(customer.id, customer.companyName || customer.name);
-  }
-  return { ...query, lookup };
 }
 
 export function useUpsertCustomerBillingAddress(id: string) {

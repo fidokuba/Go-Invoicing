@@ -16,6 +16,12 @@ import (
 // within the given organisation, as opposed to a genuine database failure.
 var ErrCustomerNotFound = errors.New("customer not found")
 
+// ErrCustomerHasOpenInvoices is returned by SoftDelete while the customer
+// still has a Draft or unpaid Sent invoice: those still depend on the
+// customer (a Draft reads their live details), so they must be settled
+// or cancelled first.
+var ErrCustomerHasOpenInvoices = errors.New("customer has open invoices; cancel or settle them before deleting this customer")
+
 // dbExecutor is the minimal query surface this repository needs. Both
 // *pgxpool.Pool and pgx.Tx implement it, which is what lets these methods
 // run unmodified whether they're operating directly on the pool or inside
@@ -268,4 +274,56 @@ func (r *PostgresCustomerRepository) List(
 	}
 
 	return customers, total, nil
+}
+
+// SoftDelete sets deleted_at, after which the customer disappears from
+// GetByID and List (and so can't be put on a new invoice) but the row
+// itself stays: invoices reference it, and issued/cancelled invoices
+// carry their own snapshot of the customer's details anyway.
+//
+// The open-invoice check lives in the same UPDATE statement (NOT EXISTS)
+// rather than a separate read first, so there's no window between
+// checking and deleting. This package can't import internal/invoice
+// (that one imports this one), hence the literal status values — they
+// mirror invoice.InvoiceStatusDraft/Sent/Overdue.
+//
+// When nothing was updated, a second lookup tells "no such customer"
+// (ErrCustomerNotFound, also for an already-deleted one) apart from
+// "blocked by open invoices" (ErrCustomerHasOpenInvoices).
+func (r *PostgresCustomerRepository) SoftDelete(
+	ctx context.Context,
+	organisationID uuid.UUID,
+	customerID uuid.UUID,
+) error {
+	const query = `
+		UPDATE customers
+		SET deleted_at = NOW(),
+			updated_at = NOW()
+		WHERE organisation_id = $1
+			AND id = $2
+			AND deleted_at IS NULL
+			AND NOT EXISTS (
+				SELECT 1
+				FROM invoices
+				WHERE organisation_id = $1
+					AND customer_id = $2
+					AND deleted_at IS NULL
+					AND status IN ('draft', 'sent', 'overdue')
+			)
+	`
+
+	tag, err := r.db.Exec(ctx, query, organisationID, customerID)
+	if err != nil {
+		return fmt.Errorf("soft delete customer: %w", err)
+	}
+
+	if tag.RowsAffected() > 0 {
+		return nil
+	}
+
+	if _, err := r.GetByID(ctx, organisationID, customerID); err != nil {
+		return err
+	}
+
+	return ErrCustomerHasOpenInvoices
 }

@@ -17,6 +17,13 @@ export function canRecordPayment(status: InvoiceStatus): boolean {
   return status === "sent" || status === "overdue";
 }
 
+/** Mirrors the API's cancel rule: only an unpaid invoice — a Draft, or a
+ * Sent/Overdue one with nothing paid — can be cancelled. Who may cancel
+ * (Admin/Manager) is checked separately with hasRole. */
+export function canCancelInvoice(status: InvoiceStatus, amountPaid: number): boolean {
+  return (status === "draft" || status === "sent" || status === "overdue") && amountPaid === 0;
+}
+
 /** Whether the invoice's financial content (lines, totals) is still
  * editable — only ever true for a Draft; Send captures an immutable
  * snapshot of everything else. This app has no line-editing UI post

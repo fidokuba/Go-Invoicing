@@ -397,3 +397,50 @@ func TestInvoice_EffectiveStatus_PersistedOverduePassesThrough(t *testing.T) {
 		t.Errorf("expected a persisted Overdue status to pass through unchanged, got %q", got)
 	}
 }
+
+func TestInvoice_CheckCancellable(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     string
+		amountPaid int64
+		want       error
+	}{
+		{"draft", InvoiceStatusDraft, 0, nil},
+		{"sent unpaid", InvoiceStatusSent, 0, nil},
+		{"sent part-paid", InvoiceStatusSent, 1, ErrInvoiceCannotBeCancelled},
+		{"paid", InvoiceStatusPaid, 10000, ErrInvoiceCannotBeCancelled},
+		{"already cancelled", InvoiceStatusCancelled, 0, ErrInvoiceAlreadyCancelled},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inv := &Invoice{Status: tt.status, Total: 10000}
+			if err := inv.CheckCancellable(tt.amountPaid); !errors.Is(err, tt.want) {
+				t.Errorf("expected %v, got %v", tt.want, err)
+			}
+		})
+	}
+}
+
+func TestInvoice_Cancel_Draft_RequiresValidSnapshot(t *testing.T) {
+	inv := &Invoice{Status: InvoiceStatusDraft, Total: 10000}
+
+	if err := inv.Cancel(time.Now(), 0, InvoicePartySnapshot{}, TemplateSnapshot{}); err == nil {
+		t.Fatal("expected cancelling a draft with an empty snapshot to fail")
+	}
+	if inv.Status != InvoiceStatusDraft || inv.CancelledAt != nil {
+		t.Error("expected a failed cancel to change nothing")
+	}
+}
+
+func TestInvoice_AmountOutstanding_ZeroOnceCancelled(t *testing.T) {
+	inv := &Invoice{Status: InvoiceStatusSent, Total: 10000}
+	if got := inv.AmountOutstanding(0); got != 10000 {
+		t.Errorf("expected 10000 outstanding on a sent invoice, got %d", got)
+	}
+
+	inv.Status = InvoiceStatusCancelled
+	if got := inv.AmountOutstanding(0); got != 0 {
+		t.Errorf("expected 0 outstanding on a cancelled invoice, got %d", got)
+	}
+}

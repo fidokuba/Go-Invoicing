@@ -193,6 +193,13 @@ func (r *PostgresInvoiceRepository) GetByID(
 			customer_postal_code, customer_country,
 			currency,
 			rendered_template_snapshot,
+			cancelled_at,
+			COALESCE(
+				NULLIF(customer_company_name, ''),
+				customer_name,
+				(SELECT COALESCE(NULLIF(c.company_name, ''), c.name) FROM customers c WHERE c.id = invoices.customer_id),
+				''
+			),
 			created_at,
 			updated_at,
 			deleted_at
@@ -232,6 +239,8 @@ func (r *PostgresInvoiceRepository) GetByID(
 		&inv.CustomerPostalCode, &inv.CustomerCountry,
 		&inv.Currency,
 		&renderedTemplateSnapshot,
+		&inv.CancelledAt,
+		&inv.CustomerDisplayName,
 		&inv.CreatedAt,
 		&inv.UpdatedAt,
 		&inv.DeletedAt,
@@ -286,6 +295,7 @@ func (r *PostgresInvoiceRepository) GetForUpdate(
 			customer_postal_code, customer_country,
 			currency,
 			rendered_template_snapshot,
+			cancelled_at,
 			created_at,
 			updated_at,
 			deleted_at
@@ -326,6 +336,7 @@ func (r *PostgresInvoiceRepository) GetForUpdate(
 		&inv.CustomerPostalCode, &inv.CustomerCountry,
 		&inv.Currency,
 		&renderedTemplateSnapshot,
+		&inv.CancelledAt,
 		&inv.CreatedAt,
 		&inv.UpdatedAt,
 		&inv.DeletedAt,
@@ -452,6 +463,69 @@ func (r *PostgresInvoiceRepository) MarkSentWithSnapshot(
 	return nil
 }
 
+// MarkCancelled persists the -> Cancelled transition a prior, successful
+// Invoice.Cancel produced on inv: status and cancelled_at, together with
+// every snapshot column in the same statement — for a cancelled Draft
+// those were just captured by Cancel; for an already-Sent invoice they
+// are the values it already had, written back unchanged. Same
+// lock-held-by-caller reasoning as MarkSentWithSnapshot (see
+// InvoiceService.Cancel), so no status predicate is repeated here.
+func (r *PostgresInvoiceRepository) MarkCancelled(
+	ctx context.Context,
+	organisationID uuid.UUID,
+	invoiceID uuid.UUID,
+	inv *Invoice,
+) error {
+	const query = `
+		UPDATE invoices
+		SET status = $1,
+			cancelled_at = $2,
+			seller_name = $3, seller_email = $4, seller_phone = $5, seller_website = $6,
+			seller_address = $7, seller_city = $8, seller_state = $9, seller_postal_code = $10,
+			seller_country = $11, seller_tax_id = $12,
+			customer_name = $13, customer_company_name = $14, customer_email = $15, customer_phone = $16,
+			customer_tax_id = $17, customer_address = $18, customer_city = $19, customer_state = $20,
+			customer_postal_code = $21, customer_country = $22,
+			currency = $23,
+			rendered_template_snapshot = $24,
+			updated_at = NOW()
+		WHERE id = $25
+			AND organisation_id = $26
+			AND deleted_at IS NULL
+	`
+
+	var renderedTemplateSnapshot []byte
+	if len(inv.RenderedTemplateSnapshot) > 0 {
+		renderedTemplateSnapshot = []byte(inv.RenderedTemplateSnapshot)
+	}
+
+	tag, err := r.db.Exec(
+		ctx,
+		query,
+		inv.Status,
+		inv.CancelledAt,
+		inv.SellerName, inv.SellerEmail, inv.SellerPhone, inv.SellerWebsite,
+		inv.SellerAddress, inv.SellerCity, inv.SellerState, inv.SellerPostalCode,
+		inv.SellerCountry, inv.SellerTaxID,
+		inv.CustomerName, inv.CustomerCompanyName, inv.CustomerEmail, inv.CustomerPhone,
+		inv.CustomerTaxID, inv.CustomerAddress, inv.CustomerCity, inv.CustomerState,
+		inv.CustomerPostalCode, inv.CustomerCountry,
+		inv.Currency,
+		renderedTemplateSnapshot,
+		invoiceID,
+		organisationID,
+	)
+	if err != nil {
+		return fmt.Errorf("mark invoice cancelled: %w", err)
+	}
+
+	if tag.RowsAffected() == 0 {
+		return ErrInvoiceNotFound
+	}
+
+	return nil
+}
+
 // GetLinesByInvoiceID fetches every line belonging to an invoice, ordered
 // by creation. organisationID is required (Milestone 4 Part 6) and
 // enforced via a join back to invoices — invoice_lines has no
@@ -568,6 +642,8 @@ func (r *PostgresInvoiceRepository) List(
 		conditions = append(conditions, "status = 'draft'")
 	case InvoiceStatusPaid:
 		conditions = append(conditions, "status = 'paid'")
+	case InvoiceStatusCancelled:
+		conditions = append(conditions, "status = 'cancelled'")
 	case InvoiceStatusSent:
 		args = append(args, today)
 		conditions = append(conditions, fmt.Sprintf("status = 'sent' AND due_date >= $%d", len(args)))
@@ -634,7 +710,14 @@ func (r *PostgresInvoiceRepository) List(
 		`SELECT
 			id, organisation_id, customer_id, invoice_number, issue_date,
 			due_date, subtotal, vat_total, total, status, sent_at, notes,
-			vat_registered, currency, created_at, updated_at
+			vat_registered, currency, cancelled_at,
+			COALESCE(
+				NULLIF(customer_company_name, ''),
+				customer_name,
+				(SELECT COALESCE(NULLIF(c.company_name, ''), c.name) FROM customers c WHERE c.id = invoices.customer_id),
+				''
+			),
+			created_at, updated_at
 		FROM invoices
 		%s
 		ORDER BY %s %s, id ASC
@@ -668,6 +751,8 @@ func (r *PostgresInvoiceRepository) List(
 			&inv.Notes,
 			&inv.VATRegistered,
 			&inv.Currency,
+			&inv.CancelledAt,
+			&inv.CustomerDisplayName,
 			&inv.CreatedAt,
 			&inv.UpdatedAt,
 		); err != nil {

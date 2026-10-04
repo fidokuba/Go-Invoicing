@@ -1,6 +1,12 @@
 import { useState, type FormEvent } from "react";
-import { Link, useParams } from "react-router-dom";
-import { useCustomer, useCustomerBillingAddress, useUpsertCustomerBillingAddress } from "@/api/queries/customers";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { Trash2 } from "lucide-react";
+import {
+  useCustomer,
+  useCustomerBillingAddress,
+  useDeleteCustomer,
+  useUpsertCustomerBillingAddress,
+} from "@/api/queries/customers";
 import { useInvoices } from "@/api/queries/invoices";
 import { friendlyMessage } from "@/api/errors";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -8,6 +14,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 import { Alert } from "@/components/ui/alert";
+import { Dialog } from "@/components/ui/dialog";
+import { hasRole, useAuth } from "@/lib/useAuth";
 import { QueryBoundary } from "@/components/ui/query-boundary";
 import { EmptyState } from "@/components/ui/empty-state";
 import { TableContainer, THead, TBody, Tr, Th, Td } from "@/components/ui/table";
@@ -127,6 +135,48 @@ function BillingAddressCard({ customerId }: { customerId: string }) {
   );
 }
 
+function DeleteCustomerControl({ customerId, customerName }: { customerId: string; customerName: string }) {
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const deleteCustomer = useDeleteCustomer(customerId);
+  const navigate = useNavigate();
+
+  return (
+    <>
+      <Button size="sm" variant="secondary" onClick={() => setConfirmOpen(true)}>
+        <Trash2 className="h-4 w-4" aria-hidden="true" />
+        Delete customer
+      </Button>
+      <Dialog
+        open={confirmOpen}
+        onOpenChange={(open) => {
+          setConfirmOpen(open);
+          if (!open) deleteCustomer.reset();
+        }}
+        title={`Delete ${customerName}?`}
+        description="They'll be removed from your customer list and can't be put on new invoices. Their existing paid and cancelled invoices are kept and still show their name. A customer with open invoices (Draft, Sent or Overdue) can't be deleted until those are paid or cancelled."
+      >
+        {deleteCustomer.isError && (
+          <div className="mb-4">
+            <Alert>{friendlyMessage(deleteCustomer.error)}</Alert>
+          </div>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={() => setConfirmOpen(false)}>
+            Keep customer
+          </Button>
+          <Button
+            variant="danger"
+            disabled={deleteCustomer.isPending}
+            onClick={() => deleteCustomer.mutate(undefined, { onSuccess: () => navigate("/customers") })}
+          >
+            {deleteCustomer.isPending ? "Deleting…" : "Delete customer"}
+          </Button>
+        </div>
+      </Dialog>
+    </>
+  );
+}
+
 function CustomerInvoicesCard({ customerId }: { customerId: string }) {
   const query = useInvoices({ customerId, limit: 10, sort: "issueDate", order: "desc" });
   return (
@@ -177,6 +227,7 @@ function CustomerInvoicesCard({ customerId }: { customerId: string }) {
 export function CustomerDetailPage() {
   const { id } = useParams<{ id: string }>();
   const query = useCustomer(id);
+  const { user } = useAuth();
 
   return (
     <QueryBoundary query={query}>
@@ -185,7 +236,14 @@ export function CustomerDetailPage() {
           <PageHeader
             title={customer.name}
             description={customer.companyName}
-            actions={<CustomerStatusBadge status={customer.status as CustomerStatus} />}
+            actions={
+              <div className="flex items-center gap-2">
+                <CustomerStatusBadge status={customer.status as CustomerStatus} />
+                {hasRole(user, "admin", "manager") && (
+                  <DeleteCustomerControl customerId={customer.id} customerName={customer.name} />
+                )}
+              </div>
+            }
           />
 
           <div className="grid gap-6 lg:grid-cols-2">

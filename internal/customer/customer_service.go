@@ -115,6 +115,16 @@ func (s *CustomerService) GetByID(
 	return s.repository.GetByID(ctx, organisationID, customerID)
 }
 
+// Delete soft-deletes a customer; the repository enforces both the
+// organisation scoping and the no-open-invoices rule.
+func (s *CustomerService) Delete(
+	ctx context.Context,
+	organisationID uuid.UUID,
+	customerID uuid.UUID,
+) error {
+	return s.repository.SoftDelete(ctx, organisationID, customerID)
+}
+
 // nilIfEmpty converts a blank/whitespace-only string into a nil pointer so
 // optional fields are stored as SQL NULL rather than empty strings.
 func nilIfEmpty(value string) *string {

@@ -140,6 +140,17 @@ func (f *fakeInvoiceRepository) MarkSentWithSnapshot(ctx context.Context, organi
 	return nil
 }
 
+// MarkCancelled mirrors MarkSentWithSnapshot: same organisation check,
+// and every field copied from the already-cancelled inv together.
+func (f *fakeInvoiceRepository) MarkCancelled(ctx context.Context, organisationID, invoiceID uuid.UUID, inv *Invoice) error {
+	existing, ok := f.invoices[invoiceID]
+	if !ok || existing.OrganisationID != organisationID {
+		return ErrInvoiceNotFound
+	}
+	f.invoices[invoiceID] = *inv
+	return nil
+}
+
 // List is a simple in-memory re-implementation of the same filter/sort/
 // paginate contract PostgresInvoiceRepository.List implements in SQL,
 // including the effective-overdue boundary (status = sent AND due_date
@@ -371,6 +382,12 @@ func (f *fakeCustomerRepository) GetByID(ctx context.Context, organisationID, cu
 // have no reason to exercise.
 func (f *fakeCustomerRepository) List(ctx context.Context, organisationID uuid.UUID, filter customer.ListFilter) ([]*customer.Customer, int64, error) {
 	panic("fakeCustomerRepository.List should never be called by InvoiceService")
+}
+
+// SoftDelete is never called by InvoiceService — it exists solely to
+// satisfy customer.CustomerRepository.
+func (f *fakeCustomerRepository) SoftDelete(ctx context.Context, organisationID, customerID uuid.UUID) error {
+	panic("fakeCustomerRepository.SoftDelete should never be called by InvoiceService")
 }
 
 // fakeOrganisationRepository is a minimal in-memory admin.OrganisationRepository

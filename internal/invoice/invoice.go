@@ -16,14 +16,13 @@ import (
 // typo in a literal would silently produce wrong behaviour instead of a
 // compile error.
 //
-// InvoiceStatusOverdue and InvoiceStatusCancelled are Milestone 5's
-// reserved-but-unused values: nothing in this milestone ever persists
-// either. Overdue is derived at read time by EffectiveStatus, never
-// written to the database — a later milestone may add a background
-// worker that starts persisting it (see EffectiveStatus's own comment for
-// how that stays compatible). Cancelled has no feature behind it at all
-// yet; it exists only so a future milestone doesn't need to touch this
-// const block to add one.
+// InvoiceStatusOverdue is never persisted: it is derived at read time by
+// EffectiveStatus — a later milestone may add a background worker that
+// starts persisting it (see EffectiveStatus's own comment for how that
+// stays compatible). InvoiceStatusCancelled is persisted by Cancel, the
+// one way an invoice leaves the active lifecycle: invoices are never
+// deleted, so a mistaken or abandoned invoice is cancelled instead and
+// stays in the system as part of the organisation's record.
 const (
 	InvoiceStatusDraft     = "draft"
 	InvoiceStatusSent      = "sent"
@@ -45,6 +44,17 @@ var ErrInvoiceAlreadySent = errors.New("invoice has already been sent")
 // outstanding by lifecycle rule, not merely by arithmetic coincidence;
 // see CanAcceptPayment).
 var ErrInvoiceCannotAcceptPayment = errors.New("invoice cannot accept payment in its current status")
+
+// ErrInvoiceAlreadyCancelled is returned by Cancel (and by Send) for an
+// invoice that is already Cancelled.
+var ErrInvoiceAlreadyCancelled = errors.New("invoice has already been cancelled")
+
+// ErrInvoiceCannotBeCancelled is returned by Cancel for an invoice that
+// money has already been received against — a Paid invoice, or a Sent
+// one with any payment recorded. Cancelling either would leave recorded
+// payments attached to an invoice that no longer asks for them; that
+// needs a refund/credit note, not a status change.
+var ErrInvoiceCannotBeCancelled = errors.New("invoice has payments recorded against it and cannot be cancelled")
 
 // Notes is a pointer because that column is nullable in the invoices
 // table; every other NOT NULL field is a plain value. DeletedAt and
@@ -116,6 +126,18 @@ type Invoice struct {
 
 	Currency *string
 
+	// CancelledAt is set exactly once, by Cancel, at the same moment
+	// Status becomes InvoiceStatusCancelled — nil for every other status.
+	CancelledAt *time.Time
+
+	// CustomerDisplayName is read-only display data, never written: the
+	// snapshotted customer company name/name for an issued invoice, or
+	// the customer record's current one for a Draft (or an invoice sent
+	// before snapshots existed). It deliberately still resolves for a
+	// soft-deleted customer, so historical invoices keep showing who they
+	// were for. Populated by GetByID and List only.
+	CustomerDisplayName string
+
 	// RenderedTemplateSnapshot (Phase 4 of custom invoice layouts) is the
 	// JSON-encoded TemplateSnapshot captured by MarkSent, alongside the
 	// party snapshot above — nil for a Draft invoice, and nil for any
@@ -161,12 +183,29 @@ func (i *Invoice) MarkSent(sentAt time.Time, snapshot InvoicePartySnapshot, temp
 		return ErrInvoiceAlreadySent
 	}
 
-	if err := snapshot.Validate(); err != nil {
+	if err := i.applySnapshots(snapshot, templateSnapshot); err != nil {
 		return err
 	}
 
 	i.Status = InvoiceStatusSent
 	i.SentAt = &sentAt
+
+	return nil
+}
+
+// applySnapshots validates snapshot and copies it, together with the
+// marshalled templateSnapshot, onto the invoice — the shared step of
+// MarkSent and of Cancel for a Draft. It changes nothing on a validation
+// failure.
+func (i *Invoice) applySnapshots(snapshot InvoicePartySnapshot, templateSnapshot TemplateSnapshot) error {
+	if err := snapshot.Validate(); err != nil {
+		return err
+	}
+
+	marshaledTemplateSnapshot, err := json.Marshal(templateSnapshot)
+	if err != nil {
+		return fmt.Errorf("marshal template snapshot: %w", err)
+	}
 
 	sellerName := snapshot.SellerName
 	i.SellerName = &sellerName
@@ -195,11 +234,51 @@ func (i *Invoice) MarkSent(sentAt time.Time, snapshot InvoicePartySnapshot, temp
 	currency := snapshot.Currency
 	i.Currency = &currency
 
-	marshaledTemplateSnapshot, err := json.Marshal(templateSnapshot)
-	if err != nil {
-		return fmt.Errorf("marshal template snapshot: %w", err)
-	}
 	i.RenderedTemplateSnapshot = marshaledTemplateSnapshot
+
+	return nil
+}
+
+// CheckCancellable reports whether the invoice may be cancelled, given
+// the total already paid against it: Draft, or Sent (including
+// effectively Overdue) with nothing paid. Anything paid — fully or in
+// part — is ErrInvoiceCannotBeCancelled.
+func (i *Invoice) CheckCancellable(amountPaid int64) error {
+	switch i.Status {
+	case InvoiceStatusCancelled:
+		return ErrInvoiceAlreadyCancelled
+	case InvoiceStatusDraft, InvoiceStatusSent:
+		if amountPaid > 0 {
+			return ErrInvoiceCannotBeCancelled
+		}
+		return nil
+	default:
+		return ErrInvoiceCannotBeCancelled
+	}
+}
+
+// Cancel applies the -> Cancelled transition to the in-memory Invoice
+// after re-checking CheckCancellable. A Draft has no snapshot yet, so
+// cancelling one captures snapshot/templateSnapshot exactly as MarkSent
+// would: every Cancelled invoice is then a self-contained historical
+// record, read from its own snapshot (currency, PDF, customer name) like
+// any other non-Draft invoice — which is also what lets its customer be
+// deleted later without breaking it. For an already-Sent invoice the
+// snapshot it captured when sent is kept, and both arguments are
+// ignored. SentAt is never set here: a cancelled Draft was never sent.
+func (i *Invoice) Cancel(cancelledAt time.Time, amountPaid int64, snapshot InvoicePartySnapshot, templateSnapshot TemplateSnapshot) error {
+	if err := i.CheckCancellable(amountPaid); err != nil {
+		return err
+	}
+
+	if i.Status == InvoiceStatusDraft {
+		if err := i.applySnapshots(snapshot, templateSnapshot); err != nil {
+			return err
+		}
+	}
+
+	i.Status = InvoiceStatusCancelled
+	i.CancelledAt = &cancelledAt
 
 	return nil
 }
@@ -215,6 +294,16 @@ func (i *Invoice) MarkSent(sentAt time.Time, snapshot InvoicePartySnapshot, temp
 // not by switching to EffectiveStatus.
 func (i *Invoice) CanAcceptPayment() bool {
 	return i.Status == InvoiceStatusSent
+}
+
+// AmountOutstanding is what is still owed on the invoice given amountPaid:
+// Total - amountPaid, except that a Cancelled invoice owes nothing.
+func (i *Invoice) AmountOutstanding(amountPaid int64) int64 {
+	if i.Status == InvoiceStatusCancelled {
+		return 0
+	}
+
+	return i.Total - amountPaid
 }
 
 // EffectiveStatus derives the status an API response should show, from

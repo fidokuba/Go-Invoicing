@@ -313,6 +313,10 @@ func (a *App) Handler() http.Handler {
 	// role, same policy as every other customer route.
 	register("GET", apiV1Prefix+"/customers", authMiddleware.RequireAuth(customerHandler.List))
 	register("GET", apiV1Prefix+"/customers/{id}", authMiddleware.RequireAuth(customerHandler.GetByID))
+	// DELETE /customers/{id}: soft delete, Admin/Manager only — refused
+	// while the customer still has open invoices.
+	register("DELETE", apiV1Prefix+"/customers/{id}",
+		authMiddleware.RequireAuth(admin.RequireRole(admin.UserRoleAdmin, admin.UserRoleManager)(customerHandler.Delete)))
 
 	// Billing address (Milestone 7 Part 1): available to every authenticated
 	// role, same policy as every other customer/invoice business-data route
@@ -376,6 +380,11 @@ func (a *App) Handler() http.Handler {
 	// operation only — no PDF, no email — available to every authenticated
 	// role, same as every other invoice/payment route.
 	register("POST", apiV1Prefix+"/invoices/{id}/send", authMiddleware.RequireAuth(invoiceHandler.Send))
+	// POST /invoices/{id}/cancel: invoices are never deleted, only
+	// cancelled — Admin/Manager only, unlike the rest of the invoice
+	// routes, since it permanently takes an invoice out of the lifecycle.
+	register("POST", apiV1Prefix+"/invoices/{id}/cancel",
+		authMiddleware.RequireAuth(admin.RequireRole(admin.UserRoleAdmin, admin.UserRoleManager)(invoiceHandler.Cancel)))
 	register("POST", apiV1Prefix+"/invoices/{id}/payments", authMiddleware.RequireAuth(invoiceHandler.CreatePayment))
 	register("GET", apiV1Prefix+"/invoices/{id}/payments", authMiddleware.RequireAuth(invoiceHandler.GetPayments))
 	// GET /invoices/{id}/pdf (Milestone 7 Part 3): synchronous PDF

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { canRecordPayment, canSendInvoice, isFinancialContentImmutable } from "./invoiceLifecycle";
+import { canCancelInvoice, canRecordPayment, canSendInvoice, isFinancialContentImmutable } from "./invoiceLifecycle";
 import type { InvoiceStatus } from "@/components/invoice/InvoiceStatusBadge";
 
-const ALL_STATUSES: InvoiceStatus[] = ["draft", "sent", "overdue", "paid"];
+const ALL_STATUSES: InvoiceStatus[] = ["draft", "sent", "overdue", "paid", "cancelled"];
 
 describe("canSendInvoice", () => {
   it("is only true for draft", () => {
@@ -30,5 +30,23 @@ describe("isFinancialContentImmutable", () => {
     expect(isFinancialContentImmutable("sent")).toBe(true);
     expect(isFinancialContentImmutable("overdue")).toBe(true);
     expect(isFinancialContentImmutable("paid")).toBe(true);
+  });
+});
+
+describe("canCancelInvoice", () => {
+  it("is true for unpaid draft, sent and overdue invoices", () => {
+    expect(canCancelInvoice("draft", 0)).toBe(true);
+    expect(canCancelInvoice("sent", 0)).toBe(true);
+    expect(canCancelInvoice("overdue", 0)).toBe(true);
+  });
+
+  it("is false once anything has been paid", () => {
+    expect(canCancelInvoice("sent", 1)).toBe(false);
+    expect(canCancelInvoice("overdue", 500)).toBe(false);
+  });
+
+  it("is false for paid and already-cancelled invoices", () => {
+    expect(canCancelInvoice("paid", 10000)).toBe(false);
+    expect(canCancelInvoice("cancelled", 0)).toBe(false);
   });
 });

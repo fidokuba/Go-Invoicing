@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { useParams } from "react-router-dom";
-import { Send } from "lucide-react";
-import { useInvoice, useInvoicePayments, useSendInvoice } from "@/api/queries/invoices";
-import { useCustomer } from "@/api/queries/customers";
+import { Ban, Send } from "lucide-react";
+import { useCancelInvoice, useInvoice, useInvoicePayments, useSendInvoice } from "@/api/queries/invoices";
 import { friendlyMessage } from "@/api/errors";
-import { canRecordPayment, canSendInvoice } from "@/lib/invoiceLifecycle";
+import { canCancelInvoice, canRecordPayment, canSendInvoice } from "@/lib/invoiceLifecycle";
+import { hasRole, useAuth } from "@/lib/useAuth";
 import { formatMoney } from "@/lib/money";
 import { formatDateOnly, formatTimestamp } from "@/lib/date";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -48,6 +48,48 @@ function SendInvoiceControl({ invoiceId }: { invoiceId: string }) {
             onClick={() => sendInvoice.mutate(undefined, { onSuccess: () => setConfirmOpen(false) })}
           >
             {sendInvoice.isPending ? "Sending…" : "Send invoice"}
+          </Button>
+        </div>
+      </Dialog>
+    </>
+  );
+}
+
+function CancelInvoiceControl({ invoiceId, isDraft }: { invoiceId: string; isDraft: boolean }) {
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const cancelInvoice = useCancelInvoice(invoiceId);
+
+  return (
+    <>
+      <Button size="sm" variant="secondary" onClick={() => setConfirmOpen(true)}>
+        <Ban className="h-4 w-4" aria-hidden="true" />
+        Cancel invoice
+      </Button>
+      <Dialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title="Cancel this invoice?"
+        description={
+          isDraft
+            ? "The invoice will be marked Cancelled and can no longer be sent. It stays in your records — invoices are never deleted. This can't be undone."
+            : "The invoice will be marked Cancelled and can no longer be paid. It stays in your records — invoices are never deleted. If you've already given it to your customer, let them know it's been cancelled. This can't be undone."
+        }
+      >
+        {cancelInvoice.isError && (
+          <div className="mb-4">
+            <Alert>{friendlyMessage(cancelInvoice.error)}</Alert>
+          </div>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={() => setConfirmOpen(false)}>
+            Keep invoice
+          </Button>
+          <Button
+            variant="danger"
+            disabled={cancelInvoice.isPending}
+            onClick={() => cancelInvoice.mutate(undefined, { onSuccess: () => setConfirmOpen(false) })}
+          >
+            {cancelInvoice.isPending ? "Cancelling…" : "Cancel invoice"}
           </Button>
         </div>
       </Dialog>
@@ -122,13 +164,14 @@ function InvoiceDetailContent({
   setPaymentDialogOpen: (open: boolean) => void;
 }) {
   const status = invoice.status as InvoiceStatus;
-  const customerQuery = useCustomer(invoice.customerId);
+  const { user } = useAuth();
+  const showCancel = canCancelInvoice(status, invoice.amountPaid) && hasRole(user, "admin", "manager");
 
   return (
     <div>
       <PageHeader
         title={invoice.invoiceNumber}
-        description={customerQuery.data ? customerQuery.data.companyName || customerQuery.data.name : undefined}
+        description={invoice.customerName || undefined}
         actions={
           <div className="flex items-center gap-2">
             <InvoiceStatusBadge status={status} />
@@ -138,9 +181,18 @@ function InvoiceDetailContent({
                 Record payment
               </Button>
             )}
+            {showCancel && <CancelInvoiceControl invoiceId={invoice.id} isDraft={status === "draft"} />}
           </div>
         }
       />
+
+      {status === "cancelled" && (
+        <div className="mb-6">
+          <Alert tone="info" title="This invoice has been cancelled.">
+            It is kept for your records but can no longer be sent or paid, and nothing is outstanding on it.
+          </Alert>
+        </div>
+      )}
 
       {status === "paid" && (
         <div className="mb-6">
@@ -245,6 +297,12 @@ function InvoiceDetailContent({
                   <div className="flex justify-between gap-4">
                     <dt className="text-slate-500">Sent</dt>
                     <dd>{formatTimestamp(invoice.sentAt)}</dd>
+                  </div>
+                )}
+                {invoice.cancelledAt && (
+                  <div className="flex justify-between gap-4">
+                    <dt className="text-slate-500">Cancelled</dt>
+                    <dd>{formatTimestamp(invoice.cancelledAt)}</dd>
                   </div>
                 )}
               </dl>

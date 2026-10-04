@@ -547,6 +547,8 @@ func statusLabelFor(effectiveStatus string) string {
 		return "OVERDUE"
 	case InvoiceStatusPaid:
 		return "PAID"
+	case InvoiceStatusCancelled:
+		return "CANCELLED"
 	default:
 		return ""
 	}

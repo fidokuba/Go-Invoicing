@@ -114,5 +114,9 @@ type InvoiceRepository interface {
 	// the same request always agrees with that request's own
 	// EffectiveStatus calculations, and tests can pass a fixed value for
 	// deterministic boundary testing.
+	// MarkCancelled persists an Invoice.Cancel transition: status,
+	// cancelled_at and the snapshot columns, together in one write.
+	MarkCancelled(ctx context.Context, organisationID uuid.UUID, invoiceID uuid.UUID, inv *Invoice) error
+
 	List(ctx context.Context, organisationID uuid.UUID, filter InvoiceListFilter, today time.Time) ([]*Invoice, int64, error)
 }
