@@ -71,6 +71,8 @@ var roleGatedOperations = map[string]bool{
 	"POST /api/v1/test-data":              true,
 	"DELETE /api/v1/customers/{}":         true,
 	"POST /api/v1/invoices/{}/cancel":     true,
+	"PUT /api/v1/organisation/logo":       true,
+	"DELETE /api/v1/organisation/logo":    true,
 }
 
 // TestStatusCodeContract_403OnlyOnRoleGatedOperations is section 26: 403

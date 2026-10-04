@@ -5,9 +5,9 @@ import "time"
 // OrganisationResponse is the shape returned to clients. It's a separate
 // type from Organisation so the API's wire format can stay stable even if
 // the internal/database model changes, and so internal-only fields (like
-// DeletedAt) never leak out. Logo is deliberately not exposed —
-// Milestone 7 Part 1 doesn't touch logo upload/storage, and the column is
-// never set by anything today.
+// DeletedAt) never leak out. LogoID identifies the current logo (fetch
+// the image itself from GET /organisation/logo); a new ID on every upload
+// makes it a natural cache key for clients.
 type OrganisationResponse struct {
 	ID         string  `json:"id"`
 	Name       string  `json:"name"`
@@ -20,6 +20,7 @@ type OrganisationResponse struct {
 	PostalCode *string `json:"postalCode,omitempty"`
 	Country    *string `json:"country,omitempty"`
 	TaxID      *string `json:"taxId,omitempty"`
+	LogoID     *string `json:"logoId,omitempty"`
 	// VATRegistered is always present. TaxID is still returned while it's
 	// false (so the settings form can restore it when re-ticked); clients
 	// are expected not to display it in that state.
@@ -43,6 +44,7 @@ func toOrganisationResponse(organisation *Organisation) OrganisationResponse {
 		PostalCode:    organisation.PostalCode,
 		Country:       organisation.Country,
 		TaxID:         organisation.TaxID,
+		LogoID:        optionalUUIDString(organisation.LogoID),
 		VATRegistered: organisation.VATRegistered,
 		CreatedAt:     organisation.CreatedAt.UTC().Format(time.RFC3339),
 		UpdatedAt:     organisation.UpdatedAt.UTC().Format(time.RFC3339),
@@ -58,9 +60,8 @@ func toOrganisationResponse(organisation *Organisation) OrganisationResponse {
 // generic/reflection-based patch — each field is applied explicitly in
 // OrganisationService.Update.
 //
-// Logo is deliberately not present here — branding/logo upload is a
-// future feature (Milestone 7 Part 1 explicitly excludes it), and the
-// column is left untouched by this endpoint entirely.
+// The logo is not part of this request — it has its own endpoints
+// (PUT/DELETE /organisation/logo), and this one never touches it.
 type UpdateOrganisationRequest struct {
 	Name       *string `json:"name"`
 	Email      *string `json:"email"`

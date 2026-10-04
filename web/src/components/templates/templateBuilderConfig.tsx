@@ -71,6 +71,9 @@ export interface InvoiceRenderData {
   amountPaid: string;
   amountOutstanding: string;
   notes: string;
+  /** The seller's logo as an image URL (a data: URL from the API in the
+   * renderer, a blob: URL in the builder), or "" for none. */
+  logo: string;
 }
 
 /** Representative sample data for the builder's own live preview — never
@@ -120,6 +123,7 @@ export const sampleInvoiceData: InvoiceRenderData = {
   amountPaid: "",
   amountOutstanding: "",
   notes: "",
+  logo: "",
 };
 
 const InvoiceDataContext = createContext<InvoiceRenderData>(sampleInvoiceData);
@@ -133,6 +137,66 @@ export function InvoiceDataProvider({ value, children }: { value: InvoiceRenderD
 
 function useInvoiceData(): InvoiceRenderData {
   return useContext(InvoiceDataContext);
+}
+
+const TemplateDesignModeContext = createContext(false);
+
+/** Marks a subtree as the layout builder's editing canvas, where empty
+ * blocks show a placeholder to design around (e.g. the Logo block's
+ * dashed box when there's no logo yet). Outside it — the renderer's real
+ * PDF render — an empty block stays invisible instead. */
+export function TemplateDesignModeProvider({ children }: { children: ReactNode }) {
+  return <TemplateDesignModeContext.Provider value={true}>{children}</TemplateDesignModeContext.Provider>;
+}
+
+const justifyForTextAlign: Record<string, CSSProperties["justifyContent"]> = {
+  left: "flex-start",
+  center: "center",
+  right: "flex-end",
+};
+
+// LogoRender shows the organisation's actual logo, scaled to fit the
+// block (its alignment follows the block's text alignment). With no logo
+// uploaded it shows the dashed placeholder while designing, and nothing
+// (but still the block's space) in a real PDF.
+function LogoRender(props: unknown) {
+  const p = props as SizeAndTextProps & { text: string };
+  const { logo } = useInvoiceData();
+  const designMode = useContext(TemplateDesignModeContext);
+
+  if (logo) {
+    return (
+      <div style={{ ...blockStyle(p), overflow: "hidden", display: "flex", alignItems: "center", justifyContent: justifyForTextAlign[p.textAlign] }}>
+        <img
+          src={logo}
+          alt=""
+          style={{ maxWidth: "100%", maxHeight: p.height > 0 ? "100%" : undefined, objectFit: "contain", display: "block" }}
+        />
+      </div>
+    );
+  }
+
+  if (!designMode) {
+    return <div style={blockStyle(p)} />;
+  }
+
+  return (
+    <div
+      style={{
+        ...blockStyle(p),
+        border: "2px dashed #94a3b8",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        color: "#64748b",
+        textAlign: "center",
+      }}
+    >
+      <div>{p.text}</div>
+      <div style={{ fontSize: 11, marginTop: 4 }}>Upload a logo in Settings → Organisation</div>
+    </div>
+  );
 }
 
 interface SizeAndTextProps {
@@ -401,23 +465,7 @@ export const templateBuilderConfig: Config = {
         ...sizeAndTextFields,
       },
       defaultProps: { text: "[Your Logo]", ...sizeAndTextDefaults, height: 60 },
-      render: (props) => {
-        const p = props as unknown as SizeAndTextProps & { text: string };
-        return (
-          <div
-            style={{
-              ...blockStyle(p),
-              border: "2px dashed #94a3b8",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "#64748b",
-            }}
-          >
-            {p.text}
-          </div>
-        );
-      },
+      render: LogoRender,
     },
     // SellerBlock/CustomerBlock/InvoiceTitle/LineItemsTable/TotalsBlock/
     // Notes below take no content fields of their own (beyond style) —

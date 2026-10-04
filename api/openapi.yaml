@@ -458,6 +458,106 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
+  /api/v1/organisation/logo:
+    get:
+      tags: [Organisation]
+      summary: Get the organisation's logo
+      description: >-
+        Any authenticated role. Returns the current logo image itself. It is
+        shown by the Logo block of custom invoice layouts; an issued invoice
+        keeps showing the logo it was issued with, even after the logo is
+        replaced or removed.
+      responses:
+        "200":
+          description: The logo image.
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/gif:
+              schema:
+                type: string
+                format: binary
+            image/webp:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: The organisation has no logo.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorBody"
+              example:
+                error: { code: logo_not_found, message: organisation has no logo }
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    put:
+      tags: [Organisation]
+      summary: Upload or replace the organisation's logo
+      description: >-
+        Admin only. Stores a new logo and makes it current. Invoices already
+        issued keep the logo they were issued with.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UploadOrganisationLogoRequest"
+      responses:
+        "200":
+          description: The stored logo.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganisationLogoResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: The organisation no longer exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorBody"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+    delete:
+      tags: [Organisation]
+      summary: Remove the organisation's logo
+      description: >-
+        Admin only. New invoices and layouts stop showing a logo; issued
+        invoices keep theirs. Succeeds whether or not there was a logo.
+      responses:
+        "204":
+          description: The organisation now has no logo.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: The organisation no longer exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorBody"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
   /api/v1/organisation/settings:
     get:
       tags: [Organisation]
@@ -2235,6 +2335,13 @@ components:
             vatRegistered is false (so it can be restored on re-registering),
             but clients should not display it, and it never appears on
             invoices, in that state.
+        logoId:
+          type: string
+          format: uuid
+          description: >-
+            The organisation's current logo, absent when it has none. Fetch
+            the image from GET /api/v1/organisation/logo; the ID changes on
+            every upload.
         vatRegistered:
           type: boolean
           description: >-
@@ -2245,6 +2352,36 @@ components:
           type: string
           format: date-time
         updatedAt:
+          type: string
+          format: date-time
+
+    UploadOrganisationLogoRequest:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: string
+          description: >-
+            The image file, base64-encoded (a full data: URL is also
+            accepted). PNG, JPEG, GIF or WebP, at most 1 MB once decoded;
+            the type is detected from the bytes themselves.
+
+    OrganisationLogoResponse:
+      type: object
+      additionalProperties: false
+      required: [id, contentType, size, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        contentType:
+          type: string
+          enum: [image/png, image/jpeg, image/gif, image/webp]
+        size:
+          type: integer
+          description: Size of the stored image in bytes.
+        createdAt:
           type: string
           format: date-time
 

@@ -271,6 +271,14 @@ func (a *App) Handler() http.Handler {
 	// remove or ignore here. This replaces the earlier protected
 	// GET /organisations/{id}.
 	register("GET", apiV1Prefix+"/organisation", authMiddleware.RequireAuth(organisationHandler.GetCurrent))
+	// Organisation logo: readable by every role (it's shown on invoices and
+	// in the layout builder); replacing or removing it is Admin only, the
+	// same gate as PATCH /organisation.
+	register("GET", apiV1Prefix+"/organisation/logo", authMiddleware.RequireAuth(organisationHandler.GetLogo))
+	register("PUT", apiV1Prefix+"/organisation/logo",
+		authMiddleware.RequireAuth(admin.RequireRole(admin.UserRoleAdmin)(organisationHandler.UploadLogo)))
+	register("DELETE", apiV1Prefix+"/organisation/logo",
+		authMiddleware.RequireAuth(admin.RequireRole(admin.UserRoleAdmin)(organisationHandler.DeleteLogo)))
 
 	// PATCH /organisation (Milestone 7 Part 1) is admin-only: organisation
 	// identity/legal/business details affect every invoice the tenant

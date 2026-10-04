@@ -27,6 +27,7 @@ var jsonBodiedOperations = map[string]bool{
 	"POST /api/v1/invoices/{}/payments":        true,
 	"POST /api/v1/templates":                   true,
 	"PATCH /api/v1/templates/{}":               true,
+	"PUT /api/v1/organisation/logo":            true,
 }
 
 // TestRequestBodyContract_OnlyJSONBodiedOperationsDeclareARequestBody is

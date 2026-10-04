@@ -24,7 +24,14 @@ and a real PostgreSQL database — nothing about the backend is mocked
    (`APP_ENV` defaults to `development`, which uses the same local
    database URL `compose.yaml` provisions — see `internal/config`.)
 
-3. In another terminal, run the suite:
+3. Start the renderer service (custom-layout PDFs — `logo.spec.ts`
+   needs it; the API finds it at its default `http://localhost:3000`):
+
+   ```bash
+   cd renderer && npm ci && npm start
+   ```
+
+4. In another terminal, run the suite:
 
    ```bash
    cd web
@@ -56,6 +63,12 @@ exactly one payment on the now-Paid invoice.
 Each run generates a fresh organisation/email so it can be re-run
 against a persistent (non-ephemeral) database without unique-constraint
 collisions.
+
+`cancel-and-delete.spec.ts` covers cancelling an invoice and deleting
+its customer (refused while the invoice is open, allowed once it is
+cancelled; a plain user gets 403 from both). `logo.spec.ts` covers
+uploading an organisation logo, seeing it in the layout builder's Logo
+block, finding it embedded in a custom-layout PDF, and removing it.
 
 ## CI
 

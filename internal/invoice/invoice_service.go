@@ -787,6 +787,7 @@ func (s *InvoiceService) buildPartySnapshot(
 		SellerPostalCode: organisation.PostalCode,
 		SellerCountry:    organisation.Country,
 		SellerTaxID:      sellerVATNumber(organisation),
+		SellerLogoID:     organisation.LogoID,
 
 		CustomerName:        cust.Name,
 		CustomerCompanyName: cust.CompanyName,

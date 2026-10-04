@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -18,6 +19,7 @@ import (
 type fakeOrganisationRepository struct {
 	mu            sync.Mutex
 	organisations map[uuid.UUID]Organisation
+	logos         map[uuid.UUID]OrganisationLogo
 
 	createErr error
 }
@@ -25,7 +27,48 @@ type fakeOrganisationRepository struct {
 func newFakeOrganisationRepository() *fakeOrganisationRepository {
 	return &fakeOrganisationRepository{
 		organisations: make(map[uuid.UUID]Organisation),
+		logos:         make(map[uuid.UUID]OrganisationLogo),
 	}
+}
+
+// SaveLogo/ClearLogo/GetLogo mirror the Postgres implementation's
+// contract: tenant-scoped, ErrOrganisationNotFound for no such
+// organisation, and logo rows kept after being replaced or cleared.
+func (f *fakeOrganisationRepository) SaveLogo(ctx context.Context, organisationID uuid.UUID, logo *OrganisationLogo) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	organisation, ok := f.organisations[organisationID]
+	if !ok {
+		return ErrOrganisationNotFound
+	}
+	logo.CreatedAt = time.Now().UTC()
+	f.logos[logo.ID] = *logo
+	id := logo.ID
+	organisation.LogoID = &id
+	f.organisations[organisationID] = organisation
+	return nil
+}
+
+func (f *fakeOrganisationRepository) ClearLogo(ctx context.Context, organisationID uuid.UUID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	organisation, ok := f.organisations[organisationID]
+	if !ok {
+		return ErrOrganisationNotFound
+	}
+	organisation.LogoID = nil
+	f.organisations[organisationID] = organisation
+	return nil
+}
+
+func (f *fakeOrganisationRepository) GetLogo(ctx context.Context, organisationID, logoID uuid.UUID) (*OrganisationLogo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	logo, ok := f.logos[logoID]
+	if !ok || logo.OrganisationID != organisationID {
+		return nil, ErrOrganisationLogoNotFound
+	}
+	return &logo, nil
 }
 
 // WithTx ignores its tx argument and returns the same fake — it has no

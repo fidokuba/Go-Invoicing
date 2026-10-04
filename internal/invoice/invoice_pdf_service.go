@@ -160,7 +160,19 @@ func (s *InvoicePDFService) Generate(
 	if isSystem {
 		pdfBytes, err = s.renderer.Render(data)
 	} else {
-		pdfBytes, err = s.htmlRenderer.Render(ctx, data.ToRenderRequest(definition))
+		request := data.ToRenderRequest(definition)
+
+		// The logo is only ever shown by a custom layout's Logo block, so
+		// its bytes are loaded only on this path — never for Classic.
+		if data.Seller.LogoID != nil {
+			logo, logoErr := s.organisationRepository.GetLogo(ctx, organisationID, *data.Seller.LogoID)
+			if logoErr != nil {
+				return nil, "", fmt.Errorf("%w: load logo: %v", ErrInvoicePDFDataUnavailable, logoErr)
+			}
+			request.Logo = logo.DataURL()
+		}
+
+		pdfBytes, err = s.htmlRenderer.Render(ctx, request)
 	}
 	if err != nil {
 		return nil, "", fmt.Errorf("render invoice pdf: %w", err)
@@ -321,6 +333,7 @@ func (s *InvoicePDFService) buildLivePartyData(
 		Phone:        trimmedOrEmpty(organisation.Phone),
 		Website:      trimmedOrEmpty(organisation.Website),
 		TaxID:        trimmedOrEmpty(sellerVATNumber(organisation)),
+		LogoID:       organisation.LogoID,
 	}
 
 	var addressLines []string
@@ -384,6 +397,7 @@ func (s *InvoicePDFService) buildSnapshotPartyData(inv *Invoice) (InvoicePDFSell
 		Phone:        trimmedOrEmpty(inv.SellerPhone),
 		Website:      trimmedOrEmpty(inv.SellerWebsite),
 		TaxID:        trimmedOrEmpty(inv.SellerTaxID),
+		LogoID:       inv.SellerLogoID,
 	}
 
 	cust := InvoicePDFCustomer{

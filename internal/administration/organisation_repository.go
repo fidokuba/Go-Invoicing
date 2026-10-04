@@ -31,8 +31,8 @@ type OrganisationRepository interface {
 
 	// Update persists organisation's mutable party-detail fields (Name,
 	// Email, Phone, Website, Address, City, State, PostalCode, Country,
-	// TaxID, VATRegistered) — Logo is left untouched (Milestone 7 Part 1 doesn't manage
-	// it), and ID/CreatedAt/DeletedAt are never written by this method.
+	// TaxID, VATRegistered) — LogoID is left untouched (SaveLogo/ClearLogo
+	// own it), and ID/CreatedAt/DeletedAt are never written by this method.
 	//
 	// organisationID is taken explicitly, separately from organisation.ID
 	// (even though OrganisationService.Update always passes the same
@@ -48,4 +48,17 @@ type OrganisationRepository interface {
 	// statement; otherwise ErrOrganisationVersionConflict. On success
 	// organisation.Version holds the new, incremented version.
 	Update(ctx context.Context, organisationID uuid.UUID, organisation *Organisation, expectedVersion int64) error
+
+	// SaveLogo stores logo as a new, immutable row and makes it the
+	// organisation's current logo, atomically.
+	SaveLogo(ctx context.Context, organisationID uuid.UUID, logo *OrganisationLogo) error
+
+	// ClearLogo removes the organisation's current logo (it keeps the
+	// row: issued invoices may still reference it).
+	ClearLogo(ctx context.Context, organisationID uuid.UUID) error
+
+	// GetLogo fetches one logo row by ID, scoped to organisationID —
+	// any of the organisation's logos, current or not, since an issued
+	// invoice keeps showing the logo it was issued with.
+	GetLogo(ctx context.Context, organisationID uuid.UUID, logoID uuid.UUID) (*OrganisationLogo, error)
 }

@@ -1,5 +1,7 @@
 package invoice
 
+import "github.com/google/uuid"
+
 // InvoicePDFData is the dedicated rendering value InvoicePDFRenderer
 // consumes. It contains only presentation-ready data: every amount,
 // quantity, VAT rate and date is already formatted as a display string
@@ -70,6 +72,12 @@ type InvoicePDFSeller struct {
 	Phone        string
 	Website      string
 	TaxID        string
+
+	// LogoID is the logo this invoice shows (the organisation's current
+	// one for a Draft, the snapshotted one once issued), or nil. Only the
+	// ID travels this far: the image itself is loaded only when a custom
+	// layout actually needs it (see InvoicePDFService.Generate).
+	LogoID *uuid.UUID
 }
 
 // InvoicePDFCustomer is the "Bill To" party block. DisplayName is

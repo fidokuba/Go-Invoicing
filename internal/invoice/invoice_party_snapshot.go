@@ -3,6 +3,8 @@ package invoice
 import (
 	"errors"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 // Snapshot content-validation errors (Milestone 7 Part 2). These guard
@@ -48,6 +50,11 @@ type InvoicePartySnapshot struct {
 	SellerPostalCode *string
 	SellerCountry    *string
 	SellerTaxID      *string
+
+	// SellerLogoID is the organisation's logo at the moment of capture
+	// (nil for none) — the ID of an immutable admin.OrganisationLogo row,
+	// so replacing the logo later never changes an issued invoice.
+	SellerLogoID *uuid.UUID
 
 	CustomerName        string
 	CustomerCompanyName *string

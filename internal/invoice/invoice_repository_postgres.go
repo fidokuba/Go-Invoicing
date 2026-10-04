@@ -187,7 +187,7 @@ func (r *PostgresInvoiceRepository) GetByID(
 			vat_registered,
 			seller_name, seller_email, seller_phone, seller_website,
 			seller_address, seller_city, seller_state, seller_postal_code,
-			seller_country, seller_tax_id,
+			seller_country, seller_tax_id, seller_logo_id,
 			customer_name, customer_company_name, customer_email, customer_phone,
 			customer_tax_id, customer_address, customer_city, customer_state,
 			customer_postal_code, customer_country,
@@ -233,7 +233,7 @@ func (r *PostgresInvoiceRepository) GetByID(
 		&inv.VATRegistered,
 		&inv.SellerName, &inv.SellerEmail, &inv.SellerPhone, &inv.SellerWebsite,
 		&inv.SellerAddress, &inv.SellerCity, &inv.SellerState, &inv.SellerPostalCode,
-		&inv.SellerCountry, &inv.SellerTaxID,
+		&inv.SellerCountry, &inv.SellerTaxID, &inv.SellerLogoID,
 		&inv.CustomerName, &inv.CustomerCompanyName, &inv.CustomerEmail, &inv.CustomerPhone,
 		&inv.CustomerTaxID, &inv.CustomerAddress, &inv.CustomerCity, &inv.CustomerState,
 		&inv.CustomerPostalCode, &inv.CustomerCountry,
@@ -289,7 +289,7 @@ func (r *PostgresInvoiceRepository) GetForUpdate(
 			vat_registered,
 			seller_name, seller_email, seller_phone, seller_website,
 			seller_address, seller_city, seller_state, seller_postal_code,
-			seller_country, seller_tax_id,
+			seller_country, seller_tax_id, seller_logo_id,
 			customer_name, customer_company_name, customer_email, customer_phone,
 			customer_tax_id, customer_address, customer_city, customer_state,
 			customer_postal_code, customer_country,
@@ -330,7 +330,7 @@ func (r *PostgresInvoiceRepository) GetForUpdate(
 		&inv.VATRegistered,
 		&inv.SellerName, &inv.SellerEmail, &inv.SellerPhone, &inv.SellerWebsite,
 		&inv.SellerAddress, &inv.SellerCity, &inv.SellerState, &inv.SellerPostalCode,
-		&inv.SellerCountry, &inv.SellerTaxID,
+		&inv.SellerCountry, &inv.SellerTaxID, &inv.SellerLogoID,
 		&inv.CustomerName, &inv.CustomerCompanyName, &inv.CustomerEmail, &inv.CustomerPhone,
 		&inv.CustomerTaxID, &inv.CustomerAddress, &inv.CustomerCity, &inv.CustomerState,
 		&inv.CustomerPostalCode, &inv.CustomerCountry,
@@ -430,6 +430,7 @@ func (r *PostgresInvoiceRepository) MarkSentWithSnapshot(
 			customer_postal_code = $21, customer_country = $22,
 			currency = $23,
 			rendered_template_snapshot = $24,
+			seller_logo_id = $27,
 			updated_at = NOW()
 		WHERE id = $25
 			AND organisation_id = $26
@@ -451,6 +452,7 @@ func (r *PostgresInvoiceRepository) MarkSentWithSnapshot(
 		[]byte(inv.RenderedTemplateSnapshot),
 		invoiceID,
 		organisationID,
+		inv.SellerLogoID,
 	)
 	if err != nil {
 		return fmt.Errorf("mark invoice sent with snapshot: %w", err)
@@ -488,6 +490,7 @@ func (r *PostgresInvoiceRepository) MarkCancelled(
 			customer_postal_code = $21, customer_country = $22,
 			currency = $23,
 			rendered_template_snapshot = $24,
+			seller_logo_id = $27,
 			updated_at = NOW()
 		WHERE id = $25
 			AND organisation_id = $26
@@ -514,6 +517,7 @@ func (r *PostgresInvoiceRepository) MarkCancelled(
 		renderedTemplateSnapshot,
 		invoiceID,
 		organisationID,
+		inv.SellerLogoID,
 	)
 	if err != nil {
 		return fmt.Errorf("mark invoice cancelled: %w", err)

@@ -1,6 +1,7 @@
+import { useEffect, useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { client } from "../client";
-import { unwrapVersioned, type Versioned } from "../unwrap";
+import { unwrap, unwrapVersioned, type Versioned } from "../unwrap";
 import type { components } from "../schema";
 
 type Organisation = components["schemas"]["OrganisationResponse"];
@@ -66,5 +67,48 @@ export function useUpdateInvoiceSettings() {
     onSuccess: (versioned) => {
       queryClient.setQueryData(settingsKey, versioned);
     },
+  });
+}
+
+/** The largest logo the API accepts (admin.MaxOrganisationLogoBytes). */
+export const MAX_LOGO_BYTES = 1024 * 1024;
+
+/** The organisation's current logo as an object URL ("" while loading or
+ * when there is none). Keyed by logoId, which changes on every upload, so
+ * a new logo is fetched exactly once and an unchanged one never again.
+ * The image endpoint needs the bearer token, hence a fetched blob rather
+ * than a plain <img src> pointing at the API. */
+export function useOrganisationLogoUrl(): string {
+  const organisation = useOrganisation();
+  const logoId = organisation.data?.logoId;
+  const logo = useQuery({
+    queryKey: ["organisation", "logo", logoId],
+    queryFn: () => unwrap(client.GET("/api/v1/organisation/logo", { parseAs: "blob" })),
+    enabled: Boolean(logoId),
+    staleTime: Infinity,
+  });
+  const blob = logoId ? logo.data : undefined;
+  const url = useMemo(() => (blob ? URL.createObjectURL(blob) : ""), [blob]);
+  useEffect(() => () => {
+    if (url) URL.revokeObjectURL(url);
+  }, [url]);
+  return url;
+}
+
+/** Uploads (or replaces) the logo — Admin only. Takes the file as a data:
+ * URL (what FileReader.readAsDataURL produces), which the API accepts as-is. */
+export function useUploadOrganisationLogo() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (dataUrl: string) => unwrap(client.PUT("/api/v1/organisation/logo", { body: { data: dataUrl } })),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: organisationKey, exact: true }),
+  });
+}
+
+export function useDeleteOrganisationLogo() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => unwrap(client.DELETE("/api/v1/organisation/logo", {})),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: organisationKey, exact: true }),
   });
 }

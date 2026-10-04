@@ -68,7 +68,6 @@ func (r *PostgresOrganisationRepository) Create(
 			email,
 			phone,
 			website,
-			logo,
 			address,
 			city,
 			state,
@@ -78,7 +77,7 @@ func (r *PostgresOrganisationRepository) Create(
 			vat_registered
 		)
 		VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
 		)
 		RETURNING created_at, updated_at, version
 	`
@@ -91,7 +90,6 @@ func (r *PostgresOrganisationRepository) Create(
 		organisation.Email,
 		organisation.Phone,
 		organisation.Website,
-		organisation.Logo,
 		organisation.Address,
 		organisation.City,
 		organisation.State,
@@ -120,7 +118,7 @@ func (r *PostgresOrganisationRepository) GetByID(
 			email,
 			phone,
 			website,
-			logo,
+			logo_id,
 			address,
 			city,
 			state,
@@ -148,7 +146,7 @@ func (r *PostgresOrganisationRepository) GetByID(
 		&organisation.Email,
 		&organisation.Phone,
 		&organisation.Website,
-		&organisation.Logo,
+		&organisation.LogoID,
 		&organisation.Address,
 		&organisation.City,
 		&organisation.State,
@@ -179,8 +177,8 @@ func (r *PostgresOrganisationRepository) GetByID(
 // writers holding the same version can never both succeed — whichever
 // commits second matches no row. A successful write increments version
 // by one; the new version and updated_at are scanned back onto
-// organisation. Logo is intentionally absent from the SET list, so it is
-// never touched here — see OrganisationRepository.Update's own comment.
+// organisation. logo_id is intentionally absent from the SET list, so it
+// is never touched here — see OrganisationRepository.Update's own comment.
 //
 // Zero rows means either a stale expectedVersion
 // (ErrOrganisationVersionConflict) or no such live organisation
@@ -257,4 +255,88 @@ func (r *PostgresOrganisationRepository) missingOrStale(ctx context.Context, org
 	}
 
 	return ErrOrganisationNotFound
+}
+
+// SaveLogo inserts logo and points the organisation at it in one
+// statement (a data-modifying CTE), so a failure can't leave a stored
+// logo that isn't current, or an organisation pointing at nothing. The
+// INSERT only runs for a live organisation in this tenant; otherwise
+// nothing is written and ErrOrganisationNotFound is returned.
+func (r *PostgresOrganisationRepository) SaveLogo(
+	ctx context.Context,
+	organisationID uuid.UUID,
+	logo *OrganisationLogo,
+) error {
+	const query = `
+		WITH inserted AS (
+			INSERT INTO organisation_logos (id, organisation_id, content_type, data)
+			SELECT $1, id, $3, $4
+			FROM organisations
+			WHERE id = $2 AND deleted_at IS NULL
+			RETURNING id, created_at
+		),
+		updated AS (
+			UPDATE organisations
+			SET logo_id = (SELECT id FROM inserted)
+			WHERE id = $2 AND EXISTS (SELECT 1 FROM inserted)
+		)
+		SELECT created_at FROM inserted
+	`
+
+	err := r.db.QueryRow(ctx, query, logo.ID, organisationID, logo.ContentType, logo.Data).Scan(&logo.CreatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return errLogoOrganisationMissing("save logo")
+		}
+		return fmt.Errorf("save logo: %w", err)
+	}
+
+	return nil
+}
+
+// ClearLogo unsets the organisation's current logo. The logo row itself
+// is kept (see migration 000023).
+func (r *PostgresOrganisationRepository) ClearLogo(ctx context.Context, organisationID uuid.UUID) error {
+	const query = `
+		UPDATE organisations
+		SET logo_id = NULL
+		WHERE id = $1 AND deleted_at IS NULL
+	`
+
+	tag, err := r.db.Exec(ctx, query, organisationID)
+	if err != nil {
+		return fmt.Errorf("clear logo: %w", err)
+	}
+
+	if tag.RowsAffected() == 0 {
+		return errLogoOrganisationMissing("clear logo")
+	}
+
+	return nil
+}
+
+// GetLogo fetches one of the organisation's logos by ID.
+func (r *PostgresOrganisationRepository) GetLogo(
+	ctx context.Context,
+	organisationID uuid.UUID,
+	logoID uuid.UUID,
+) (*OrganisationLogo, error) {
+	const query = `
+		SELECT id, organisation_id, content_type, data, created_at
+		FROM organisation_logos
+		WHERE organisation_id = $1 AND id = $2
+	`
+
+	var logo OrganisationLogo
+	err := r.db.QueryRow(ctx, query, organisationID, logoID).Scan(
+		&logo.ID, &logo.OrganisationID, &logo.ContentType, &logo.Data, &logo.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrOrganisationLogoNotFound
+		}
+		return nil, fmt.Errorf("get logo: %w", err)
+	}
+
+	return &logo, nil
 }

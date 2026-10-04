@@ -112,6 +112,7 @@ type Invoice struct {
 	SellerPostalCode *string
 	SellerCountry    *string
 	SellerTaxID      *string
+	SellerLogoID     *uuid.UUID
 
 	CustomerName        *string
 	CustomerCompanyName *string
@@ -218,6 +219,7 @@ func (i *Invoice) applySnapshots(snapshot InvoicePartySnapshot, templateSnapshot
 	i.SellerPostalCode = snapshot.SellerPostalCode
 	i.SellerCountry = snapshot.SellerCountry
 	i.SellerTaxID = snapshot.SellerTaxID
+	i.SellerLogoID = snapshot.SellerLogoID
 
 	customerName := snapshot.CustomerName
 	i.CustomerName = &customerName

@@ -408,9 +408,9 @@ jobs:
           (cd dist && sha256sum -c checksums.txt)
           rm -rf dist
 
-  # e2e: Milestone 12 section 39 — the one high-value Playwright workflow
-  # (web/e2e/workflow.spec.ts), run against a real Go API, real
-  # PostgreSQL, and the real, built, embedded frontend. Nothing about the
+  # e2e: Milestone 12 section 39 — the Playwright specs under web/e2e/,
+  # run against a real Go API, real PostgreSQL, the real renderer
+  # service, and the real, built, embedded frontend. Nothing about the
   # backend is mocked.
   e2e:
     name: End-to-end (Playwright)
@@ -475,6 +475,23 @@ jobs:
             sleep 1
           done
           curl -sf http://localhost:8080/health >/dev/null || { echo "server never became ready"; exit 1; }
+
+      # The renderer service draws custom-layout PDFs (e2e/logo.spec.ts
+      # needs one); the API reaches it at its default RENDERER_URL,
+      # http://localhost:3000.
+      - name: Install renderer dependencies (frozen)
+        working-directory: renderer
+        run: npm ci
+
+      - name: Start the renderer service
+        working-directory: renderer
+        run: |
+          npm start > /tmp/renderer.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:3000/health >/dev/null; then break; fi
+            sleep 1
+          done
+          curl -sf http://localhost:3000/health >/dev/null || { cat /tmp/renderer.log; echo "renderer never became ready"; exit 1; }
 
       - name: Run the Playwright workflow
         working-directory: web

@@ -133,6 +133,11 @@ type RenderRequest struct {
 
 	Notes string `json:"notes"`
 
+	// Logo is the seller's logo as a data: URL ("" for none) — embedded
+	// directly, since the renderer service never calls back into the API.
+	// Shown by a custom layout's Logo block.
+	Logo string `json:"logo"`
+
 	// Definition is the saved template's own document (a Puck-shaped
 	// JSON blob — see template.Template.Definition) — nil/omitted for
 	// the system Classic template, which the renderer service still

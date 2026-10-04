@@ -1,6 +1,13 @@
-import { useState, type FormEvent } from "react";
-import { Sparkles } from "lucide-react";
-import { useVersionedOrganisation, useUpdateOrganisation } from "@/api/queries/organisation";
+import { useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import { ImagePlus, Sparkles, Trash2 } from "lucide-react";
+import {
+  MAX_LOGO_BYTES,
+  useDeleteOrganisationLogo,
+  useOrganisationLogoUrl,
+  useUploadOrganisationLogo,
+  useUpdateOrganisation,
+  useVersionedOrganisation,
+} from "@/api/queries/organisation";
 import { useCreateTestData } from "@/api/queries/testData";
 import { useAuth, hasRole } from "@/lib/useAuth";
 import { friendlyMessage, isStaleWriteError } from "@/api/errors";
@@ -141,6 +148,105 @@ function OrganisationForm({
   );
 }
 
+const LOGO_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+function readAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+// LogoCard uploads/replaces/removes the organisation's logo, shown by the
+// Logo block of custom invoice layouts. Everyone sees the current logo;
+// only an admin (the server's own gate too) can change it. Type and size
+// are checked here only to fail fast — the server re-checks both.
+function LogoCard({ canEdit }: { canEdit: boolean }) {
+  const logoUrl = useOrganisationLogoUrl();
+  const upload = useUploadOrganisationLogo();
+  const remove = useDeleteOrganisationLogo();
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [fileError, setFileError] = useState<string | null>(null);
+
+  async function handleFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setFileError(null);
+    remove.reset();
+    if (!LOGO_TYPES.includes(file.type)) {
+      setFileError("Choose a PNG, JPEG, GIF or WebP image.");
+      return;
+    }
+    if (file.size > MAX_LOGO_BYTES) {
+      setFileError("The logo must be 1 MB or smaller.");
+      return;
+    }
+    upload.mutate(await readAsDataUrl(file));
+  }
+
+  const error = fileError ?? (upload.isError ? friendlyMessage(upload.error) : remove.isError ? friendlyMessage(remove.error) : null);
+
+  return (
+    <Card>
+      <CardContent>
+        <h2 className="text-sm font-medium text-slate-900">Logo</h2>
+        <p className="mt-1 text-sm text-slate-500">
+          Shown wherever a custom invoice layout includes a Logo block. Invoices you've already sent keep the logo
+          they were sent with.
+        </p>
+        {error && (
+          <div className="mt-4">
+            <Alert>{error}</Alert>
+          </div>
+        )}
+        <div className="mt-4 flex flex-wrap items-center gap-4">
+          <div className="flex h-24 w-48 items-center justify-center rounded-md border border-slate-200 bg-slate-50 p-2">
+            {logoUrl ? (
+              <img src={logoUrl} alt="Organisation logo" className="max-h-full max-w-full object-contain" />
+            ) : (
+              <span className="text-sm text-slate-400">No logo</span>
+            )}
+          </div>
+          {canEdit && (
+            <div className="flex gap-2">
+              <input
+                ref={fileInput}
+                type="file"
+                accept={LOGO_TYPES.join(",")}
+                className="hidden"
+                aria-label="Logo file"
+                onChange={handleFile}
+              />
+              <Button variant="secondary" disabled={upload.isPending} onClick={() => fileInput.current?.click()}>
+                <ImagePlus className="h-4 w-4" aria-hidden="true" />
+                {upload.isPending ? "Uploading…" : logoUrl ? "Replace logo" : "Upload logo"}
+              </Button>
+              {logoUrl && (
+                <Button
+                  variant="ghost"
+                  disabled={remove.isPending}
+                  onClick={() => {
+                    setFileError(null);
+                    upload.reset();
+                    remove.mutate();
+                  }}
+                >
+                  <Trash2 className="h-4 w-4" aria-hidden="true" />
+                  Remove
+                </Button>
+              )}
+            </div>
+          )}
+        </div>
+        {canEdit && <p className="mt-3 text-xs text-slate-500">PNG, JPEG, GIF or WebP, up to 1 MB.</p>}
+      </CardContent>
+    </Card>
+  );
+}
+
 // TestDataCard is the "Create Test Data" action: admin only (same gate
 // the server itself enforces — see internal/sampledata.Handler.Create
 // — so this is belt-and-braces, not the only thing standing between a
@@ -210,6 +316,7 @@ export function OrganisationSettingsPage() {
           />
         )}
       </QueryBoundary>
+      <LogoCard canEdit={canEdit} />
       {canEdit && <TestDataCard />}
     </div>
   );

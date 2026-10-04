@@ -1,9 +1,16 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import { Puck, type Data } from "@puckeditor/core";
 import "@puckeditor/core/puck.css";
-import { templateBuilderConfig, emptyTemplateDefinition } from "@/components/templates/templateBuilderConfig";
+import {
+  InvoiceDataProvider,
+  TemplateDesignModeProvider,
+  emptyTemplateDefinition,
+  sampleInvoiceData,
+  templateBuilderConfig,
+} from "@/components/templates/templateBuilderConfig";
+import { useOrganisationLogoUrl } from "@/api/queries/organisation";
 import {
   useVersionedTemplate,
   useCreateTemplate,
@@ -26,6 +33,20 @@ import { QueryBoundary } from "@/components/ui/query-boundary";
 // deliberately doesn't fight that with a duplicate custom "Save" button;
 // the helper text next to the name field says so, so "Publish" reads as
 // "Save" rather than something more permanent-sounding.
+
+
+// BuilderCanvas gives the editor's blocks the sample invoice plus this
+// organisation's real logo, and marks them as design mode (so an empty
+// Logo block shows its placeholder) — the builder's counterpart to the
+// real data the renderer service provides for a PDF.
+function BuilderCanvas({ children }: { children: ReactNode }) {
+  const logo = useOrganisationLogoUrl();
+  return (
+    <InvoiceDataProvider value={{ ...sampleInvoiceData, logo }}>
+      <TemplateDesignModeProvider>{children}</TemplateDesignModeProvider>
+    </InvoiceDataProvider>
+  );
+}
 
 function BuilderHeader({
   onBack,
@@ -66,16 +87,18 @@ function NewTemplateBuilder() {
         )}
       </BuilderHeader>
       <div className="min-h-0 flex-1">
-        <Puck
-          config={templateBuilderConfig}
-          data={emptyTemplateDefinition}
-          onPublish={(data) => {
-            createTemplate.mutate(
-              { name: name.trim() || "Untitled Template", definition: data as unknown as Record<string, never> },
-              { onSuccess: (created) => navigate(`/settings/invoice-templates/${created.id}`, { replace: true }) },
-            );
-          }}
-        />
+        <BuilderCanvas>
+          <Puck
+            config={templateBuilderConfig}
+            data={emptyTemplateDefinition}
+            onPublish={(data) => {
+              createTemplate.mutate(
+                { name: name.trim() || "Untitled Template", definition: data as unknown as Record<string, never> },
+                { onSuccess: (created) => navigate(`/settings/invoice-templates/${created.id}`, { replace: true }) },
+              );
+            }}
+          />
+        </BuilderCanvas>
       </div>
     </div>
   );
@@ -173,17 +196,19 @@ function ExistingTemplateBuilder({ id }: { id: string }) {
                   </Button>
                 </div>
               ) : (
-                <Puck
-                  key={`${template.id}-${template.updatedAt}`}
-                  config={templateBuilderConfig}
-                  data={template.definition as unknown as Data}
-                  onPublish={(data) => {
-                    updateTemplate.mutate({
-                      body: { name: currentName.trim() || template.name, definition: data as unknown as Record<string, never> },
-                      etag: versioned.etag,
-                    });
-                  }}
-                />
+                <BuilderCanvas>
+                  <Puck
+                    key={`${template.id}-${template.updatedAt}`}
+                    config={templateBuilderConfig}
+                    data={template.definition as unknown as Data}
+                    onPublish={(data) => {
+                      updateTemplate.mutate({
+                        body: { name: currentName.trim() || template.name, definition: data as unknown as Record<string, never> },
+                        etag: versioned.etag,
+                      });
+                    }}
+                  />
+                </BuilderCanvas>
               )}
             </div>
             <Dialog

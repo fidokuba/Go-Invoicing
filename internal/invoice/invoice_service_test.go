@@ -397,12 +397,16 @@ func (f *fakeCustomerRepository) SoftDelete(ctx context.Context, organisationID,
 // TestInvoiceService_Send_RepeatedSendNeverReloadsSnapshotSources).
 type fakeOrganisationRepository struct {
 	organisations map[uuid.UUID]admin.Organisation
+	logos         map[uuid.UUID]admin.OrganisationLogo
 
 	getByIDCallCount int
 }
 
 func newFakeOrganisationRepository() *fakeOrganisationRepository {
-	return &fakeOrganisationRepository{organisations: make(map[uuid.UUID]admin.Organisation)}
+	return &fakeOrganisationRepository{
+		organisations: make(map[uuid.UUID]admin.Organisation),
+		logos:         make(map[uuid.UUID]admin.OrganisationLogo),
+	}
 }
 
 func (f *fakeOrganisationRepository) WithTx(tx pgx.Tx) admin.OrganisationRepository {
@@ -421,6 +425,25 @@ func (f *fakeOrganisationRepository) GetByID(ctx context.Context, id uuid.UUID) 
 		return nil, admin.ErrOrganisationNotFound
 	}
 	return &o, nil
+}
+
+// SaveLogo/ClearLogo are never called by the invoice package — they
+// exist solely to satisfy admin.OrganisationRepository. GetLogo serves
+// logos registered directly in logos (see the PDF logo tests).
+func (f *fakeOrganisationRepository) SaveLogo(ctx context.Context, organisationID uuid.UUID, logo *admin.OrganisationLogo) error {
+	panic("fakeOrganisationRepository.SaveLogo should never be called by the invoice package")
+}
+
+func (f *fakeOrganisationRepository) ClearLogo(ctx context.Context, organisationID uuid.UUID) error {
+	panic("fakeOrganisationRepository.ClearLogo should never be called by the invoice package")
+}
+
+func (f *fakeOrganisationRepository) GetLogo(ctx context.Context, organisationID, logoID uuid.UUID) (*admin.OrganisationLogo, error) {
+	logo, ok := f.logos[logoID]
+	if !ok || logo.OrganisationID != organisationID {
+		return nil, admin.ErrOrganisationLogoNotFound
+	}
+	return &logo, nil
 }
 
 func (f *fakeOrganisationRepository) Update(ctx context.Context, organisationID uuid.UUID, o *admin.Organisation, expectedVersion int64) error {

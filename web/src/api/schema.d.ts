@@ -478,6 +478,142 @@ export interface paths {
         };
         trace?: never;
     };
+    "/api/v1/organisation/logo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get the organisation's logo
+         * @description Any authenticated role. Returns the current logo image itself. It is shown by the Logo block of custom invoice layouts; an issued invoice keeps showing the logo it was issued with, even after the logo is replaced or removed.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The logo image. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "image/png": string;
+                        "image/jpeg": string;
+                        "image/gif": string;
+                        "image/webp": string;
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                /** @description The organisation has no logo. */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        /**
+                         * @example {
+                         *       "error": {
+                         *         "code": "logo_not_found",
+                         *         "message": "organisation has no logo"
+                         *       }
+                         *     }
+                         */
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                500: components["responses"]["InternalServerError"];
+            };
+        };
+        /**
+         * Upload or replace the organisation's logo
+         * @description Admin only. Stores a new logo and makes it current. Invoices already issued keep the logo they were issued with.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["UploadOrganisationLogoRequest"];
+                };
+            };
+            responses: {
+                /** @description The stored logo. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["OrganisationLogoResponse"];
+                    };
+                };
+                400: components["responses"]["BadRequest"];
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+                /** @description The organisation no longer exists. */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                413: components["responses"]["PayloadTooLarge"];
+                415: components["responses"]["UnsupportedMediaType"];
+                500: components["responses"]["InternalServerError"];
+            };
+        };
+        post?: never;
+        /**
+         * Remove the organisation's logo
+         * @description Admin only. New invoices and layouts stop showing a logo; issued invoices keep theirs. Succeeds whether or not there was a logo.
+         */
+        delete: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The organisation now has no logo. */
+                204: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+                /** @description The organisation no longer exists. */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                500: components["responses"]["InternalServerError"];
+            };
+        };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/organisation/settings": {
         parameters: {
             query?: never;
@@ -2438,12 +2574,31 @@ export interface components {
             country?: string;
             /** @description The organisation's VAT registration number. Still returned while vatRegistered is false (so it can be restored on re-registering), but clients should not display it, and it never appears on invoices, in that state. */
             taxId?: string;
+            /**
+             * Format: uuid
+             * @description The organisation's current logo, absent when it has none. Fetch the image from GET /api/v1/organisation/logo; the ID changes on every upload.
+             */
+            logoId?: string;
             /** @description Whether the organisation is registered for UK VAT. False for every new organisation. When false, invoices may not charge VAT, and no VAT figures or VAT number are shown on them. */
             vatRegistered: boolean;
             /** Format: date-time */
             createdAt: string;
             /** Format: date-time */
             updatedAt: string;
+        };
+        UploadOrganisationLogoRequest: {
+            /** @description The image file, base64-encoded (a full data: URL is also accepted). PNG, JPEG, GIF or WebP, at most 1 MB once decoded; the type is detected from the bytes themselves. */
+            data: string;
+        };
+        OrganisationLogoResponse: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            contentType: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+            /** @description Size of the stored image in bytes. */
+            size: number;
+            /** Format: date-time */
+            createdAt: string;
         };
         /** @description Every field is optional — omit a field to leave it unchanged. All string fields except name may be cleared by supplying an empty string. The resulting organisation must have a non-blank taxId whenever vatRegistered is true (400 otherwise); its format is not checked. */
         UpdateOrganisationRequest: {
