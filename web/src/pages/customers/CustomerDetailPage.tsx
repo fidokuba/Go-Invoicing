@@ -1,10 +1,10 @@
 import { useState, type FormEvent } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
-import { Trash2 } from "lucide-react";
+import { Link, useParams } from "react-router-dom";
+import { Archive, ArchiveRestore, CirclePause, CirclePlay } from "lucide-react";
 import {
   useCustomer,
   useCustomerBillingAddress,
-  useDeleteCustomer,
+  useSetCustomerStatus,
   useUpsertCustomerBillingAddress,
 } from "@/api/queries/customers";
 import { useInvoices } from "@/api/queries/invoices";
@@ -135,44 +135,89 @@ function BillingAddressCard({ customerId }: { customerId: string }) {
   );
 }
 
-function DeleteCustomerControl({ customerId, customerName }: { customerId: string; customerName: string }) {
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const deleteCustomer = useDeleteCustomer(customerId);
-  const navigate = useNavigate();
+// CustomerStatusControls replaces deleting a customer: Admins and
+// Managers mark a customer Inactive (paused; can't be put on new
+// invoices) or Archive them (retired; also hidden from the customer
+// list's default view), and can undo either. Archiving is refused by the
+// API while the customer has open invoices, so it asks first and shows
+// that refusal in the dialog.
+function CustomerStatusControls({
+  customerId,
+  customerName,
+  status,
+}: {
+  customerId: string;
+  customerName: string;
+  status: CustomerStatus;
+}) {
+  const [archiveOpen, setArchiveOpen] = useState(false);
+  const setStatus = useSetCustomerStatus(customerId);
+  const archiving = setStatus.isPending && setStatus.variables === "archived";
 
   return (
     <>
-      <Button size="sm" variant="secondary" onClick={() => setConfirmOpen(true)}>
-        <Trash2 className="h-4 w-4" aria-hidden="true" />
-        Delete customer
-      </Button>
+      {status === "active" && (
+        <Button size="sm" variant="secondary" disabled={setStatus.isPending} onClick={() => setStatus.mutate("inactive")}>
+          <CirclePause className="h-4 w-4" aria-hidden="true" />
+          Mark inactive
+        </Button>
+      )}
+      {status === "inactive" && (
+        <Button size="sm" variant="secondary" disabled={setStatus.isPending} onClick={() => setStatus.mutate("active")}>
+          <CirclePlay className="h-4 w-4" aria-hidden="true" />
+          Mark active
+        </Button>
+      )}
+      {status === "archived" ? (
+        <Button size="sm" variant="secondary" disabled={setStatus.isPending} onClick={() => setStatus.mutate("active")}>
+          <ArchiveRestore className="h-4 w-4" aria-hidden="true" />
+          Restore
+        </Button>
+      ) : (
+        <Button
+          size="sm"
+          variant="secondary"
+          disabled={setStatus.isPending}
+          onClick={() => {
+            setStatus.reset();
+            setArchiveOpen(true);
+          }}
+        >
+          <Archive className="h-4 w-4" aria-hidden="true" />
+          Archive
+        </Button>
+      )}
       <Dialog
-        open={confirmOpen}
+        open={archiveOpen}
         onOpenChange={(open) => {
-          setConfirmOpen(open);
-          if (!open) deleteCustomer.reset();
+          setArchiveOpen(open);
+          if (!open) setStatus.reset();
         }}
-        title={`Delete ${customerName}?`}
-        description="They'll be removed from your customer list and can't be put on new invoices. Their existing paid and cancelled invoices are kept and still show their name. A customer with open invoices (Draft, Sent or Overdue) can't be deleted until those are paid or cancelled."
+        title={`Archive ${customerName}?`}
+        description="Archived customers are hidden from your customer list (use the Archived filter to find them) and can't be put on new invoices. Nothing is deleted: their invoices are kept, and you can restore them at any time. A customer with open invoices (Draft, Sent or Overdue) can't be archived until those are paid or cancelled."
       >
-        {deleteCustomer.isError && (
+        {setStatus.isError && (
           <div className="mb-4">
-            <Alert>{friendlyMessage(deleteCustomer.error)}</Alert>
+            <Alert>{friendlyMessage(setStatus.error)}</Alert>
           </div>
         )}
         <div className="flex justify-end gap-2">
-          <Button variant="secondary" onClick={() => setConfirmOpen(false)}>
+          <Button variant="secondary" onClick={() => setArchiveOpen(false)}>
             Keep customer
           </Button>
           <Button
-            variant="danger"
-            disabled={deleteCustomer.isPending}
-            onClick={() => deleteCustomer.mutate(undefined, { onSuccess: () => navigate("/customers") })}
+            disabled={setStatus.isPending}
+            onClick={() => setStatus.mutate("archived", { onSuccess: () => setArchiveOpen(false) })}
           >
-            {deleteCustomer.isPending ? "Deleting…" : "Delete customer"}
+            {archiving ? "Archiving…" : "Archive customer"}
           </Button>
         </div>
       </Dialog>
+      {setStatus.isError && !archiveOpen && (
+        <span role="alert" className="text-sm text-red-600">
+          {friendlyMessage(setStatus.error)}
+        </span>
+      )}
     </>
   );
 }
@@ -240,11 +285,23 @@ export function CustomerDetailPage() {
               <div className="flex items-center gap-2">
                 <CustomerStatusBadge status={customer.status as CustomerStatus} />
                 {hasRole(user, "admin", "manager") && (
-                  <DeleteCustomerControl customerId={customer.id} customerName={customer.name} />
+                  <CustomerStatusControls
+                    customerId={customer.id}
+                    customerName={customer.name}
+                    status={customer.status as CustomerStatus}
+                  />
                 )}
               </div>
             }
           />
+
+          {customer.status !== "active" && (
+            <div className="mb-6">
+              <Alert tone="info" title={customer.status === "archived" ? "This customer is archived." : "This customer is inactive."}>
+                They can't be put on new invoices until they're marked active again. Their existing invoices are unaffected.
+              </Alert>
+            </div>
+          )}
 
           <div className="grid gap-6 lg:grid-cols-2">
             <Card>

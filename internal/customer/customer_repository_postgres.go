@@ -16,11 +16,10 @@ import (
 // within the given organisation, as opposed to a genuine database failure.
 var ErrCustomerNotFound = errors.New("customer not found")
 
-// ErrCustomerHasOpenInvoices is returned by SoftDelete while the customer
-// still has a Draft or unpaid Sent invoice: those still depend on the
-// customer (a Draft reads their live details), so they must be settled
-// or cancelled first.
-var ErrCustomerHasOpenInvoices = errors.New("customer has open invoices; cancel or settle them before deleting this customer")
+// ErrCustomerHasOpenInvoices is returned by UpdateStatus when archiving a
+// customer who still has a Draft or unpaid Sent invoice: those must be
+// settled or cancelled before the customer is archived.
+var ErrCustomerHasOpenInvoices = errors.New("customer has open invoices; cancel or settle them before archiving this customer")
 
 // dbExecutor is the minimal query surface this repository needs. Both
 // *pgxpool.Pool and pgx.Tx implement it, which is what lets these methods
@@ -195,9 +194,9 @@ func (r *PostgresCustomerRepository) List(
 	conditions := []string{"organisation_id = $1", "deleted_at IS NULL"}
 	args := []any{organisationID}
 
-	if filter.Status != "" {
-		args = append(args, filter.Status)
-		conditions = append(conditions, fmt.Sprintf("status = $%d", len(args)))
+	if len(filter.Statuses) > 0 {
+		args = append(args, filter.Statuses)
+		conditions = append(conditions, fmt.Sprintf("status = ANY($%d)", len(args)))
 	}
 
 	if filter.Search != "" {
@@ -276,54 +275,60 @@ func (r *PostgresCustomerRepository) List(
 	return customers, total, nil
 }
 
-// SoftDelete sets deleted_at, after which the customer disappears from
-// GetByID and List (and so can't be put on a new invoice) but the row
-// itself stays: invoices reference it, and issued/cancelled invoices
-// carry their own snapshot of the customer's details anyway.
-//
-// The open-invoice check lives in the same UPDATE statement (NOT EXISTS)
-// rather than a separate read first, so there's no window between
-// checking and deleting. This package can't import internal/invoice
-// (that one imports this one), hence the literal status values — they
-// mirror invoice.InvoiceStatusDraft/Sent/Overdue.
+// UpdateStatus sets status and returns the updated row. Archiving
+// carries the open-invoice check in the same UPDATE (NOT EXISTS) rather
+// than a separate read first, so there's no window between checking and
+// archiving. This package can't import internal/invoice (that one
+// imports this one), hence the literal invoice status values — they
+// mirror invoice.InvoiceStatusDraft/Sent/Overdue. Moving to Active or
+// Inactive is never blocked.
 //
 // When nothing was updated, a second lookup tells "no such customer"
-// (ErrCustomerNotFound, also for an already-deleted one) apart from
-// "blocked by open invoices" (ErrCustomerHasOpenInvoices).
-func (r *PostgresCustomerRepository) SoftDelete(
+// (ErrCustomerNotFound) apart from "archive blocked by open invoices"
+// (ErrCustomerHasOpenInvoices).
+func (r *PostgresCustomerRepository) UpdateStatus(
 	ctx context.Context,
 	organisationID uuid.UUID,
 	customerID uuid.UUID,
-) error {
+	status string,
+) (*Customer, error) {
 	const query = `
 		UPDATE customers
-		SET deleted_at = NOW(),
+		SET status = $3,
 			updated_at = NOW()
 		WHERE organisation_id = $1
 			AND id = $2
 			AND deleted_at IS NULL
-			AND NOT EXISTS (
-				SELECT 1
-				FROM invoices
-				WHERE organisation_id = $1
-					AND customer_id = $2
-					AND deleted_at IS NULL
-					AND status IN ('draft', 'sent', 'overdue')
+			AND (
+				$3 <> 'archived'
+				OR NOT EXISTS (
+					SELECT 1
+					FROM invoices
+					WHERE organisation_id = $1
+						AND customer_id = $2
+						AND deleted_at IS NULL
+						AND status IN ('draft', 'sent', 'overdue')
+				)
 			)
+		RETURNING id, organisation_id, name, email, phone, company_name, tax_id,
+			status, created_at, updated_at, deleted_at
 	`
 
-	tag, err := r.db.Exec(ctx, query, organisationID, customerID)
-	if err != nil {
-		return fmt.Errorf("soft delete customer: %w", err)
+	var c Customer
+	err := r.db.QueryRow(ctx, query, organisationID, customerID, status).Scan(
+		&c.ID, &c.OrganisationID, &c.Name, &c.Email, &c.Phone, &c.CompanyName, &c.TaxID,
+		&c.Status, &c.CreatedAt, &c.UpdatedAt, &c.DeletedAt,
+	)
+	if err == nil {
+		return &c, nil
 	}
-
-	if tag.RowsAffected() > 0 {
-		return nil
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("update customer status: %w", err)
 	}
 
 	if _, err := r.GetByID(ctx, organisationID, customerID); err != nil {
-		return err
+		return nil, err
 	}
 
-	return ErrCustomerHasOpenInvoices
+	return nil, ErrCustomerHasOpenInvoices
 }

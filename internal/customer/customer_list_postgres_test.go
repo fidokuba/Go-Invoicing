@@ -141,7 +141,7 @@ func TestPostgresCustomerRepository_List_Search(t *testing.T) {
 	})
 
 	t.Run("search combined with status filter", func(t *testing.T) {
-		_, total, err := repository.List(ctx, orgA, ListFilter{Search: "acme", Status: CustomerStatusActive, Limit: 50})
+		_, total, err := repository.List(ctx, orgA, ListFilter{Search: "acme", Statuses: []string{CustomerStatusActive}, Limit: 50})
 		if err != nil {
 			t.Fatalf("list: %v", err)
 		}
@@ -172,7 +172,7 @@ func TestPostgresCustomerRepository_List_StatusFilter(t *testing.T) {
 	seedCustomer(t, db, repository, org, "Active Two", func(c *Customer) { c.Status = CustomerStatusActive })
 	seedCustomer(t, db, repository, org, "Inactive One", func(c *Customer) { c.Status = CustomerStatusInactive })
 
-	items, total, err := repository.List(ctx, org, ListFilter{Status: CustomerStatusInactive, Limit: 50})
+	items, total, err := repository.List(ctx, org, ListFilter{Statuses: []string{CustomerStatusInactive}, Limit: 50})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}

@@ -30,7 +30,7 @@ export function InvoiceNewPage() {
   const navigate = useNavigate();
   const settings = useInvoiceSettings();
   const organisation = useOrganisation();
-  const customers = useCustomers({ limit: 200, sort: "name", order: "asc", status: "active" });
+  const customers = useCustomers({ limit: 200, sort: "name", order: "asc", status: ["active"] });
   const products = useProducts({ limit: 200, sort: "name", order: "asc", isActive: true });
   const createInvoice = useCreateInvoice();
 

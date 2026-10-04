@@ -1,14 +1,16 @@
 import { test, expect, type APIRequestContext } from "@playwright/test";
 
 /**
- * Cancelling invoices and deleting customers, against the same real Go
+ * Cancelling invoices and archiving customers, against the same real Go
  * API + PostgreSQL stack as workflow.spec.ts (see e2e/README.md):
  *
- * customer with a draft invoice → deleting the customer is refused while
- * that invoice is open → the invoice is cancelled (kept, not deleted) →
- * the customer can now be deleted → the cancelled invoice still shows the
+ * customer with a draft invoice → archiving the customer is refused while
+ * that invoice is open (marking Inactive is not) → the invoice is
+ * cancelled (kept, not deleted) → the customer can now be archived, drops
+ * out of the customer list's default view, and is found again with the
+ * filter pane's Archived status → the cancelled invoice still shows the
  * customer's name, owes nothing, and still renders a PDF. Also proves a
- * plain "user" role is refused (403) by both new endpoints.
+ * plain "user" role is refused (403) by both status-changing endpoints.
  */
 
 const runId = Date.now();
@@ -24,7 +26,7 @@ async function login(request: APIRequestContext, baseURL: string, email: string)
   return ((await response.json()) as { token: string }).token;
 }
 
-test("cancel an invoice, then delete its customer", async ({ page, request, baseURL }) => {
+test("cancel an invoice, then archive its customer", async ({ page, request, baseURL }) => {
   // --- Register + sign in --------------------------------------------------
   await page.goto("/register");
   await page.getByLabel("Organisation name").fill(`Cancel Co ${runId}`);
@@ -67,13 +69,22 @@ test("cancel an invoice, then delete its customer", async ({ page, request, base
   // The customer name now comes back on the invoice itself.
   await expect(page.getByText(customerName)).toBeVisible();
 
-  // --- Deleting the customer is refused while the draft is open --------------
+  // --- Archiving is refused while the draft is open; Inactive is not --------
   await page.goto(customerUrl);
-  await page.getByRole("button", { name: "Delete customer" }).click();
-  const deleteDialog = page.getByRole("dialog");
-  await deleteDialog.getByRole("button", { name: "Delete customer" }).click();
-  await expect(deleteDialog.getByText(/customer has open invoices/i)).toBeVisible();
-  await deleteDialog.getByRole("button", { name: "Keep customer" }).click();
+  await page.getByRole("button", { name: "Archive" }).click();
+  const archiveDialog = page.getByRole("dialog");
+  await archiveDialog.getByRole("button", { name: "Archive customer" }).click();
+  await expect(archiveDialog.getByText(/customer has open invoices/i)).toBeVisible();
+  await archiveDialog.getByRole("button", { name: "Keep customer" }).click();
+
+  await page.getByRole("button", { name: "Mark inactive" }).click();
+  await expect(page.getByText("This customer is inactive.")).toBeVisible();
+  // An inactive customer is no longer offered for new invoices.
+  await page.goto("/invoices/new");
+  await expect(page.getByLabel("Customer").locator("option", { hasText: customerName })).toHaveCount(0);
+  await page.goto(customerUrl);
+  await page.getByRole("button", { name: "Mark active" }).click();
+  await expect(page.getByRole("button", { name: "Mark inactive" })).toBeVisible();
 
   // --- A plain "user" can do neither (403), even via the API directly ------
   const adminToken = await login(request, baseURL!, adminEmail);
@@ -87,10 +98,11 @@ test("cancel an invoice, then delete its customer", async ({ page, request, base
     headers: { Authorization: `Bearer ${userToken}` },
   });
   expect(userCancel.status()).toBe(403);
-  const userDelete = await request.delete(`${baseURL}/api/v1/customers/${customerId}`, {
+  const userArchive = await request.put(`${baseURL}/api/v1/customers/${customerId}/status`, {
     headers: { Authorization: `Bearer ${userToken}` },
+    data: { status: "archived" },
   });
-  expect(userDelete.status()).toBe(403);
+  expect(userArchive.status()).toBe(403);
 
   // --- Cancel the invoice ----------------------------------------------------
   await page.goto(invoiceUrl);
@@ -104,12 +116,24 @@ test("cancel an invoice, then delete its customer", async ({ page, request, base
   await expect(page.getByRole("button", { name: "Send invoice" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Record payment" })).toHaveCount(0);
 
-  // --- Now the customer can be deleted --------------------------------------
+  // --- Now the customer can be archived -------------------------------------
   await page.goto(customerUrl);
-  await page.getByRole("button", { name: "Delete customer" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Delete customer" }).click();
-  await expect(page).toHaveURL(/\/customers$/);
-  await expect(page.getByText(customerName)).toHaveCount(0);
+  await page.getByRole("button", { name: "Archive" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Archive customer" }).click();
+  await expect(page.getByText("This customer is archived.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Restore" })).toBeVisible();
+
+  // Hidden from the list's default (Active + Inactive) view; found again by
+  // name once Archived is ticked in the filter pane.
+  await page.goto("/customers");
+  const filters = page.getByRole("region", { name: "Customer filters" });
+  await filters.getByLabel("Name").fill(customerName);
+  await expect(page.getByText("No matching customers")).toBeVisible();
+  await filters.getByLabel("Archived", { exact: true }).check();
+  await expect(page.getByRole("row").filter({ hasText: customerName })).toHaveCount(1);
+  await filters.getByLabel("Active", { exact: true }).uncheck();
+  await filters.getByLabel("Inactive", { exact: true }).uncheck();
+  await expect(page.getByRole("row").filter({ hasText: customerName }).getByText("Archived")).toBeVisible();
 
   // --- The cancelled invoice survives, with its customer's name --------------
   await page.goto("/invoices");

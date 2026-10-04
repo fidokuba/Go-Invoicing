@@ -937,8 +937,8 @@ export interface paths {
                     sort?: "name" | "companyName" | "createdAt";
                     /** @description Case-insensitive substring match against name, companyName, or email. */
                     search?: string;
-                    /** @description Filter to exactly one status. */
-                    status?: "active" | "inactive" | "archived";
+                    /** @description Filter to one or more statuses — repeat the parameter (status=active&status=inactive); a comma-separated list is also accepted. A customer matching any of them is returned. Absent means every status. */
+                    status?: ("active" | "inactive" | "archived")[];
                 };
                 header?: never;
                 path?: never;
@@ -1062,11 +1062,25 @@ export interface paths {
         };
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/customers/{id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
         /**
-         * Delete a customer
-         * @description Admin or Manager only. A soft delete: the customer no longer appears in lists or lookups and can't be put on a new invoice, but their existing invoices are kept and still show the customer's name (from each invoice's own snapshot). Refused with 409 while the customer has any open invoice — Draft, Sent or Overdue — which must be settled or cancelled first.
+         * Change a customer's status
+         * @description Admin or Manager only. Customers are never deleted: set Inactive to stop using one for now, or Archived to retire them (hidden from the customer list's default view); either can be undone by setting Active again. Only Active customers can be put on new invoices. Archiving is refused with 409 while the customer has any open invoice — Draft, Sent or Overdue — which must be settled or cancelled first. Existing invoices are unaffected by any status.
          */
-        delete: {
+        put: {
             parameters: {
                 query?: never;
                 header?: never;
@@ -1075,19 +1089,25 @@ export interface paths {
                 };
                 cookie?: never;
             };
-            requestBody?: never;
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["UpdateCustomerStatusRequest"];
+                };
+            };
             responses: {
-                /** @description The customer was deleted. */
-                204: {
+                /** @description The updated customer. */
+                200: {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": components["schemas"]["CustomerResponse"];
+                    };
                 };
                 400: components["responses"]["BadRequest"];
                 401: components["responses"]["Unauthorized"];
                 403: components["responses"]["Forbidden"];
-                /** @description No such customer in the caller's organisation (including one already deleted). */
+                /** @description No such customer in the caller's organisation. */
                 404: {
                     headers: {
                         [name: string]: unknown;
@@ -1104,7 +1124,7 @@ export interface paths {
                         "application/json": components["schemas"]["ErrorBody"];
                     };
                 };
-                /** @description The customer still has open invoices. */
+                /** @description Archiving was refused because the customer still has open invoices. */
                 409: {
                     headers: {
                         [name: string]: unknown;
@@ -1114,16 +1134,20 @@ export interface paths {
                          * @example {
                          *       "error": {
                          *         "code": "customer_has_open_invoices",
-                         *         "message": "customer has open invoices; cancel or settle them before deleting this customer"
+                         *         "message": "customer has open invoices; cancel or settle them before archiving this customer"
                          *       }
                          *     }
                          */
                         "application/json": components["schemas"]["ErrorBody"];
                     };
                 };
+                413: components["responses"]["PayloadTooLarge"];
+                415: components["responses"]["UnsupportedMediaType"];
                 500: components["responses"]["InternalServerError"];
             };
         };
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -2585,6 +2609,10 @@ export interface components {
             createdAt: string;
             /** Format: date-time */
             updatedAt: string;
+        };
+        UpdateCustomerStatusRequest: {
+            /** @enum {string} */
+            status: "active" | "inactive" | "archived";
         };
         UploadOrganisationLogoRequest: {
             /** @description The image file, base64-encoded (a full data: URL is also accepted). PNG, JPEG, GIF or WebP, at most 1 MB once decoded; the type is detected from the bytes themselves. */

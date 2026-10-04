@@ -29,6 +29,9 @@ func TestCustomerHandler_List_QueryValidation(t *testing.T) {
 		{"invalid order rejected", "?order=up", http.StatusBadRequest},
 		{"invalid status rejected", "?status=deleted", http.StatusBadRequest},
 		{"valid status accepted", "?status=active", http.StatusOK},
+		{"repeated statuses accepted", "?status=active&status=inactive", http.StatusOK},
+		{"comma-separated statuses accepted", "?status=active,archived", http.StatusOK},
+		{"one invalid status among several rejected", "?status=active&status=deleted", http.StatusBadRequest},
 		{"empty search is absent, not an error", "?search=", http.StatusOK},
 		{"unknown query parameter rejected", "?typo=1", http.StatusBadRequest},
 		{"organisationId is unknown here and is rejected, not silently ignored", "?organisationId=" + uuid.NewString(), http.StatusBadRequest},
@@ -110,5 +113,40 @@ func TestCustomerHandler_List_TenantIsolation(t *testing.T) {
 	}
 	if response.Pagination.Total != 0 {
 		t.Errorf("expected 0 customers visible to a different organisation, got %d", response.Pagination.Total)
+	}
+}
+
+// TestCustomerHandler_List_MultipleStatuses proves ?status= may name
+// several statuses, returning customers in any of them — what the
+// customer list's default "Active + Inactive" view relies on.
+func TestCustomerHandler_List_MultipleStatuses(t *testing.T) {
+	handler, repository, _ := newTestHandlerWithFakes()
+	organisationID := uuid.New()
+	for _, status := range []string{CustomerStatusActive, CustomerStatusInactive, CustomerStatusArchived} {
+		id := uuid.New()
+		repository.customers[id] = Customer{ID: id, OrganisationID: organisationID, Name: status, Status: status}
+	}
+
+	for _, query := range []string{"?status=active&status=inactive", "?status=active,inactive"} {
+		request := httptest.NewRequest(http.MethodGet, "/customers"+query, nil)
+		request = withAuthenticatedOrganisation(request, organisationID)
+		recorder := httptest.NewRecorder()
+
+		handler.List(recorder, request)
+
+		var response struct {
+			Items []CustomerResponse `json:"items"`
+		}
+		if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if len(response.Items) != 2 {
+			t.Fatalf("%s: expected the active and inactive customers, got %d items", query, len(response.Items))
+		}
+		for _, item := range response.Items {
+			if item.Status == CustomerStatusArchived {
+				t.Errorf("%s: archived customer should have been filtered out", query)
+			}
+		}
 	}
 }

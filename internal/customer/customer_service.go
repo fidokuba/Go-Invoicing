@@ -12,8 +12,9 @@ import (
 // (or whitespace-only) name.
 var ErrCustomerNameRequired = errors.New("customer name is required")
 
-// ErrCustomerStatusInvalid is returned when List's ?status= filter isn't
-// one of the CustomerStatus* constants — this is business-domain
+// ErrCustomerStatusInvalid is returned when a status — one of List's
+// ?status= values, or SetStatus's target — isn't one of the
+// CustomerStatus* constants — this is business-domain
 // validation (which values the customers.status column may actually
 // mean), so it lives here rather than in the handler.
 var ErrCustomerStatusInvalid = errors.New("customer status is not valid")
@@ -83,7 +84,7 @@ func (s *CustomerService) Create(
 	return c, nil
 }
 
-// List validates filter.Status (if supplied) against the known
+// List validates every filter.Statuses value against the known
 // CustomerStatus* values and delegates to the repository, which enforces
 // tenant scoping and the Search/Sort/Order/Limit/Offset predicates in
 // SQL. Sort/Order themselves are not re-validated here — by the time a
@@ -94,10 +95,8 @@ func (s *CustomerService) List(
 	organisationID uuid.UUID,
 	filter ListFilter,
 ) ([]*Customer, int64, error) {
-	if filter.Status != "" {
-		switch filter.Status {
-		case CustomerStatusActive, CustomerStatusInactive, CustomerStatusArchived:
-		default:
+	for _, status := range filter.Statuses {
+		if !isValidCustomerStatus(status) {
 			return nil, 0, ErrCustomerStatusInvalid
 		}
 	}
@@ -115,14 +114,31 @@ func (s *CustomerService) GetByID(
 	return s.repository.GetByID(ctx, organisationID, customerID)
 }
 
-// Delete soft-deletes a customer; the repository enforces both the
-// organisation scoping and the no-open-invoices rule.
-func (s *CustomerService) Delete(
+// SetStatus moves a customer to Active, Inactive or Archived — the
+// replacement for deleting one: a customer is never removed, only
+// archived. Only Active customers can be put on new invoices (see
+// InvoiceService.Create); the repository enforces the organisation
+// scoping and the rule that archiving waits for open invoices.
+func (s *CustomerService) SetStatus(
 	ctx context.Context,
 	organisationID uuid.UUID,
 	customerID uuid.UUID,
-) error {
-	return s.repository.SoftDelete(ctx, organisationID, customerID)
+	status string,
+) (*Customer, error) {
+	if !isValidCustomerStatus(status) {
+		return nil, ErrCustomerStatusInvalid
+	}
+
+	return s.repository.UpdateStatus(ctx, organisationID, customerID, status)
+}
+
+func isValidCustomerStatus(status string) bool {
+	switch status {
+	case CustomerStatusActive, CustomerStatusInactive, CustomerStatusArchived:
+		return true
+	default:
+		return false
+	}
 }
 
 // nilIfEmpty converts a blank/whitespace-only string into a nil pointer so

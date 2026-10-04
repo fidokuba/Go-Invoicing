@@ -351,7 +351,7 @@ func newFakeCustomerRepository() *fakeCustomerRepository {
 
 func (f *fakeCustomerRepository) add(organisationID uuid.UUID) uuid.UUID {
 	id := uuid.New()
-	f.customers[id] = customer.Customer{ID: id, OrganisationID: organisationID, Name: "Test Customer"}
+	f.customers[id] = customer.Customer{ID: id, OrganisationID: organisationID, Name: "Test Customer", Status: customer.CustomerStatusActive}
 	return id
 }
 
@@ -384,10 +384,10 @@ func (f *fakeCustomerRepository) List(ctx context.Context, organisationID uuid.U
 	panic("fakeCustomerRepository.List should never be called by InvoiceService")
 }
 
-// SoftDelete is never called by InvoiceService — it exists solely to
+// UpdateStatus is never called by InvoiceService — it exists solely to
 // satisfy customer.CustomerRepository.
-func (f *fakeCustomerRepository) SoftDelete(ctx context.Context, organisationID, customerID uuid.UUID) error {
-	panic("fakeCustomerRepository.SoftDelete should never be called by InvoiceService")
+func (f *fakeCustomerRepository) UpdateStatus(ctx context.Context, organisationID, customerID uuid.UUID, status string) (*customer.Customer, error) {
+	panic("fakeCustomerRepository.UpdateStatus should never be called by InvoiceService")
 }
 
 // fakeOrganisationRepository is a minimal in-memory admin.OrganisationRepository

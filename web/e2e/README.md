@@ -64,9 +64,11 @@ Each run generates a fresh organisation/email so it can be re-run
 against a persistent (non-ephemeral) database without unique-constraint
 collisions.
 
-`cancel-and-delete.spec.ts` covers cancelling an invoice and deleting
+`cancel-and-archive.spec.ts` covers cancelling an invoice and archiving
 its customer (refused while the invoice is open, allowed once it is
-cancelled; a plain user gets 403 from both). `logo.spec.ts` covers
+cancelled), marking a customer inactive, finding archived customers with
+the customer list's filter pane, and a plain user getting 403 from both
+status-changing endpoints. `logo.spec.ts` covers
 uploading an organisation logo, seeing it in the layout builder's Logo
 block, finding it embedded in a custom-layout PDF, and removing it.
 

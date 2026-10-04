@@ -41,5 +41,5 @@ func (c *Customer) TableName() string {
 }
 
 func (c *Customer) IsActive() bool {
-	return c.Status == "active"
+	return c.Status == CustomerStatusActive
 }

@@ -14,22 +14,23 @@ import (
 //
 // Search is matched via ILIKE against name, company_name and email — see
 // PostgresCustomerRepository.List for why '%'/'_' remain live wildcard
-// characters in the search term. Status, if non-empty, must already be
+// characters in the search term. Every Statuses value must already be
 // one of the CustomerStatus* constants — ListFilter itself performs no
 // validation; CustomerService.List is where an invalid status is
-// rejected before this ever reaches the repository.
+// rejected before this ever reaches the repository. Statuses matches any
+// of the listed values; empty means every status.
 //
 // Sort is a public field name already validated against a repository-
 // known allow-list (see httpx.ParseSortOrder) — the repository maps it
 // onto an actual SQL column via its own explicit switch, never by
 // interpolating it directly. Order is "asc" or "desc".
 type ListFilter struct {
-	Search string
-	Status string
-	Sort   string
-	Order  string
-	Limit  int
-	Offset int
+	Search   string
+	Statuses []string
+	Sort     string
+	Order    string
+	Limit    int
+	Offset   int
 }
 
 // CustomerRepository describes how customers are read from and written to
@@ -58,8 +59,10 @@ type CustomerRepository interface {
 	// clause so they can never drift apart.
 	List(ctx context.Context, organisationID uuid.UUID, filter ListFilter) ([]*Customer, int64, error)
 
-	// SoftDelete marks the customer deleted, refusing with
-	// ErrCustomerHasOpenInvoices while any Draft or unpaid Sent invoice
-	// still belongs to them — see the Postgres implementation.
-	SoftDelete(ctx context.Context, organisationID uuid.UUID, customerID uuid.UUID) error
+	// UpdateStatus sets the customer's status (one of the CustomerStatus*
+	// constants, already validated by the caller) and returns the updated
+	// customer. Archiving is refused with ErrCustomerHasOpenInvoices
+	// while any Draft or unpaid Sent invoice still belongs to them — see
+	// the Postgres implementation.
+	UpdateStatus(ctx context.Context, organisationID uuid.UUID, customerID uuid.UUID, status string) (*Customer, error)
 }

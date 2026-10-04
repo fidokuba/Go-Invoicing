@@ -175,7 +175,7 @@ func TestFilterEnumContract_MatchesDomainConstants(t *testing.T) {
 
 	t.Run("customer status filter", func(t *testing.T) {
 		op := getOperation(t, doc, "/api/v1/customers", "GET")
-		got := stringEnum(findParam(t, op, "status").Schema.Value)
+		got := stringEnum(findParam(t, op, "status").Schema.Value.Items.Value)
 		want := []string{
 			customer.CustomerStatusActive,
 			customer.CustomerStatusInactive,

@@ -7,19 +7,23 @@ import type { components } from "../schema";
 type CreateCustomerRequest = components["schemas"]["CreateCustomerRequest"];
 type UpsertBillingAddressRequest = components["schemas"]["UpsertBillingAddressRequest"];
 
+export type CustomerStatusValue = "active" | "inactive" | "archived";
+
 export interface CustomersListParams {
   limit?: number;
   offset?: number;
   search?: string;
-  status?: "active" | "inactive" | "archived";
+  /** Any of these statuses (sent as repeated ?status=); omitted = all. */
+  status?: CustomerStatusValue[];
   sort?: "name" | "companyName" | "createdAt";
   order?: "asc" | "desc";
 }
 
-export function useCustomers(params: CustomersListParams) {
+export function useCustomers(params: CustomersListParams, options: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: ["customers", params],
     queryFn: () => unwrap(client.GET("/api/v1/customers", { params: { query: params } })),
+    enabled: options.enabled ?? true,
   });
 }
 
@@ -41,15 +45,16 @@ export function useCreateCustomer() {
   });
 }
 
-/** Deletes a customer (Admin/Manager only). The API refuses with 409
- * while the customer still has open invoices; their existing invoices
- * are kept and still show the customer's name. */
-export function useDeleteCustomer(id: string) {
+/** Moves a customer to Active, Inactive or Archived (Admin/Manager only)
+ * — customers are archived, never deleted. The API refuses archiving
+ * with 409 while the customer still has open invoices. */
+export function useSetCustomerStatus(id: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: () => unwrap(client.DELETE("/api/v1/customers/{id}", { params: { path: { id } } })),
-    onSuccess: () => {
-      queryClient.removeQueries({ queryKey: ["customers", id] });
+    mutationFn: (status: CustomerStatusValue) =>
+      unwrap(client.PUT("/api/v1/customers/{id}/status", { params: { path: { id } }, body: { status } })),
+    onSuccess: (data) => {
+      queryClient.setQueryData(["customers", id], data);
       queryClient.invalidateQueries({ queryKey: ["customers"] });
     },
   });

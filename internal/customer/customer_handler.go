@@ -3,6 +3,7 @@ package customer
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -117,15 +118,25 @@ func (h *CustomerHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	query := r.URL.Query()
 	search, _ := httpx.OptionalQueryParam(query, "search")
-	status, _ := httpx.OptionalQueryParam(query, "status")
+	// ?status= may repeat (status=active&status=inactive) or carry a
+	// comma-separated list; either way a customer matching any one of
+	// them is returned. Absent means every status.
+	var statuses []string
+	for _, value := range query["status"] {
+		for _, status := range strings.Split(value, ",") {
+			if status = strings.TrimSpace(status); status != "" {
+				statuses = append(statuses, status)
+			}
+		}
+	}
 
 	filter := ListFilter{
-		Search: search,
-		Status: status,
-		Sort:   sort,
-		Order:  order,
-		Limit:  limit,
-		Offset: offset,
+		Search:   search,
+		Statuses: statuses,
+		Sort:     sort,
+		Order:    order,
+		Limit:    limit,
+		Offset:   offset,
 	}
 
 	customers, total, err := h.service.List(r.Context(), identity.OrganisationID, filter)
@@ -178,11 +189,15 @@ func (h *CustomerHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, response)
 }
 
-// Delete handles DELETE /customers/{id} — a soft delete (see
-// PostgresCustomerRepository.SoftDelete). Admin/Manager only, enforced
-// by the route's RequireRole. 409 while the customer still has open
-// invoices; 204 on success.
-func (h *CustomerHandler) Delete(w http.ResponseWriter, r *http.Request) {
+// UpdateStatusRequest is the PUT /customers/{id}/status body.
+type UpdateStatusRequest struct {
+	Status string `json:"status"`
+}
+
+// UpdateStatus handles PUT /customers/{id}/status — Admin/Manager only,
+// enforced by the route's RequireRole. Responds with the updated
+// customer; 409 when archiving a customer who still has open invoices.
+func (h *CustomerHandler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
 	identity, ok := admin.RequireAuthenticatedUser(w, r)
 	if !ok {
 		return
@@ -194,22 +209,27 @@ func (h *CustomerHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.service.Delete(r.Context(), identity.OrganisationID, id); err != nil {
-		if errors.Is(err, ErrCustomerNotFound) {
-			httpx.WriteError(w, http.StatusNotFound, "customer_not_found", "customer not found")
-			return
-		}
-
-		if errors.Is(err, ErrCustomerHasOpenInvoices) {
-			httpx.WriteError(w, http.StatusConflict, "customer_has_open_invoices", err.Error())
-			return
-		}
-
-		httpx.WriteInternalError(w, r, "customer.delete", err)
+	var request UpdateStatusRequest
+	if !httpx.DecodeJSON(w, r, &request) {
 		return
 	}
 
-	w.WriteHeader(http.StatusNoContent)
+	c, err := h.service.SetStatus(r.Context(), identity.OrganisationID, id, request.Status)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrCustomerStatusInvalid):
+			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeValidationFailed, err.Error())
+		case errors.Is(err, ErrCustomerNotFound):
+			httpx.WriteError(w, http.StatusNotFound, "customer_not_found", "customer not found")
+		case errors.Is(err, ErrCustomerHasOpenInvoices):
+			httpx.WriteError(w, http.StatusConflict, "customer_has_open_invoices", err.Error())
+		default:
+			httpx.WriteInternalError(w, r, "customer.update_status", err)
+		}
+		return
+	}
+
+	httpx.WriteJSON(w, http.StatusOK, toCustomerResponse(c))
 }
 
 // GetBillingAddress handles GET /customers/{id}/billing-address.

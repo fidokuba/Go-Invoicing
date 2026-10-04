@@ -854,10 +854,18 @@ paths:
             type: string
         - name: status
           in: query
-          description: Filter to exactly one status.
+          description: >-
+            Filter to one or more statuses — repeat the parameter
+            (status=active&status=inactive); a comma-separated list is also
+            accepted. A customer matching any of them is returned. Absent
+            means every status.
+          style: form
+          explode: true
           schema:
-            type: string
-            enum: [active, inactive, archived]
+            type: array
+            items:
+              type: string
+              enum: [active, inactive, archived]
       responses:
         "200":
           description: A page of customers.
@@ -900,21 +908,33 @@ paths:
                 error: { code: customer_not_found, message: customer not found }
         "500":
           $ref: "#/components/responses/InternalServerError"
-    delete:
+  /api/v1/customers/{id}/status:
+    put:
       tags: [Customers]
-      summary: Delete a customer
+      summary: Change a customer's status
       description: >-
-        Admin or Manager only. A soft delete: the customer no longer
-        appears in lists or lookups and can't be put on a new invoice, but
-        their existing invoices are kept and still show the customer's
-        name (from each invoice's own snapshot). Refused with 409 while
-        the customer has any open invoice — Draft, Sent or Overdue —
-        which must be settled or cancelled first.
+        Admin or Manager only. Customers are never deleted: set Inactive to
+        stop using one for now, or Archived to retire them (hidden from the
+        customer list's default view); either can be undone by setting
+        Active again. Only Active customers can be put on new invoices.
+        Archiving is refused with 409 while the customer has any open
+        invoice — Draft, Sent or Overdue — which must be settled or
+        cancelled first. Existing invoices are unaffected by any status.
       parameters:
         - $ref: "#/components/parameters/IdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateCustomerStatusRequest"
       responses:
-        "204":
-          description: The customer was deleted.
+        "200":
+          description: The updated customer.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CustomerResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -922,7 +942,7 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
-          description: No such customer in the caller's organisation (including one already deleted).
+          description: No such customer in the caller's organisation.
           content:
             application/json:
               schema:
@@ -930,13 +950,17 @@ paths:
               example:
                 error: { code: customer_not_found, message: customer not found }
         "409":
-          description: The customer still has open invoices.
+          description: Archiving was refused because the customer still has open invoices.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorBody"
               example:
-                error: { code: customer_has_open_invoices, message: "customer has open invoices; cancel or settle them before deleting this customer" }
+                error: { code: customer_has_open_invoices, message: "customer has open invoices; cancel or settle them before archiving this customer" }
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -2354,6 +2378,15 @@ components:
         updatedAt:
           type: string
           format: date-time
+
+    UpdateCustomerStatusRequest:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [active, inactive, archived]
 
     UploadOrganisationLogoRequest:
       type: object

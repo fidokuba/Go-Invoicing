@@ -321,10 +321,11 @@ func (a *App) Handler() http.Handler {
 	// role, same policy as every other customer route.
 	register("GET", apiV1Prefix+"/customers", authMiddleware.RequireAuth(customerHandler.List))
 	register("GET", apiV1Prefix+"/customers/{id}", authMiddleware.RequireAuth(customerHandler.GetByID))
-	// DELETE /customers/{id}: soft delete, Admin/Manager only — refused
-	// while the customer still has open invoices.
-	register("DELETE", apiV1Prefix+"/customers/{id}",
-		authMiddleware.RequireAuth(admin.RequireRole(admin.UserRoleAdmin, admin.UserRoleManager)(customerHandler.Delete)))
+	// PUT /customers/{id}/status: Active / Inactive / Archived — customers
+	// are archived, never deleted. Admin/Manager only; archiving is
+	// refused while the customer still has open invoices.
+	register("PUT", apiV1Prefix+"/customers/{id}/status",
+		authMiddleware.RequireAuth(admin.RequireRole(admin.UserRoleAdmin, admin.UserRoleManager)(customerHandler.UpdateStatus)))
 
 	// Billing address (Milestone 7 Part 1): available to every authenticated
 	// role, same policy as every other customer/invoice business-data route

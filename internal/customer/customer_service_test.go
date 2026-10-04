@@ -3,6 +3,7 @@ package customer
 import (
 	"context"
 	"errors"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -19,8 +20,9 @@ import (
 type fakeCustomerRepository struct {
 	customers map[uuid.UUID]Customer
 
-	// openInvoices marks customers SoftDelete must refuse, standing in for
-	// the real repository's NOT EXISTS (open invoices) check.
+	// openInvoices marks customers UpdateStatus must refuse to archive,
+	// standing in for the real repository's NOT EXISTS (open invoices)
+	// check.
 	openInvoices map[uuid.UUID]bool
 }
 
@@ -31,20 +33,21 @@ func newFakeCustomerRepository() *fakeCustomerRepository {
 	}
 }
 
-// SoftDelete mirrors PostgresCustomerRepository.SoftDelete's contract:
-// not found (or another organisation's) is ErrCustomerNotFound, open
-// invoices block with ErrCustomerHasOpenInvoices, and a deleted customer
-// is no longer returned by GetByID.
-func (f *fakeCustomerRepository) SoftDelete(ctx context.Context, organisationID, customerID uuid.UUID) error {
+// UpdateStatus mirrors PostgresCustomerRepository.UpdateStatus's
+// contract: not found (or another organisation's) is
+// ErrCustomerNotFound, and open invoices block archiving (only) with
+// ErrCustomerHasOpenInvoices.
+func (f *fakeCustomerRepository) UpdateStatus(ctx context.Context, organisationID, customerID uuid.UUID, status string) (*Customer, error) {
 	c, ok := f.customers[customerID]
 	if !ok || c.OrganisationID != organisationID {
-		return ErrCustomerNotFound
+		return nil, ErrCustomerNotFound
 	}
-	if f.openInvoices[customerID] {
-		return ErrCustomerHasOpenInvoices
+	if status == CustomerStatusArchived && f.openInvoices[customerID] {
+		return nil, ErrCustomerHasOpenInvoices
 	}
-	delete(f.customers, customerID)
-	return nil
+	c.Status = status
+	f.customers[customerID] = c
+	return &c, nil
 }
 
 // WithTx ignores its tx argument and returns the same fake — it has no
@@ -82,7 +85,7 @@ func (f *fakeCustomerRepository) List(ctx context.Context, organisationID uuid.U
 		if c.OrganisationID != organisationID {
 			continue
 		}
-		if filter.Status != "" && c.Status != filter.Status {
+		if len(filter.Statuses) > 0 && !slices.Contains(filter.Statuses, c.Status) {
 			continue
 		}
 		if filter.Search != "" {

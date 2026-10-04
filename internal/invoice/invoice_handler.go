@@ -68,6 +68,11 @@ func (h *InvoiceHandler) Create(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		if errors.Is(err, ErrInvoiceCustomerNotActive) {
+			httpx.WriteError(w, http.StatusConflict, httpx.CodeConflict, err.Error())
+			return
+		}
+
 		if isInvoiceValidationError(err) {
 			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeValidationFailed, err.Error())
 			return

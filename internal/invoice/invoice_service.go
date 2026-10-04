@@ -23,6 +23,10 @@ var (
 	ErrInvoiceCustomerIDRequired = errors.New("invoice customer ID is required")
 	ErrInvoiceCustomerIDInvalid  = errors.New("invoice customer ID is not a valid UUID")
 	ErrInvoiceCustomerNotFound   = errors.New("invoice customer not found")
+	// ErrInvoiceCustomerNotActive: only an Active customer can be put on
+	// a new invoice — Inactive and Archived ones are kept for their
+	// history but closed to new business.
+	ErrInvoiceCustomerNotActive = errors.New("invoices can only be created for active customers")
 
 	// Lines.
 	ErrInvoiceNoLines = errors.New("invoice must have at least one line")
@@ -231,6 +235,9 @@ func (s *InvoiceService) Create(
 		}
 
 		return nil, nil, "", fmt.Errorf("look up invoice customer: %w", err)
+	}
+	if !invoiceCustomer.IsActive() {
+		return nil, nil, "", ErrInvoiceCustomerNotActive
 	}
 
 	// The organisation's VAT status is captured onto the invoice here and
