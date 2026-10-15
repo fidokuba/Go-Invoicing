@@ -342,6 +342,8 @@ func (a *App) Handler() http.Handler {
 	// GET /products (Milestone 8 Part 3): open to every authenticated role.
 	register("GET", apiV1Prefix+"/products", authMiddleware.RequireAuth(productHandler.List))
 	register("GET", apiV1Prefix+"/products/{id}", authMiddleware.RequireAuth(productHandler.GetByID))
+	// PUT /products/{id}: open to every authenticated role, like POST.
+	register("PUT", apiV1Prefix+"/products/{id}", authMiddleware.RequireAuth(productHandler.Update))
 
 	// Wire the invoice dependency chain: pool -> repository -> service -> handler.
 	// The invoice service also depends on the customer and product

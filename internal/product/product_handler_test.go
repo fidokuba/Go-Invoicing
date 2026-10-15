@@ -236,7 +236,7 @@ func TestProductHandler_GetByID(t *testing.T) {
 	handler := NewProductHandler(service)
 
 	organisationID := uuid.New()
-	p, err := service.Create(context.Background(), organisationID, "Widget", "", "SKU-1", 1999, "")
+	p, err := service.Create(context.Background(), organisationID, "Widget", "", "SKU-1", 1999, "", nil)
 	if err != nil {
 		t.Fatalf("create product: %v", err)
 	}
@@ -275,7 +275,7 @@ func TestProductHandler_GetByID_IgnoresOrganisationIdQueryParameter(t *testing.T
 	ownerOrganisationID := uuid.New()
 	attackerOrganisationID := uuid.New()
 
-	p, err := service.Create(context.Background(), ownerOrganisationID, "Widget", "", "SKU-1", 1999, "")
+	p, err := service.Create(context.Background(), ownerOrganisationID, "Widget", "", "SKU-1", 1999, "", nil)
 	if err != nil {
 		t.Fatalf("create product: %v", err)
 	}
@@ -355,7 +355,7 @@ func TestProductHandler_GetByID_WrongOrganisation(t *testing.T) {
 	organisationA := uuid.New()
 	organisationB := uuid.New()
 
-	p, err := service.Create(context.Background(), organisationA, "Widget", "", "SKU-1", 1999, "")
+	p, err := service.Create(context.Background(), organisationA, "Widget", "", "SKU-1", 1999, "", nil)
 	if err != nil {
 		t.Fatalf("create product: %v", err)
 	}
@@ -369,5 +369,83 @@ func TestProductHandler_GetByID_WrongOrganisation(t *testing.T) {
 
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusNotFound, recorder.Code, recorder.Body.String())
+	}
+}
+
+func putProduct(handler *ProductHandler, organisationID uuid.UUID, id string, body string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(http.MethodPut, "/products/"+id, bytes.NewBufferString(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.SetPathValue("id", id)
+	request = withAuthenticatedOrganisation(request, organisationID)
+	recorder := httptest.NewRecorder()
+	handler.Update(recorder, request)
+	return recorder
+}
+
+func TestProductHandler_Update(t *testing.T) {
+	service := NewProductService(newFakeProductRepository())
+	handler := NewProductHandler(service)
+	organisationID := uuid.New()
+
+	p, err := service.Create(context.Background(), organisationID, "Widget", "", "SKU-1", 1999, "", nil)
+	if err != nil {
+		t.Fatalf("create product: %v", err)
+	}
+
+	recorder := putProduct(handler, organisationID, p.ID.String(),
+		`{"name":"Gadget","sku":"SKU-2","price":2500,"category":"Tools","vatRate":20,"isActive":false}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusOK, recorder.Code, recorder.Body.String())
+	}
+
+	var response ProductResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.ID != p.ID.String() {
+		t.Errorf("expected ID %q, got %q", p.ID.String(), response.ID)
+	}
+	if response.Name != "Gadget" || response.SKU != "SKU-2" || response.Price != 2500 || response.IsActive {
+		t.Errorf("unexpected response: %+v", response)
+	}
+	if response.VATRate == nil || *response.VATRate != 20 {
+		t.Errorf("expected vatRate 20, got %v", response.VATRate)
+	}
+}
+
+func TestProductHandler_Update_Errors(t *testing.T) {
+	cases := []struct {
+		name       string
+		id         func(existing uuid.UUID) string
+		body       string
+		updateErr  error
+		wantStatus int
+	}{
+		{"invalid ID", func(uuid.UUID) string { return "not-a-uuid" }, `{"name":"W","sku":"S"}`, nil, http.StatusBadRequest},
+		{"unknown product", func(uuid.UUID) string { return uuid.NewString() }, `{"name":"W","sku":"S"}`, nil, http.StatusNotFound},
+		{"missing name", func(id uuid.UUID) string { return id.String() }, `{"sku":"S"}`, nil, http.StatusBadRequest},
+		{"VAT rate out of range", func(id uuid.UUID) string { return id.String() }, `{"name":"W","sku":"S","vatRate":101}`, nil, http.StatusBadRequest},
+		{"duplicate SKU", func(id uuid.UUID) string { return id.String() }, `{"name":"W","sku":"S"}`, ErrProductSKUAlreadyExists, http.StatusConflict},
+		{"repository failure", func(id uuid.UUID) string { return id.String() }, `{"name":"W","sku":"S"}`, errors.New("boom"), http.StatusInternalServerError},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repository := newFakeProductRepository()
+			service := NewProductService(repository)
+			handler := NewProductHandler(service)
+			organisationID := uuid.New()
+
+			p, err := service.Create(context.Background(), organisationID, "Widget", "", "SKU-1", 1999, "", nil)
+			if err != nil {
+				t.Fatalf("create product: %v", err)
+			}
+			repository.updateErr = tc.updateErr
+
+			recorder := putProduct(handler, organisationID, tc.id(p.ID), tc.body)
+			if recorder.Code != tc.wantStatus {
+				t.Errorf("expected status %d, got %d (body: %s)", tc.wantStatus, recorder.Code, recorder.Body.String())
+			}
+		})
 	}
 }

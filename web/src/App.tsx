@@ -31,6 +31,9 @@ const ProductNewPage = lazy(() =>
 const ProductDetailPage = lazy(() =>
   import("@/pages/products/ProductDetailPage").then((m) => ({ default: m.ProductDetailPage })),
 );
+const ProductEditPage = lazy(() =>
+  import("@/pages/products/ProductEditPage").then((m) => ({ default: m.ProductEditPage })),
+);
 const InvoicesListPage = lazy(() =>
   import("@/pages/invoices/InvoicesListPage").then((m) => ({ default: m.InvoicesListPage })),
 );
@@ -103,6 +106,7 @@ export function App() {
                   <Route path="products" element={<ProductsListPage />} />
                   <Route path="products/new" element={<ProductNewPage />} />
                   <Route path="products/:id" element={<ProductDetailPage />} />
+                  <Route path="products/:id/edit" element={<ProductEditPage />} />
 
                   <Route path="invoices" element={<InvoicesListPage />} />
                   <Route path="invoices/new" element={<InvoiceNewPage />} />

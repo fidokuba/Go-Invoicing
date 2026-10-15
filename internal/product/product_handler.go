@@ -51,11 +51,10 @@ func (h *ProductHandler) Create(w http.ResponseWriter, r *http.Request) {
 		request.SKU,
 		request.Price,
 		request.Category,
+		request.VATRate,
 	)
 	if err != nil {
-		if errors.Is(err, ErrProductNameRequired) ||
-			errors.Is(err, ErrProductSKURequired) ||
-			errors.Is(err, ErrProductPriceNegative) {
+		if isProductValidationError(err) {
 			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeValidationFailed, err.Error())
 			return
 		}
@@ -72,6 +71,62 @@ func (h *ProductHandler) Create(w http.ResponseWriter, r *http.Request) {
 	response := toProductResponse(p)
 
 	httpx.WriteJSON(w, http.StatusCreated, response)
+}
+
+// Update handles PUT /products/{id}: replaces every editable field of
+// the product (everything but its ID), with the same validation and SKU
+// uniqueness rule as Create.
+func (h *ProductHandler) Update(w http.ResponseWriter, r *http.Request) {
+	identity, ok := admin.RequireAuthenticatedUser(w, r)
+	if !ok {
+		return
+	}
+
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, httpx.CodeInvalidRequest, "invalid product ID")
+		return
+	}
+
+	var request UpdateProductRequest
+	if !httpx.DecodeJSON(w, r, &request) {
+		return
+	}
+
+	p, err := h.service.Update(
+		r.Context(),
+		identity.OrganisationID,
+		id,
+		request.Name,
+		request.Description,
+		request.SKU,
+		request.Price,
+		request.Category,
+		request.VATRate,
+		request.IsActive,
+	)
+	if err != nil {
+		switch {
+		case isProductValidationError(err):
+			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeValidationFailed, err.Error())
+		case errors.Is(err, ErrProductNotFound):
+			httpx.WriteError(w, http.StatusNotFound, "product_not_found", "product not found")
+		case errors.Is(err, ErrProductSKUAlreadyExists):
+			httpx.WriteError(w, http.StatusConflict, "sku_already_exists", err.Error())
+		default:
+			httpx.WriteInternalError(w, r, "product.update", err)
+		}
+		return
+	}
+
+	httpx.WriteJSON(w, http.StatusOK, toProductResponse(p))
+}
+
+func isProductValidationError(err error) bool {
+	return errors.Is(err, ErrProductNameRequired) ||
+		errors.Is(err, ErrProductSKURequired) ||
+		errors.Is(err, ErrProductPriceNegative) ||
+		errors.Is(err, ErrProductVATRateInvalid)
 }
 
 // ProductListSortFields is the public sort-field allow-list for GET

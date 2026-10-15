@@ -130,6 +130,7 @@ func TestResponseContract_MatchesOpenAPISchema(t *testing.T) {
 	})
 
 	productDescription, productCategory := "Half a day of on-site consulting", "Services"
+	productVATRate := 20.0
 
 	t.Run("ProductResponse", func(t *testing.T) {
 		validateAgainstSchema(t, doc, "ProductResponse", product.ProductResponse{
@@ -140,6 +141,7 @@ func TestResponseContract_MatchesOpenAPISchema(t *testing.T) {
 			SKU:            "CONS-HD",
 			Price:          50000,
 			Category:       &productCategory,
+			VATRate:        &productVATRate,
 			IsActive:       true,
 			CreatedAt:      "2026-01-15T10:00:00Z",
 			UpdatedAt:      "2026-01-15T10:00:00Z",

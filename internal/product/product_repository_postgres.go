@@ -16,7 +16,7 @@ import (
 // within the given organisation, as opposed to a genuine database failure.
 var ErrProductNotFound = errors.New("product not found")
 
-// ErrProductSKUAlreadyExists is returned when Create violates the
+// ErrProductSKUAlreadyExists is returned when Create or Update violates the
 // products_organisation_sku_unique constraint, as opposed to a genuine
 // database failure.
 var ErrProductSKUAlreadyExists = errors.New("product SKU already exists for this organisation")
@@ -65,10 +65,11 @@ func (r *PostgresProductRepository) Create(
 			sku,
 			price,
 			category,
+			vat_rate,
 			is_active
 		)
 		VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8
+			$1, $2, $3, $4, $5, $6, $7, $8, $9
 		)
 		RETURNING created_at, updated_at
 	`
@@ -83,6 +84,7 @@ func (r *PostgresProductRepository) Create(
 		product.SKU,
 		product.Price,
 		product.Category,
+		product.VATRate,
 		product.IsActive,
 	).Scan(&product.CreatedAt, &product.UpdatedAt)
 	if err != nil {
@@ -92,6 +94,63 @@ func (r *PostgresProductRepository) Create(
 		}
 
 		return fmt.Errorf("create product: %w", err)
+	}
+
+	return nil
+}
+
+// Update overwrites a product's editable columns, scoped to
+// product.OrganisationID so one organisation can never edit another's
+// product, and scans the new updated_at back onto product. A
+// soft-deleted or missing product is ErrProductNotFound; changing the
+// SKU to one already used in the organisation is
+// ErrProductSKUAlreadyExists, via the same unique constraint Create
+// relies on.
+func (r *PostgresProductRepository) Update(
+	ctx context.Context,
+	product *Product,
+) error {
+	const query = `
+		UPDATE products
+		SET
+			name = $3,
+			description = $4,
+			sku = $5,
+			price = $6,
+			category = $7,
+			vat_rate = $8,
+			is_active = $9,
+			updated_at = NOW()
+		WHERE organisation_id = $1
+			AND id = $2
+			AND deleted_at IS NULL
+		RETURNING updated_at
+	`
+
+	err := r.db.QueryRow(
+		ctx,
+		query,
+		product.OrganisationID,
+		product.ID,
+		product.Name,
+		product.Description,
+		product.SKU,
+		product.Price,
+		product.Category,
+		product.VATRate,
+		product.IsActive,
+	).Scan(&product.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrProductNotFound
+		}
+
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == postgresUniqueViolation {
+			return ErrProductSKUAlreadyExists
+		}
+
+		return fmt.Errorf("update product: %w", err)
 	}
 
 	return nil
@@ -114,6 +173,7 @@ func (r *PostgresProductRepository) GetByID(
 			sku,
 			price,
 			category,
+			vat_rate,
 			is_active,
 			created_at,
 			updated_at,
@@ -139,6 +199,7 @@ func (r *PostgresProductRepository) GetByID(
 		&p.SKU,
 		&p.Price,
 		&p.Category,
+		&p.VATRate,
 		&p.IsActive,
 		&p.CreatedAt,
 		&p.UpdatedAt,
@@ -219,7 +280,7 @@ func (r *PostgresProductRepository) List(
 	itemQuery := fmt.Sprintf(
 		`SELECT
 			id, organisation_id, name, description, sku, price, category,
-			is_active, created_at, updated_at
+			vat_rate, is_active, created_at, updated_at
 		FROM products
 		%s
 		ORDER BY %s %s, id ASC
@@ -246,6 +307,7 @@ func (r *PostgresProductRepository) List(
 			&p.SKU,
 			&p.Price,
 			&p.Category,
+			&p.VATRate,
 			&p.IsActive,
 			&p.CreatedAt,
 			&p.UpdatedAt,

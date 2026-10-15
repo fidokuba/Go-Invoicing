@@ -109,6 +109,8 @@ func TestRequestContract_MatchesOpenAPISchema(t *testing.T) {
 		})
 	})
 
+	vatRate := 20.0
+
 	t.Run("CreateProductRequest", func(t *testing.T) {
 		validateAgainstSchema(t, doc, "CreateProductRequest", product.CreateProductRequest{
 			Name:        "Consulting (half day)",
@@ -116,6 +118,20 @@ func TestRequestContract_MatchesOpenAPISchema(t *testing.T) {
 			SKU:         "CONS-HD",
 			Price:       50000,
 			Category:    "Services",
+			VATRate:     &vatRate,
+		})
+	})
+
+	t.Run("UpdateProductRequest", func(t *testing.T) {
+		isActive := false
+		validateAgainstSchema(t, doc, "UpdateProductRequest", product.UpdateProductRequest{
+			Name:        "Consulting (half day)",
+			Description: "Half a day of on-site consulting",
+			SKU:         "CONS-HD",
+			Price:       55000,
+			Category:    "Services",
+			VATRate:     &vatRate,
+			IsActive:    &isActive,
 		})
 	})
 

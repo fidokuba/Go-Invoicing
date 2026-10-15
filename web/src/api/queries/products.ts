@@ -4,6 +4,7 @@ import { unwrap } from "../unwrap";
 import type { components } from "../schema";
 
 type CreateProductRequest = components["schemas"]["CreateProductRequest"];
+type UpdateProductRequest = components["schemas"]["UpdateProductRequest"];
 
 export interface ProductsListParams {
   limit?: number;
@@ -33,6 +34,17 @@ export function useCreateProduct() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (body: CreateProductRequest) => unwrap(client.POST("/api/v1/products", { body })),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["products"] });
+    },
+  });
+}
+
+export function useUpdateProduct(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: UpdateProductRequest) =>
+      unwrap(client.PUT("/api/v1/products/{id}", { params: { path: { id } }, body })),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["products"] });
     },

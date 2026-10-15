@@ -34,6 +34,10 @@ type ProductRepository interface {
 	Create(ctx context.Context, product *Product) error
 	GetByID(ctx context.Context, organisationID uuid.UUID, productID uuid.UUID) (*Product, error)
 
+	// Update overwrites product's editable columns, scoped to
+	// product.OrganisationID, and refreshes product.UpdatedAt.
+	Update(ctx context.Context, product *Product) error
+
 	// List returns the page of products matching filter, tenant-scoped
 	// to organisationID, together with the total count of products
 	// matching the same filters (ignoring Limit/Offset).

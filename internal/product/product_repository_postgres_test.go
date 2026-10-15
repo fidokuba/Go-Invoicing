@@ -296,3 +296,116 @@ func TestPostgresProductRepository_Create_SKUUniquePerOrganisation(t *testing.T)
 		_, _ = db.Exec(context.Background(), "DELETE FROM products WHERE id = $1", otherOrg.ID)
 	})
 }
+
+// createTestProduct inserts p via the repository and registers cleanup.
+func createTestProduct(t *testing.T, db *pgxpool.Pool, repository *PostgresProductRepository, p *Product) {
+	t.Helper()
+
+	if err := repository.Create(context.Background(), p); err != nil {
+		t.Fatalf("create product: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_, _ = db.Exec(context.Background(), "DELETE FROM products WHERE id = $1", p.ID)
+	})
+}
+
+func TestPostgresProductRepository_Update(t *testing.T) {
+	db := newTestPool(t)
+	ctx := context.Background()
+
+	organisationID := createTestOrganisation(t, db)
+	repository := NewPostgresProductRepository(db)
+
+	p := &Product{ID: uuid.New(), OrganisationID: organisationID, Name: "Before", SKU: "SKU-UPD-1", Price: 100, IsActive: true}
+	createTestProduct(t, db, repository, p)
+	createdUpdatedAt := p.UpdatedAt
+
+	description, category, vatRate := "After description", "After category", 17.5
+	p.Name = "After"
+	p.Description = &description
+	p.SKU = "SKU-UPD-2"
+	p.Price = 250
+	p.Category = &category
+	p.VATRate = &vatRate
+	p.IsActive = false
+
+	if err := repository.Update(ctx, p); err != nil {
+		t.Fatalf("update product: %v", err)
+	}
+	if p.UpdatedAt.Before(createdUpdatedAt) {
+		t.Errorf("expected updated_at to move forward, got %v (was %v)", p.UpdatedAt, createdUpdatedAt)
+	}
+
+	got, err := repository.GetByID(ctx, organisationID, p.ID)
+	if err != nil {
+		t.Fatalf("get product: %v", err)
+	}
+	if got.Name != "After" || got.SKU != "SKU-UPD-2" || got.Price != 250 || got.IsActive {
+		t.Errorf("unexpected product after update: %+v", got)
+	}
+	if got.Description == nil || *got.Description != description || got.Category == nil || *got.Category != category {
+		t.Errorf("expected description/category to be updated, got %v / %v", got.Description, got.Category)
+	}
+	if got.VATRate == nil || *got.VATRate != vatRate {
+		t.Errorf("expected VAT rate %v, got %v", vatRate, got.VATRate)
+	}
+
+	// Clearing the optional fields stores NULL again.
+	p.Description, p.Category, p.VATRate = nil, nil, nil
+	if err := repository.Update(ctx, p); err != nil {
+		t.Fatalf("clear optional fields: %v", err)
+	}
+	got, err = repository.GetByID(ctx, organisationID, p.ID)
+	if err != nil {
+		t.Fatalf("get product: %v", err)
+	}
+	if got.Description != nil || got.Category != nil || got.VATRate != nil {
+		t.Errorf("expected cleared optional fields, got %v / %v / %v", got.Description, got.Category, got.VATRate)
+	}
+}
+
+func TestPostgresProductRepository_Update_OrganisationScoping(t *testing.T) {
+	db := newTestPool(t)
+	ctx := context.Background()
+
+	ownerOrganisationID := createTestOrganisation(t, db)
+	otherOrganisationID := createTestOrganisation(t, db)
+	repository := NewPostgresProductRepository(db)
+
+	p := &Product{ID: uuid.New(), OrganisationID: ownerOrganisationID, Name: "Owned", SKU: "SKU-SCOPE-1", Price: 100, IsActive: true}
+	createTestProduct(t, db, repository, p)
+
+	attempt := *p
+	attempt.OrganisationID = otherOrganisationID
+	attempt.Name = "Hijacked"
+	if err := repository.Update(ctx, &attempt); !errors.Is(err, ErrProductNotFound) {
+		t.Fatalf("expected ErrProductNotFound updating another organisation's product, got %v", err)
+	}
+
+	got, err := repository.GetByID(ctx, ownerOrganisationID, p.ID)
+	if err != nil {
+		t.Fatalf("get product: %v", err)
+	}
+	if got.Name != "Owned" {
+		t.Errorf("expected the product to be untouched, got name %q", got.Name)
+	}
+}
+
+func TestPostgresProductRepository_Update_SKUUniquePerOrganisation(t *testing.T) {
+	db := newTestPool(t)
+	ctx := context.Background()
+
+	organisationID := createTestOrganisation(t, db)
+	repository := NewPostgresProductRepository(db)
+
+	first := &Product{ID: uuid.New(), OrganisationID: organisationID, Name: "First", SKU: "SKU-DUP-A", Price: 100, IsActive: true}
+	second := &Product{ID: uuid.New(), OrganisationID: organisationID, Name: "Second", SKU: "SKU-DUP-B", Price: 100, IsActive: true}
+	createTestProduct(t, db, repository, first)
+	createTestProduct(t, db, repository, second)
+
+	second.SKU = "SKU-DUP-A"
+	if err := repository.Update(ctx, second); !errors.Is(err, ErrProductSKUAlreadyExists) {
+		t.Fatalf("expected ErrProductSKUAlreadyExists, got %v", err)
+	}
+}

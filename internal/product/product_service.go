@@ -20,6 +20,10 @@ var ErrProductSKURequired = errors.New("product SKU is required")
 // negative price.
 var ErrProductPriceNegative = errors.New("product price cannot be negative")
 
+// ErrProductVATRateInvalid is returned when Create or Update is called
+// with a VAT rate outside 0-100%.
+var ErrProductVATRateInvalid = errors.New("product VAT rate must be between 0 and 100")
+
 // ProductService sits between the HTTP layer and the repository. It
 // depends on the ProductRepository interface, not on any concrete
 // implementation.
@@ -35,12 +39,12 @@ func NewProductService(
 	}
 }
 
-// Create validates the requested name, SKU and price, generates the
-// product's ID, and persists it under the given organisation. Price must
-// be non-negative and is stored exactly as given, in integer minor units —
-// no float conversion, no currency handling. Optional fields left blank
-// are stored as NULL rather than empty strings. New products start
-// active.
+// Create validates the requested name, SKU, price and VAT rate,
+// generates the product's ID, and persists it under the given
+// organisation. Price must be non-negative and is stored exactly as
+// given, in integer minor units — no float conversion, no currency
+// handling. Optional fields left blank are stored as NULL rather than
+// empty strings. New products start active.
 func (s *ProductService) Create(
 	ctx context.Context,
 	organisationID uuid.UUID,
@@ -49,19 +53,11 @@ func (s *ProductService) Create(
 	sku string,
 	price int64,
 	category string,
+	vatRate *float64,
 ) (*Product, error) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return nil, ErrProductNameRequired
-	}
-
-	sku = strings.TrimSpace(sku)
-	if sku == "" {
-		return nil, ErrProductSKURequired
-	}
-
-	if price < 0 {
-		return nil, ErrProductPriceNegative
+	name, sku, err := validateProductFields(name, sku, price, vatRate)
+	if err != nil {
+		return nil, err
 	}
 
 	p := &Product{
@@ -72,6 +68,7 @@ func (s *ProductService) Create(
 		SKU:            sku,
 		Price:          price,
 		Category:       nilIfEmpty(category),
+		VATRate:        vatRate,
 		IsActive:       true,
 	}
 
@@ -80,6 +77,72 @@ func (s *ProductService) Create(
 	}
 
 	return p, nil
+}
+
+// Update replaces productID's editable fields — everything but its ID
+// and organisation — with the same validation Create applies. isActive
+// nil leaves the product's active status unchanged.
+func (s *ProductService) Update(
+	ctx context.Context,
+	organisationID uuid.UUID,
+	productID uuid.UUID,
+	name string,
+	description string,
+	sku string,
+	price int64,
+	category string,
+	vatRate *float64,
+	isActive *bool,
+) (*Product, error) {
+	name, sku, err := validateProductFields(name, sku, price, vatRate)
+	if err != nil {
+		return nil, err
+	}
+
+	p, err := s.repository.GetByID(ctx, organisationID, productID)
+	if err != nil {
+		return nil, err
+	}
+
+	p.Name = name
+	p.Description = nilIfEmpty(description)
+	p.SKU = sku
+	p.Price = price
+	p.Category = nilIfEmpty(category)
+	p.VATRate = vatRate
+	if isActive != nil {
+		p.IsActive = *isActive
+	}
+
+	if err := s.repository.Update(ctx, p); err != nil {
+		return nil, err
+	}
+
+	return p, nil
+}
+
+// validateProductFields applies the rules Create and Update share,
+// returning name and sku trimmed.
+func validateProductFields(name, sku string, price int64, vatRate *float64) (string, string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", "", ErrProductNameRequired
+	}
+
+	sku = strings.TrimSpace(sku)
+	if sku == "" {
+		return "", "", ErrProductSKURequired
+	}
+
+	if price < 0 {
+		return "", "", ErrProductPriceNegative
+	}
+
+	if vatRate != nil && (*vatRate < 0 || *vatRate > 100) {
+		return "", "", ErrProductVATRateInvalid
+	}
+
+	return name, sku, nil
 }
 
 // GetByID delegates straight to the repository; the organisation scoping

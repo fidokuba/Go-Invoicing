@@ -81,6 +81,7 @@ func (s *Service) createProducts(
 			fmt.Sprintf("TEST-%s-%02d", runSuffix, i+1),
 			price,
 			entry.category,
+			nil,
 		)
 		if err != nil {
 			return nil, err

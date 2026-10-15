@@ -22,6 +22,7 @@ type schemaProperty struct {
 var moneyFields = []schemaProperty{
 	{"ProductResponse", "price"},
 	{"CreateProductRequest", "price"},
+	{"UpdateProductRequest", "price"},
 	{"CreateInvoiceLineRequest", "unitPrice"},
 	{"InvoiceLineResponse", "unitPrice"},
 	{"InvoiceLineResponse", "vatAmount"},

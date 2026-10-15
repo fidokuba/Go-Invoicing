@@ -1160,6 +1160,66 @@ paths:
                 error: { code: product_not_found, message: product not found }
         "500":
           $ref: "#/components/responses/InternalServerError"
+    put:
+      tags: [Products]
+      summary: Update a product
+      description: >-
+        Any authenticated role. Replaces every editable field of the
+        product — everything but its id — with the same rules as POST
+        /api/v1/products: name and sku are required, price must not be
+        negative, vatRate must be 0-100, and sku must stay unique within
+        the organisation. An omitted description, category or vatRate is
+        cleared; an omitted isActive leaves the product's status as it
+        was. Existing invoice lines are unaffected: each line keeps its
+        own copy of the values it was created with.
+      parameters:
+        - $ref: "#/components/parameters/IdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateProductRequest"
+            example:
+              name: Consulting (half day)
+              sku: CONS-HD
+              price: 55000
+              category: Services
+              vatRate: 20
+              isActive: true
+      responses:
+        "200":
+          description: The updated product.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: No such product in the caller's organisation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorBody"
+              example:
+                error: { code: product_not_found, message: product not found }
+        "409":
+          description: Another product in the caller's organisation already has this SKU.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorBody"
+              example:
+                error: { code: sku_already_exists, message: a product with this SKU already exists }
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
 
   /api/v1/invoices:
     post:
@@ -2617,6 +2677,14 @@ components:
           description: Integer minor units (e.g. cents). A catalogue reference price only — never read by invoice-line creation.
         category:
           type: string
+        vatRate:
+          type: number
+          minimum: 0
+          maximum: 100
+          description: >-
+            Default VAT percentage (20 means 20%), copied onto an invoice
+            line's VAT % when the product is picked in the invoice editor,
+            where it stays editable. Absent means no default.
         isActive:
           type: boolean
         createdAt:
@@ -2646,6 +2714,48 @@ components:
           description: Integer minor units. Optional; defaults to 0 if omitted.
         category:
           type: string
+        vatRate:
+          type: number
+          minimum: 0
+          maximum: 100
+          description: >-
+            Default VAT percentage (20 means 20%), copied onto an invoice
+            line's VAT % when the product is picked in the invoice editor,
+            where it stays editable. Absent means no default.
+
+    UpdateProductRequest:
+      type: object
+      additionalProperties: false
+      required: [name, sku]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+          description: Omitted or empty clears it.
+        sku:
+          type: string
+          description: Must be unique within the organisation.
+        price:
+          type: integer
+          format: int64
+          minimum: 0
+          default: 0
+          description: Integer minor units.
+        category:
+          type: string
+          description: Omitted or empty clears it.
+        vatRate:
+          type: number
+          minimum: 0
+          maximum: 100
+          description: >-
+            Default VAT percentage (20 means 20%), copied onto an invoice
+            line's VAT % when the product is picked in the invoice editor,
+            where it stays editable. Omitted clears it (no default).
+        isActive:
+          type: boolean
+          description: Omitted leaves the product's status unchanged.
 
     ProductListResponse:
       type: object

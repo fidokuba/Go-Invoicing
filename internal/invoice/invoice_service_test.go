@@ -1656,3 +1656,9 @@ func TestInvoiceService_GetByID_PaymentRepositoryErrorPropagates(t *testing.T) {
 		t.Errorf("expected the payment repository's error to propagate unchanged, got %v", err)
 	}
 }
+
+// Update is never called by InvoiceService — like List above, it exists
+// solely to satisfy product.ProductRepository (PUT /products/{id}).
+func (f *fakeProductRepository) Update(ctx context.Context, p *product.Product) error {
+	panic("fakeProductRepository.Update should never be called by InvoiceService")
+}

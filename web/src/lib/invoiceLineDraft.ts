@@ -1,7 +1,8 @@
-import { parseMoneyInput, previewLineSubtotal, previewLineVat } from "./money";
+import { minorToInputString, parseMoneyInput, previewLineSubtotal, previewLineVat } from "./money";
 import type { components } from "@/api/schema";
 
 type CreateInvoiceLineRequest = components["schemas"]["CreateInvoiceLineRequest"];
+type Product = components["schemas"]["ProductResponse"];
 
 /**
  * The invoice editor's in-progress representation of one line (Milestone
@@ -38,6 +39,22 @@ export function newLineDraft(): LineDraft {
  * whatever the (hidden) VAT field holds. */
 export function withoutVat(lines: LineDraft[]): LineDraft[] {
   return lines.map((line) => ({ ...line, vatRate: "0" }));
+}
+
+/** The line fields picking a product fills in: its name, price and —
+ * for a VAT-registered organisation, when the product has one — its
+ * default VAT %. Defaults only: every field stays editable afterwards,
+ * and a product with no VAT default leaves the line's VAT % as it was. */
+export function lineDefaultsFromProduct(
+  product: Product,
+  currency: string,
+  vatRegistered: boolean,
+): Partial<LineDraft> {
+  return {
+    description: product.name,
+    unitPrice: minorToInputString(product.price, currency),
+    ...(vatRegistered && product.vatRate != null ? { vatRate: String(product.vatRate) } : {}),
+  };
 }
 
 export interface LineDraftErrors {

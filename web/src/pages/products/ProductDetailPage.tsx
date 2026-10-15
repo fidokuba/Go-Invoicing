@@ -1,21 +1,22 @@
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
+import { Pencil } from "lucide-react";
 import { useProduct } from "@/api/queries/products";
-import { useInvoiceSettings } from "@/api/queries/organisation";
+import { useInvoiceSettings, useOrganisation } from "@/api/queries/organisation";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { QueryBoundary } from "@/components/ui/query-boundary";
 import { formatMoney } from "@/lib/money";
 
-// Products have no update endpoint in this API (only create + read — see
-// api/openapi.yaml's Products tag) — this page is deliberately view-only,
-// matching the audited backend contract rather than inventing an edit
-// flow the API doesn't support.
+// Editing happens on its own page (ProductEditPage, /products/:id/edit).
 export function ProductDetailPage() {
   const { id } = useParams<{ id: string }>();
   const query = useProduct(id);
   const settings = useInvoiceSettings();
   const currency = settings.data?.currency ?? "GBP";
+  const organisation = useOrganisation();
+  const vatRegistered = organisation.data?.vatRegistered ?? false;
 
   return (
     <QueryBoundary query={query}>
@@ -24,7 +25,17 @@ export function ProductDetailPage() {
           <PageHeader
             title={product.name}
             description={product.sku}
-            actions={<Badge tone={product.isActive ? "green" : "slate"}>{product.isActive ? "Active" : "Inactive"}</Badge>}
+            actions={
+              <div className="flex items-center gap-3">
+                <Badge tone={product.isActive ? "green" : "slate"}>{product.isActive ? "Active" : "Inactive"}</Badge>
+                <Button asChild variant="secondary">
+                  <Link to={`/products/${product.id}/edit`} className="flex items-center gap-2">
+                    <Pencil className="h-4 w-4" aria-hidden="true" />
+                    Edit
+                  </Link>
+                </Button>
+              </div>
+            }
           />
           <Card>
             <CardHeader>
@@ -36,6 +47,12 @@ export function ProductDetailPage() {
                   <dt className="text-slate-500">Price</dt>
                   <dd className="text-slate-900">{formatMoney(product.price, currency)}</dd>
                 </div>
+                {vatRegistered && (
+                  <div className="flex justify-between gap-4">
+                    <dt className="text-slate-500">VAT %</dt>
+                    <dd className="text-slate-900">{product.vatRate != null ? `${product.vatRate}%` : "—"}</dd>
+                  </div>
+                )}
                 <div className="flex justify-between gap-4">
                   <dt className="text-slate-500">Category</dt>
                   <dd className="text-slate-900">{product.category ?? "—"}</dd>

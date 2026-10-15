@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   hasLineDraftErrors,
+  lineDefaultsFromProduct,
   newLineDraft,
   previewInvoiceTotals,
   previewLineTotal,
@@ -96,5 +97,40 @@ describe("withoutVat", () => {
   it("ignores an invalid VAT rate left in a hidden field", () => {
     const [stripped] = withoutVat([makeLine({ vatRate: "-5" })]);
     expect(validateLineDraft(stripped, "GBP").vatRate).toBeUndefined();
+  });
+});
+
+describe("lineDefaultsFromProduct", () => {
+  const product = {
+    id: "66666666-6666-6666-6666-666666666666",
+    organisationId: "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+    name: "Consulting (half day)",
+    sku: "CONS-HD",
+    price: 50000,
+    vatRate: 20,
+    isActive: true,
+    createdAt: "2026-01-15T10:00:00Z",
+    updatedAt: "2026-01-15T10:00:00Z",
+  };
+
+  it("fills the description, unit price and VAT % from the product", () => {
+    expect(lineDefaultsFromProduct(product, "GBP", true)).toEqual({
+      description: "Consulting (half day)",
+      unitPrice: "500.00",
+      vatRate: "20",
+    });
+  });
+
+  it("leaves the VAT % alone when the product has no default", () => {
+    const { vatRate: _vatRate, ...noVat } = product;
+    expect(lineDefaultsFromProduct(noVat, "GBP", true)).not.toHaveProperty("vatRate");
+  });
+
+  it("never sets a VAT % for an organisation that isn't VAT registered", () => {
+    expect(lineDefaultsFromProduct(product, "GBP", false)).not.toHaveProperty("vatRate");
+  });
+
+  it("keeps a 0% default rather than treating it as no default", () => {
+    expect(lineDefaultsFromProduct({ ...product, vatRate: 0 }, "GBP", true)).toHaveProperty("vatRate", "0");
   });
 });

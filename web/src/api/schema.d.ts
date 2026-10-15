@@ -1438,7 +1438,85 @@ export interface paths {
                 500: components["responses"]["InternalServerError"];
             };
         };
-        put?: never;
+        /**
+         * Update a product
+         * @description Any authenticated role. Replaces every editable field of the product — everything but its id — with the same rules as POST /api/v1/products: name and sku are required, price must not be negative, vatRate must be 0-100, and sku must stay unique within the organisation. An omitted description, category or vatRate is cleared; an omitted isActive leaves the product's status as it was. Existing invoice lines are unaffected: each line keeps its own copy of the values it was created with.
+         */
+        put: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: components["parameters"]["IdPathParam"];
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    /**
+                     * @example {
+                     *       "name": "Consulting (half day)",
+                     *       "sku": "CONS-HD",
+                     *       "price": 55000,
+                     *       "category": "Services",
+                     *       "vatRate": 20,
+                     *       "isActive": true
+                     *     }
+                     */
+                    "application/json": components["schemas"]["UpdateProductRequest"];
+                };
+            };
+            responses: {
+                /** @description The updated product. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ProductResponse"];
+                    };
+                };
+                400: components["responses"]["BadRequest"];
+                401: components["responses"]["Unauthorized"];
+                /** @description No such product in the caller's organisation. */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        /**
+                         * @example {
+                         *       "error": {
+                         *         "code": "product_not_found",
+                         *         "message": "product not found"
+                         *       }
+                         *     }
+                         */
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                /** @description Another product in the caller's organisation already has this SKU. */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        /**
+                         * @example {
+                         *       "error": {
+                         *         "code": "sku_already_exists",
+                         *         "message": "a product with this SKU already exists"
+                         *       }
+                         *     }
+                         */
+                        "application/json": components["schemas"]["ErrorBody"];
+                    };
+                };
+                413: components["responses"]["PayloadTooLarge"];
+                415: components["responses"]["UnsupportedMediaType"];
+                500: components["responses"]["InternalServerError"];
+            };
+        };
         post?: never;
         delete?: never;
         options?: never;
@@ -2725,6 +2803,8 @@ export interface components {
              */
             price: number;
             category?: string;
+            /** @description Default VAT percentage (20 means 20%), copied onto an invoice line's VAT % when the product is picked in the invoice editor, where it stays editable. Absent means no default. */
+            vatRate?: number;
             isActive: boolean;
             /** Format: date-time */
             createdAt: string;
@@ -2743,6 +2823,27 @@ export interface components {
              */
             price: number;
             category?: string;
+            /** @description Default VAT percentage (20 means 20%), copied onto an invoice line's VAT % when the product is picked in the invoice editor, where it stays editable. Absent means no default. */
+            vatRate?: number;
+        };
+        UpdateProductRequest: {
+            name: string;
+            /** @description Omitted or empty clears it. */
+            description?: string;
+            /** @description Must be unique within the organisation. */
+            sku: string;
+            /**
+             * Format: int64
+             * @description Integer minor units.
+             * @default 0
+             */
+            price: number;
+            /** @description Omitted or empty clears it. */
+            category?: string;
+            /** @description Default VAT percentage (20 means 20%), copied onto an invoice line's VAT % when the product is picked in the invoice editor, where it stays editable. Omitted clears it (no default). */
+            vatRate?: number;
+            /** @description Omitted leaves the product's status unchanged. */
+            isActive?: boolean;
         };
         ProductListResponse: {
             items: components["schemas"]["ProductResponse"][];

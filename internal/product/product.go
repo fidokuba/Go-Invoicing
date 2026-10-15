@@ -15,6 +15,10 @@ import (
 // column's BIGINT type and the convention already used for money elsewhere
 // in the schema (Invoice.Subtotal, Line.UnitPrice, Payment.Amount) — never
 // a float.
+//
+// VATRate is the product's default VAT percentage (20 means 20%), copied
+// onto an invoice line when the product is picked in the invoice editor;
+// nil means the product has no default.
 type Product struct {
 	ID             uuid.UUID
 	OrganisationID uuid.UUID
@@ -23,6 +27,7 @@ type Product struct {
 	SKU            string
 	Price          int64
 	Category       *string
+	VATRate        *float64
 	IsActive       bool
 	CreatedAt      time.Time
 	UpdatedAt      time.Time

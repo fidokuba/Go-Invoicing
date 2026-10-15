@@ -6,12 +6,13 @@ import { useCustomers } from "@/api/queries/customers";
 import { useProducts } from "@/api/queries/products";
 import { useInvoiceSettings, useOrganisation } from "@/api/queries/organisation";
 import { friendlyMessage } from "@/api/errors";
-import { formatMoney, minorToInputString } from "@/lib/money";
+import { formatMoney } from "@/lib/money";
 import { todayDateOnly, addDaysDateOnly } from "@/lib/date";
 import {
   type LineDraft,
   type LineDraftErrors,
   newLineDraft,
+  lineDefaultsFromProduct,
   validateLineDraft,
   hasLineDraftErrors,
   previewLineTotal,
@@ -62,12 +63,10 @@ export function InvoiceNewPage() {
     const product = products.data?.items.find((p) => p.id === productId);
     updateLine(key, {
       productId,
-      // Product pricing is a convenience default only — never enforced;
-      // the fields stay freely editable afterward (Milestone 12 section
-      // 11's explicit requirement).
-      ...(product
-        ? { description: product.name, unitPrice: minorToInputString(product.price, currency) }
-        : {}),
+      // Product pricing and VAT % are convenience defaults only — never
+      // enforced; the fields stay freely editable afterward (Milestone 12
+      // section 11's explicit requirement).
+      ...(product ? lineDefaultsFromProduct(product, currency, vatRegistered) : {}),
     });
   }
 
