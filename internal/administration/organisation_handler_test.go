@@ -212,6 +212,7 @@ func (f *fakeSettingsRepository) Update(ctx context.Context, organisationID uuid
 	s.InvoicePrefix = settings.InvoicePrefix
 	s.Currency = settings.Currency
 	s.PaymentTerms = settings.PaymentTerms
+	s.QuantityUnits = settings.QuantityUnits
 	f.settings[organisationID] = s
 
 	settings.UpdatedAt = s.UpdatedAt

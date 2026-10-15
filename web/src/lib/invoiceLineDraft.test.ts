@@ -100,6 +100,13 @@ describe("withoutVat", () => {
   });
 });
 
+describe("toCreateInvoiceLine quantity unit", () => {
+  it("sends the unit, and omits it when the line has none", () => {
+    expect(toCreateInvoiceLine(makeLine({ quantityUnit: "Hour(s)" }), "GBP").quantityUnit).toBe("Hour(s)");
+    expect(toCreateInvoiceLine(makeLine({ quantityUnit: "" }), "GBP").quantityUnit).toBeUndefined();
+  });
+});
+
 describe("lineDefaultsFromProduct", () => {
   const product = {
     id: "66666666-6666-6666-6666-666666666666",
@@ -119,6 +126,14 @@ describe("lineDefaultsFromProduct", () => {
       unitPrice: "500.00",
       vatRate: "20",
     });
+  });
+
+  it("fills the quantity unit when the product has one, and leaves it alone otherwise", () => {
+    expect(lineDefaultsFromProduct({ ...product, quantityUnit: "Day(s)" }, "GBP", true)).toHaveProperty(
+      "quantityUnit",
+      "Day(s)",
+    );
+    expect(lineDefaultsFromProduct(product, "GBP", true)).not.toHaveProperty("quantityUnit");
   });
 
   it("leaves the VAT % alone when the product has no default", () => {

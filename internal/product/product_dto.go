@@ -20,21 +20,26 @@ type CreateProductRequest struct {
 	// VATRate is the optional default VAT percentage (20 means 20%);
 	// omitted or null means no default.
 	VATRate *float64 `json:"vatRate,omitempty"`
+
+	// QuantityUnit is the optional default quantity unit (e.g. "Day(s)");
+	// blank means none.
+	QuantityUnit string `json:"quantityUnit"`
 }
 
 // UpdateProductRequest is the shape a client may PUT to edit a product:
 // every field CreateProductRequest has, plus IsActive. It replaces the
 // product's editable fields as a whole — an omitted optional field
-// (description, category, vatRate) is cleared — except IsActive, which
+// (description, category, vatRate, quantityUnit) is cleared — except IsActive, which
 // is left unchanged when omitted. The product's ID is never editable.
 type UpdateProductRequest struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	SKU         string   `json:"sku"`
-	Price       int64    `json:"price"`
-	Category    string   `json:"category"`
-	VATRate     *float64 `json:"vatRate,omitempty"`
-	IsActive    *bool    `json:"isActive,omitempty"`
+	Name         string   `json:"name"`
+	Description  string   `json:"description"`
+	SKU          string   `json:"sku"`
+	Price        int64    `json:"price"`
+	Category     string   `json:"category"`
+	VATRate      *float64 `json:"vatRate,omitempty"`
+	QuantityUnit string   `json:"quantityUnit"`
+	IsActive     *bool    `json:"isActive,omitempty"`
 }
 
 // ProductResponse is the shape returned to clients. It exposes the public
@@ -48,6 +53,7 @@ type ProductResponse struct {
 	Price          int64    `json:"price"`
 	Category       *string  `json:"category,omitempty"`
 	VATRate        *float64 `json:"vatRate,omitempty"`
+	QuantityUnit   *string  `json:"quantityUnit,omitempty"`
 	IsActive       bool     `json:"isActive"`
 	CreatedAt      string   `json:"createdAt"`
 	UpdatedAt      string   `json:"updatedAt"`
@@ -65,6 +71,7 @@ func toProductResponse(p *Product) ProductResponse {
 		Price:          p.Price,
 		Category:       p.Category,
 		VATRate:        p.VATRate,
+		QuantityUnit:   p.QuantityUnit,
 		IsActive:       p.IsActive,
 		CreatedAt:      p.CreatedAt.UTC().Format(time.RFC3339),
 		UpdatedAt:      p.UpdatedAt.UTC().Format(time.RFC3339),

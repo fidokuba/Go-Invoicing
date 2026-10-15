@@ -3,6 +3,9 @@ package admin
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -223,4 +226,75 @@ func settingsVersion(t *testing.T, service *SettingsService, organisationID uuid
 	}
 
 	return settings.Version
+}
+
+func TestSettingsService_Update_QuantityUnits(t *testing.T) {
+	organisationID := uuid.New()
+	service, _ := newTestSettingsService(t, organisationID)
+
+	units := []string{"  Day(s) ", "Pallets", "KG"}
+	updated, err := service.Update(context.Background(), organisationID, settingsVersion(t, service, organisationID), UpdateSettingsRequest{QuantityUnits: &units})
+	if err != nil {
+		t.Fatalf("update quantity units: %v", err)
+	}
+	if want := []string{"Day(s)", "Pallets", "KG"}; !slices.Equal(updated.QuantityUnits, want) {
+		t.Errorf("expected units %v, got %v", want, updated.QuantityUnits)
+	}
+
+	// Omitting quantityUnits leaves the list alone.
+	updated, err = service.Update(context.Background(), organisationID, settingsVersion(t, service, organisationID), UpdateSettingsRequest{PaymentTerms: intPtr(7)})
+	if err != nil {
+		t.Fatalf("update payment terms: %v", err)
+	}
+	if len(updated.QuantityUnits) != 3 {
+		t.Errorf("expected the units to be unchanged, got %v", updated.QuantityUnits)
+	}
+
+	// An empty list is allowed, and is never nil.
+	empty := []string{}
+	updated, err = service.Update(context.Background(), organisationID, settingsVersion(t, service, organisationID), UpdateSettingsRequest{QuantityUnits: &empty})
+	if err != nil {
+		t.Fatalf("clear quantity units: %v", err)
+	}
+	if updated.QuantityUnits == nil || len(updated.QuantityUnits) != 0 {
+		t.Errorf("expected an empty, non-nil list, got %#v", updated.QuantityUnits)
+	}
+}
+
+func TestSettingsService_Update_InvalidQuantityUnits(t *testing.T) {
+	tooMany := make([]string, MaxQuantityUnits+1)
+	for i := range tooMany {
+		tooMany[i] = fmt.Sprintf("Unit %d", i)
+	}
+
+	cases := []struct {
+		name  string
+		units []string
+		want  error
+	}{
+		{"blank unit", []string{"Day(s)", "   "}, ErrSettingsQuantityUnitInvalid},
+		{"unit too long", []string{strings.Repeat("x", MaxQuantityUnitLength+1)}, ErrSettingsQuantityUnitInvalid},
+		{"duplicate ignoring case", []string{"KG", "kg"}, ErrSettingsQuantityUnitDuplicate},
+		{"too many units", tooMany, ErrSettingsQuantityUnitsTooMany},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			organisationID := uuid.New()
+			service, _ := newTestSettingsService(t, organisationID)
+
+			_, err := service.Update(context.Background(), organisationID, settingsVersion(t, service, organisationID), UpdateSettingsRequest{QuantityUnits: &tc.units})
+			if !errors.Is(err, tc.want) {
+				t.Errorf("expected %v, got %v", tc.want, err)
+			}
+		})
+	}
+
+	// A unit of exactly the maximum length, counted in characters, is fine.
+	organisationID := uuid.New()
+	service, _ := newTestSettingsService(t, organisationID)
+	longest := []string{strings.Repeat("é", MaxQuantityUnitLength)}
+	if _, err := service.Update(context.Background(), organisationID, settingsVersion(t, service, organisationID), UpdateSettingsRequest{QuantityUnits: &longest}); err != nil {
+		t.Errorf("expected a %d-character unit to be accepted, got %v", MaxQuantityUnitLength, err)
+	}
 }

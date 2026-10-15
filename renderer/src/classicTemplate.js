@@ -53,7 +53,9 @@ function renderLineRows(lines, showVAT) {
       (line) => `
         <tr>
           <td class="desc">${escapeHtml(line.description)}</td>
-          <td class="num">${escapeHtml(line.quantity)}</td>
+          <td class="num">${escapeHtml(line.quantity)}${
+            line.quantityUnit ? `<div class="qty-unit">${escapeHtml(line.quantityUnit)}</div>` : ""
+          }</td>
           <td class="num">${escapeHtml(line.unitPrice)}</td>
           ${showVAT ? `<td class="num">${escapeHtml(line.vatRate)}</td>` : ""}
           ${showVAT ? `<td class="num">${escapeHtml(line.vatAmount)}</td>` : ""}
@@ -120,6 +122,7 @@ export function renderClassicTemplate(data) {
   th, td { padding: 6px; text-align: left; }
   th.num, td.num { text-align: right; }
   tbody tr { border-bottom: 1px solid #d2d2d2; }
+  .qty-unit { font-size: 0.85em; color: #5a5a5a; }
   .totals { width: 260px; margin-left: auto; }
   .totals-row { display: flex; justify-content: space-between; padding: 2px 0; }
   .totals-row--emphasis { font-weight: 700; font-size: 11pt; border-top: 1px solid #cbcbcb; margin-top: 4px; padding-top: 4px; }

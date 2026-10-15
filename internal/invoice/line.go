@@ -15,12 +15,14 @@ type Line struct {
 	ProductID   *uuid.UUID
 	Description string
 	Quantity    float64
-	UnitPrice   int64
-	VATRate     float64
-	VATAmount   int64
-	Total       int64
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	// Nullable: the line's quantity unit (e.g. "Day(s)"), its own copy.
+	QuantityUnit *string
+	UnitPrice    int64
+	VATRate      float64
+	VATAmount    int64
+	Total        int64
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 func (l *Line) TableName() string {

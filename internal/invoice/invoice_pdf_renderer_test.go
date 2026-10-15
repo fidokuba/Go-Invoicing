@@ -642,3 +642,33 @@ func TestInvoicePDFRenderer_PaymentSummaryShownWhenSet(t *testing.T) {
 		t.Error("expected Balance Due line to be present")
 	}
 }
+
+// TestInvoicePDFRenderer_QuantityUnitShownBeneathQuantity: a line's
+// quantity unit is drawn in the Qty column under the quantity, with or
+// without the VAT columns, and a unit too long for that narrow column
+// wraps rather than failing the render.
+func TestInvoicePDFRenderer_QuantityUnitShownBeneathQuantity(t *testing.T) {
+	for _, vatRegistered := range []bool{true, false} {
+		t.Run(fmt.Sprintf("vatRegistered=%v", vatRegistered), func(t *testing.T) {
+			data := minimalPDFData()
+			data.VATRegistered = vatRegistered
+			data.Lines = []InvoicePDFLine{
+				{Description: "Consulting", Quantity: "3", QuantityUnit: "Day(s)", UnitPrice: "£500.00", VATRate: "20%", VATAmount: "£300.00", Total: "£1800.00"},
+				{Description: "Flour", Quantity: "2.5", QuantityUnit: "Sacks of extra fine flour", UnitPrice: "£10.00", VATRate: "0%", VATAmount: "£0.00", Total: "£25.00"},
+				{Description: "Delivery", Quantity: "1", UnitPrice: "£15.00", VATRate: "0%", VATAmount: "£0.00", Total: "£15.00"},
+			}
+
+			pdfBytes, err := NewInvoicePDFRenderer().Render(data)
+			if err != nil {
+				t.Fatalf("render: %v", err)
+			}
+
+			text := extractPDFText(t, pdfBytes)
+			for _, want := range []string{"Day(s)", "Sacks", "flour", "Delivery"} {
+				if !strings.Contains(text, want) {
+					t.Errorf("expected PDF text to contain %q, got:\n%s", want, text)
+				}
+			}
+		})
+	}
+}

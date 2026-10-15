@@ -117,12 +117,13 @@ type Customer struct {
 
 // Line mirrors invoice.InvoicePDFLine.
 type Line struct {
-	Description string `json:"description"`
-	Quantity    string `json:"quantity"`
-	UnitPrice   string `json:"unitPrice"`
-	VATRate     string `json:"vatRate"`
-	VATAmount   string `json:"vatAmount"`
-	Total       string `json:"total"`
+	Description  string `json:"description"`
+	Quantity     string `json:"quantity"`
+	QuantityUnit string `json:"quantityUnit"`
+	UnitPrice    string `json:"unitPrice"`
+	VATRate      string `json:"vatRate"`
+	VATAmount    string `json:"vatAmount"`
+	Total        string `json:"total"`
 }
 
 // RenderRequest is the wire format POST /render accepts — see

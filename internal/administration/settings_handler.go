@@ -83,7 +83,10 @@ func (h *SettingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, ErrSettingsCurrencyRequired) ||
 			errors.Is(err, ErrSettingsCurrencyInvalid) ||
 			errors.Is(err, ErrSettingsPaymentTermsInvalid) ||
-			errors.Is(err, ErrSettingsInvoicePrefixRequired) {
+			errors.Is(err, ErrSettingsInvoicePrefixRequired) ||
+			errors.Is(err, ErrSettingsQuantityUnitInvalid) ||
+			errors.Is(err, ErrSettingsQuantityUnitDuplicate) ||
+			errors.Is(err, ErrSettingsQuantityUnitsTooMany) {
 			httpx.WriteError(w, http.StatusBadRequest, httpx.CodeValidationFailed, err.Error())
 			return
 		}

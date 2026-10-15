@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
+
+	admin "go-invoicing/internal/administration"
 )
 
 // ErrProductNameRequired is returned when Create is called with an empty
@@ -23,6 +26,11 @@ var ErrProductPriceNegative = errors.New("product price cannot be negative")
 // ErrProductVATRateInvalid is returned when Create or Update is called
 // with a VAT rate outside 0-100%.
 var ErrProductVATRateInvalid = errors.New("product VAT rate must be between 0 and 100")
+
+// ErrProductQuantityUnitTooLong is returned when Create or Update is
+// called with a quantity unit over admin.MaxQuantityUnitLength
+// characters.
+var ErrProductQuantityUnitTooLong = errors.New("product quantity unit must be at most 30 characters")
 
 // ProductService sits between the HTTP layer and the repository. It
 // depends on the ProductRepository interface, not on any concrete
@@ -54,8 +62,9 @@ func (s *ProductService) Create(
 	price int64,
 	category string,
 	vatRate *float64,
+	quantityUnit string,
 ) (*Product, error) {
-	name, sku, err := validateProductFields(name, sku, price, vatRate)
+	name, sku, err := validateProductFields(name, sku, price, vatRate, quantityUnit)
 	if err != nil {
 		return nil, err
 	}
@@ -69,6 +78,7 @@ func (s *ProductService) Create(
 		Price:          price,
 		Category:       nilIfEmpty(category),
 		VATRate:        vatRate,
+		QuantityUnit:   nilIfEmpty(quantityUnit),
 		IsActive:       true,
 	}
 
@@ -92,9 +102,10 @@ func (s *ProductService) Update(
 	price int64,
 	category string,
 	vatRate *float64,
+	quantityUnit string,
 	isActive *bool,
 ) (*Product, error) {
-	name, sku, err := validateProductFields(name, sku, price, vatRate)
+	name, sku, err := validateProductFields(name, sku, price, vatRate, quantityUnit)
 	if err != nil {
 		return nil, err
 	}
@@ -110,6 +121,7 @@ func (s *ProductService) Update(
 	p.Price = price
 	p.Category = nilIfEmpty(category)
 	p.VATRate = vatRate
+	p.QuantityUnit = nilIfEmpty(quantityUnit)
 	if isActive != nil {
 		p.IsActive = *isActive
 	}
@@ -123,7 +135,7 @@ func (s *ProductService) Update(
 
 // validateProductFields applies the rules Create and Update share,
 // returning name and sku trimmed.
-func validateProductFields(name, sku string, price int64, vatRate *float64) (string, string, error) {
+func validateProductFields(name, sku string, price int64, vatRate *float64, quantityUnit string) (string, string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return "", "", ErrProductNameRequired
@@ -140,6 +152,10 @@ func validateProductFields(name, sku string, price int64, vatRate *float64) (str
 
 	if vatRate != nil && (*vatRate < 0 || *vatRate > 100) {
 		return "", "", ErrProductVATRateInvalid
+	}
+
+	if utf8.RuneCountInString(strings.TrimSpace(quantityUnit)) > admin.MaxQuantityUnitLength {
+		return "", "", ErrProductQuantityUnitTooLong
 	}
 
 	return name, sku, nil

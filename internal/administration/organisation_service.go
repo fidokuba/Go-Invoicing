@@ -95,6 +95,7 @@ func (s *OrganisationService) Create(
 		InvoiceNumber:  0,
 		Currency:       "GBP",
 		PaymentTerms:   30,
+		QuantityUnits:  append([]string(nil), DefaultQuantityUnits...),
 	}
 
 	if err := s.settingsRepository.Create(ctx, settings); err != nil {

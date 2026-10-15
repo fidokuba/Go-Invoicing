@@ -2,14 +2,15 @@ package admin
 
 // SettingsResponse is the shape returned to clients for GET and PATCH
 // /organisation/settings (Milestone 8 Part 3). It deliberately exposes
-// only Currency, PaymentTerms and InvoicePrefix — not ID, OrganisationID,
+// only Currency, PaymentTerms, InvoicePrefix and QuantityUnits — not ID, OrganisationID,
 // InvoiceNumber, or the timestamps: InvoiceNumber in particular is an
 // internal allocation counter, not a business setting a client edits,
 // and none of the rest is something a settings-editing UI needs.
 type SettingsResponse struct {
-	Currency      string `json:"currency"`
-	PaymentTerms  int    `json:"paymentTerms"`
-	InvoicePrefix string `json:"invoicePrefix"`
+	Currency      string   `json:"currency"`
+	PaymentTerms  int      `json:"paymentTerms"`
+	InvoicePrefix string   `json:"invoicePrefix"`
+	QuantityUnits []string `json:"quantityUnits"`
 }
 
 // toSettingsResponse maps the internal domain model onto the API's
@@ -19,7 +20,16 @@ func toSettingsResponse(s *Settings) SettingsResponse {
 		Currency:      s.Currency,
 		PaymentTerms:  s.PaymentTerms,
 		InvoicePrefix: s.InvoicePrefix,
+		QuantityUnits: nonNilUnits(s.QuantityUnits),
 	}
+}
+
+// nonNilUnits makes an empty list encode as [] rather than null.
+func nonNilUnits(units []string) []string {
+	if units == nil {
+		return []string{}
+	}
+	return units
 }
 
 // UpdateSettingsRequest is the shape a client PATCHes to
@@ -37,4 +47,10 @@ type UpdateSettingsRequest struct {
 	Currency      *string `json:"currency"`
 	PaymentTerms  *int    `json:"paymentTerms"`
 	InvoicePrefix *string `json:"invoicePrefix"`
+
+	// QuantityUnits, when supplied, replaces the whole list (an empty
+	// list is allowed). Each unit is trimmed and must be non-blank, at
+	// most MaxQuantityUnitLength characters, and not repeat another
+	// (ignoring case).
+	QuantityUnits *[]string `json:"quantityUnits"`
 }

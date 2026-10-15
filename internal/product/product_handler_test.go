@@ -236,7 +236,7 @@ func TestProductHandler_GetByID(t *testing.T) {
 	handler := NewProductHandler(service)
 
 	organisationID := uuid.New()
-	p, err := service.Create(context.Background(), organisationID, "Widget", "", "SKU-1", 1999, "", nil)
+	p, err := service.Create(context.Background(), organisationID, "Widget", "", "SKU-1", 1999, "", nil, "")
 	if err != nil {
 		t.Fatalf("create product: %v", err)
 	}
@@ -275,7 +275,7 @@ func TestProductHandler_GetByID_IgnoresOrganisationIdQueryParameter(t *testing.T
 	ownerOrganisationID := uuid.New()
 	attackerOrganisationID := uuid.New()
 
-	p, err := service.Create(context.Background(), ownerOrganisationID, "Widget", "", "SKU-1", 1999, "", nil)
+	p, err := service.Create(context.Background(), ownerOrganisationID, "Widget", "", "SKU-1", 1999, "", nil, "")
 	if err != nil {
 		t.Fatalf("create product: %v", err)
 	}
@@ -355,7 +355,7 @@ func TestProductHandler_GetByID_WrongOrganisation(t *testing.T) {
 	organisationA := uuid.New()
 	organisationB := uuid.New()
 
-	p, err := service.Create(context.Background(), organisationA, "Widget", "", "SKU-1", 1999, "", nil)
+	p, err := service.Create(context.Background(), organisationA, "Widget", "", "SKU-1", 1999, "", nil, "")
 	if err != nil {
 		t.Fatalf("create product: %v", err)
 	}
@@ -387,7 +387,7 @@ func TestProductHandler_Update(t *testing.T) {
 	handler := NewProductHandler(service)
 	organisationID := uuid.New()
 
-	p, err := service.Create(context.Background(), organisationID, "Widget", "", "SKU-1", 1999, "", nil)
+	p, err := service.Create(context.Background(), organisationID, "Widget", "", "SKU-1", 1999, "", nil, "")
 	if err != nil {
 		t.Fatalf("create product: %v", err)
 	}
@@ -436,7 +436,7 @@ func TestProductHandler_Update_Errors(t *testing.T) {
 			handler := NewProductHandler(service)
 			organisationID := uuid.New()
 
-			p, err := service.Create(context.Background(), organisationID, "Widget", "", "SKU-1", 1999, "", nil)
+			p, err := service.Create(context.Background(), organisationID, "Widget", "", "SKU-1", 1999, "", nil, "")
 			if err != nil {
 				t.Fatalf("create product: %v", err)
 			}

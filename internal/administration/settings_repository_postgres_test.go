@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"testing"
 	"time"
 
@@ -330,5 +331,73 @@ func TestPostgresSettingsRepository_Update_NotFound(t *testing.T) {
 	err := repository.Update(ctx, uuid.New(), &Settings{InvoicePrefix: "X-", Currency: "GBP", PaymentTerms: 30}, 1)
 	if !errors.Is(err, ErrSettingsNotFound) {
 		t.Fatalf("expected ErrSettingsNotFound, got %v", err)
+	}
+}
+
+func TestPostgresSettingsRepository_QuantityUnits(t *testing.T) {
+	db := newTestPool(t)
+	ctx := context.Background()
+
+	organisationID := createTestOrganisation(t, db)
+	repository := NewPostgresSettingsRepository(db)
+
+	settings := &Settings{
+		ID:             uuid.New(),
+		OrganisationID: organisationID,
+		InvoicePrefix:  "INV-",
+		Currency:       "GBP",
+		PaymentTerms:   30,
+		QuantityUnits:  append([]string(nil), DefaultQuantityUnits...),
+	}
+	if err := repository.Create(ctx, settings); err != nil {
+		t.Fatalf("create settings: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Exec(context.Background(), "DELETE FROM settings WHERE id = $1", settings.ID)
+	})
+
+	got, err := repository.GetByOrganisationID(ctx, organisationID)
+	if err != nil {
+		t.Fatalf("get settings: %v", err)
+	}
+	if !slices.Equal(got.QuantityUnits, DefaultQuantityUnits) {
+		t.Errorf("expected the default units %v, got %v", DefaultQuantityUnits, got.QuantityUnits)
+	}
+
+	got.QuantityUnits = []string{"Pallets"}
+	if err := repository.Update(ctx, organisationID, got, got.Version); err != nil {
+		t.Fatalf("update settings: %v", err)
+	}
+	got, err = repository.GetByOrganisationID(ctx, organisationID)
+	if err != nil {
+		t.Fatalf("get settings: %v", err)
+	}
+	if !slices.Equal(got.QuantityUnits, []string{"Pallets"}) {
+		t.Errorf("expected [Pallets], got %v", got.QuantityUnits)
+	}
+}
+
+// TestSettingsMigration_ExistingOrganisationsGetDefaultUnits: a settings
+// row written without quantity_units (as every row was before migration
+// 000026) gets the column default — the five standard units.
+func TestSettingsMigration_ExistingOrganisationsGetDefaultUnits(t *testing.T) {
+	db := newTestPool(t)
+	ctx := context.Background()
+
+	organisationID := createTestOrganisation(t, db)
+	settingsID := uuid.New()
+	if _, err := db.Exec(ctx, "INSERT INTO settings (id, organisation_id) VALUES ($1, $2)", settingsID, organisationID); err != nil {
+		t.Fatalf("insert settings: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = db.Exec(context.Background(), "DELETE FROM settings WHERE id = $1", settingsID)
+	})
+
+	got, err := NewPostgresSettingsRepository(db).GetByOrganisationID(ctx, organisationID)
+	if err != nil {
+		t.Fatalf("get settings: %v", err)
+	}
+	if !slices.Equal(got.QuantityUnits, DefaultQuantityUnits) {
+		t.Errorf("expected the default units %v, got %v", DefaultQuantityUnits, got.QuantityUnits)
 	}
 }

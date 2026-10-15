@@ -47,6 +47,10 @@ export function ProductDetailPage() {
                   <dt className="text-slate-500">Price</dt>
                   <dd className="text-slate-900">{formatMoney(product.price, currency)}</dd>
                 </div>
+                <div className="flex justify-between gap-4">
+                  <dt className="text-slate-500">Qty unit</dt>
+                  <dd className="text-slate-900">{product.quantityUnit ?? "—"}</dd>
+                </div>
                 {vatRegistered && (
                   <div className="flex justify-between gap-4">
                     <dt className="text-slate-500">VAT %</dt>

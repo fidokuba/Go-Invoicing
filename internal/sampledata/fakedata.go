@@ -82,6 +82,7 @@ func (s *Service) createProducts(
 			price,
 			entry.category,
 			nil,
+			"",
 		)
 		if err != nil {
 			return nil, err

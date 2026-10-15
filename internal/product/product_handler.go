@@ -52,6 +52,7 @@ func (h *ProductHandler) Create(w http.ResponseWriter, r *http.Request) {
 		request.Price,
 		request.Category,
 		request.VATRate,
+		request.QuantityUnit,
 	)
 	if err != nil {
 		if isProductValidationError(err) {
@@ -103,6 +104,7 @@ func (h *ProductHandler) Update(w http.ResponseWriter, r *http.Request) {
 		request.Price,
 		request.Category,
 		request.VATRate,
+		request.QuantityUnit,
 		request.IsActive,
 	)
 	if err != nil {
@@ -126,7 +128,8 @@ func isProductValidationError(err error) bool {
 	return errors.Is(err, ErrProductNameRequired) ||
 		errors.Is(err, ErrProductSKURequired) ||
 		errors.Is(err, ErrProductPriceNegative) ||
-		errors.Is(err, ErrProductVATRateInvalid)
+		errors.Is(err, ErrProductVATRateInvalid) ||
+		errors.Is(err, ErrProductQuantityUnitTooLong)
 }
 
 // ProductListSortFields is the public sort-field allow-list for GET

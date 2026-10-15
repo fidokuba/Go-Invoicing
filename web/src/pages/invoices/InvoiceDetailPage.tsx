@@ -222,7 +222,10 @@ function InvoiceDetailContent({
                 {invoice.lines.map((line) => (
                   <Tr key={line.id}>
                     <Td>{line.description}</Td>
-                    <Td className="text-right">{line.quantity}</Td>
+                    <Td className="text-right">
+                      {line.quantity}
+                      {line.quantityUnit && <div className="text-xs text-slate-500">{line.quantityUnit}</div>}
+                    </Td>
                     <Td className="text-right">{formatMoney(line.unitPrice, invoice.currency)}</Td>
                     {invoice.vatRegistered && (
                       <Td className="text-right">

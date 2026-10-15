@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -43,6 +44,7 @@ var (
 	ErrInvoiceLineQuantityInvalid     = errors.New("invoice line quantity must be greater than zero")
 	ErrInvoiceLineUnitPriceNegative   = errors.New("invoice line unit price cannot be negative")
 	ErrInvoiceLineVATRateNegative     = errors.New("invoice line VAT rate cannot be negative")
+	ErrInvoiceLineQuantityUnitTooLong = errors.New("invoice line quantity unit must be at most 30 characters")
 	ErrInvoiceLineVATNotPermitted     = errors.New("invoice line cannot charge VAT because the organisation is not VAT registered")
 	ErrInvoiceLineProductIDInvalid    = errors.New("invoice line product ID is not a valid UUID")
 	ErrInvoiceLineProductNotFound     = errors.New("invoice line product not found")
@@ -160,11 +162,12 @@ func NewInvoiceService(
 // validatedLine is the result of structurally validating one
 // CreateInvoiceLineRequest, before any database lookup.
 type validatedLine struct {
-	productID   *uuid.UUID
-	description string
-	quantity    float64
-	unitPrice   int64
-	vatRate     float64
+	productID    *uuid.UUID
+	description  string
+	quantity     float64
+	quantityUnit *string
+	unitPrice    int64
+	vatRate      float64
 }
 
 // Create validates the request, verifies the referenced customer (and any
@@ -278,15 +281,16 @@ func (s *InvoiceService) Create(
 		vatAmount, total := calculateLineAmounts(v.quantity, v.unitPrice, v.vatRate)
 
 		lines = append(lines, &Line{
-			ID:          uuid.New(),
-			InvoiceID:   invoiceID,
-			ProductID:   v.productID,
-			Description: v.description,
-			Quantity:    v.quantity,
-			UnitPrice:   v.unitPrice,
-			VATRate:     v.vatRate,
-			VATAmount:   vatAmount,
-			Total:       total,
+			ID:           uuid.New(),
+			InvoiceID:    invoiceID,
+			ProductID:    v.productID,
+			Description:  v.description,
+			Quantity:     v.quantity,
+			QuantityUnit: v.quantityUnit,
+			UnitPrice:    v.unitPrice,
+			VATRate:      v.vatRate,
+			VATAmount:    vatAmount,
+			Total:        total,
 		})
 	}
 
@@ -1116,6 +1120,14 @@ func validateLines(requests []CreateInvoiceLineRequest) ([]validatedLine, error)
 			return nil, ErrInvoiceLineQuantityInvalid
 		}
 
+		var quantityUnit *string
+		if unit := strings.TrimSpace(lineRequest.QuantityUnit); unit != "" {
+			if utf8.RuneCountInString(unit) > admin.MaxQuantityUnitLength {
+				return nil, ErrInvoiceLineQuantityUnitTooLong
+			}
+			quantityUnit = &unit
+		}
+
 		if lineRequest.UnitPrice < 0 {
 			return nil, ErrInvoiceLineUnitPriceNegative
 		}
@@ -1137,11 +1149,12 @@ func validateLines(requests []CreateInvoiceLineRequest) ([]validatedLine, error)
 		}
 
 		validated = append(validated, validatedLine{
-			productID:   productID,
-			description: description,
-			quantity:    lineRequest.Quantity,
-			unitPrice:   lineRequest.UnitPrice,
-			vatRate:     lineRequest.VATRate,
+			productID:    productID,
+			description:  description,
+			quantity:     lineRequest.Quantity,
+			quantityUnit: quantityUnit,
+			unitPrice:    lineRequest.UnitPrice,
+			vatRate:      lineRequest.VATRate,
 		})
 	}
 

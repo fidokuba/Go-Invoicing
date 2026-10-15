@@ -100,8 +100,11 @@ type InvoicePDFCustomer struct {
 type InvoicePDFLine struct {
 	Description string
 	Quantity    string
-	UnitPrice   string
-	VATRate     string
-	VATAmount   string
-	Total       string
+	// QuantityUnit is "" for a line with no unit; it is shown beneath
+	// the quantity.
+	QuantityUnit string
+	UnitPrice    string
+	VATRate      string
+	VATAmount    string
+	Total        string
 }

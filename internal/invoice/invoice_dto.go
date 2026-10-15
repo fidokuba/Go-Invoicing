@@ -17,8 +17,11 @@ type CreateInvoiceLineRequest struct {
 	ProductID   *string `json:"productId,omitempty"`
 	Description string  `json:"description"`
 	Quantity    float64 `json:"quantity"`
-	UnitPrice   int64   `json:"unitPrice"`
-	VATRate     float64 `json:"vatRate"`
+	// QuantityUnit is optional free text (e.g. "Day(s)"), normally one
+	// of the organisation's settings units; blank means none.
+	QuantityUnit string  `json:"quantityUnit"`
+	UnitPrice    int64   `json:"unitPrice"`
+	VATRate      float64 `json:"vatRate"`
 }
 
 // CreateInvoiceRequest is the shape a client may POST to create an
@@ -38,14 +41,15 @@ type CreateInvoiceRequest struct {
 
 // InvoiceLineResponse is the shape of one line within InvoiceResponse.
 type InvoiceLineResponse struct {
-	ID          string  `json:"id"`
-	ProductID   *string `json:"productId,omitempty"`
-	Description string  `json:"description"`
-	Quantity    float64 `json:"quantity"`
-	UnitPrice   int64   `json:"unitPrice"`
-	VATRate     float64 `json:"vatRate"`
-	VATAmount   int64   `json:"vatAmount"`
-	Total       int64   `json:"total"`
+	ID           string  `json:"id"`
+	ProductID    *string `json:"productId,omitempty"`
+	Description  string  `json:"description"`
+	Quantity     float64 `json:"quantity"`
+	QuantityUnit *string `json:"quantityUnit,omitempty"`
+	UnitPrice    int64   `json:"unitPrice"`
+	VATRate      float64 `json:"vatRate"`
+	VATAmount    int64   `json:"vatAmount"`
+	Total        int64   `json:"total"`
 }
 
 // InvoiceResponse is the shape returned to clients. It exposes the public
@@ -205,14 +209,15 @@ func toInvoiceResponse(inv *Invoice, lines []*Line, amountPaid int64, currency s
 		}
 
 		lineResponses = append(lineResponses, InvoiceLineResponse{
-			ID:          l.ID.String(),
-			ProductID:   productID,
-			Description: l.Description,
-			Quantity:    l.Quantity,
-			UnitPrice:   l.UnitPrice,
-			VATRate:     l.VATRate,
-			VATAmount:   l.VATAmount,
-			Total:       l.Total,
+			ID:           l.ID.String(),
+			ProductID:    productID,
+			Description:  l.Description,
+			Quantity:     l.Quantity,
+			QuantityUnit: l.QuantityUnit,
+			UnitPrice:    l.UnitPrice,
+			VATRate:      l.VATRate,
+			VATAmount:    l.VATAmount,
+			Total:        l.Total,
 		})
 	}
 

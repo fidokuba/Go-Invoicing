@@ -26,6 +26,7 @@ import { Button } from "@/components/ui/button";
 import { Input, Label, Select, Textarea, FieldError } from "@/components/ui/input";
 import { Alert } from "@/components/ui/alert";
 import { PageLoading } from "@/components/ui/spinner";
+import { QuantityUnitSelect } from "@/components/invoice/QuantityUnitSelect";
 
 export function InvoiceNewPage() {
   const navigate = useNavigate();
@@ -36,6 +37,7 @@ export function InvoiceNewPage() {
   const createInvoice = useCreateInvoice();
 
   const currency = settings.data?.currency ?? "GBP";
+  const quantityUnits = settings.data?.quantityUnits ?? [];
   // A business that isn't VAT registered must not charge VAT: the VAT
   // field and totals are hidden and every line is sent with a 0% rate.
   const vatRegistered = organisation.data?.vatRegistered ?? false;
@@ -215,6 +217,14 @@ export function InvoiceNewPage() {
                           onChange={(e) => updateLine(line.key, { quantity: e.target.value })}
                         />
                         <FieldError>{errors?.quantity}</FieldError>
+                        <QuantityUnitSelect
+                          id={`${line.key}-quantityUnit`}
+                          aria-label="Qty unit"
+                          className="mt-1"
+                          units={quantityUnits}
+                          value={line.quantityUnit}
+                          onChange={(quantityUnit) => updateLine(line.key, { quantityUnit })}
+                        />
                       </div>
                       <div className="sm:col-span-3">
                         <Label htmlFor={`${line.key}-unitPrice`}>Unit price ({currency})</Label>

@@ -449,7 +449,8 @@ func (c *pdfCanvas) drawTableHeader() error {
 // drawLineRow renders one invoice line, wrapping its description across
 // as many lines as needed and sizing the row to match — every other
 // column's value is drawn once, aligned to the top of the (possibly
-// multi-line) row.
+// multi-line) row. The quantity unit, when the line has one, sits
+// beneath the quantity, wrapped to the Qty column's width.
 func (c *pdfCanvas) drawLineRow(line InvoicePDFLine) error {
 	wrapped, err := c.pdf.SplitTextWithWordWrap(line.Description, c.cols.descW-2*pdfCellPadding)
 	if err != nil {
@@ -459,7 +460,16 @@ func (c *pdfCanvas) drawLineRow(line InvoicePDFLine) error {
 		wrapped = []string{""}
 	}
 
-	rowHeight := float64(len(wrapped))*pdfLineHeight + pdfCellPadding*2
+	var unitLines []string
+	if line.QuantityUnit != "" {
+		unitLines, err = c.pdf.SplitTextWithWordWrap(line.QuantityUnit, pdfColQtyW-2*pdfCellPadding)
+		if err != nil {
+			return fmt.Errorf("wrap line quantity unit: %w", err)
+		}
+	}
+
+	rowLines := max(len(wrapped), 1+len(unitLines))
+	rowHeight := float64(rowLines)*pdfLineHeight + pdfCellPadding*2
 
 	if c.ensureSpace(rowHeight) {
 		if err := c.drawTableHeader(); err != nil {
@@ -480,6 +490,13 @@ func (c *pdfCanvas) drawLineRow(line InvoicePDFLine) error {
 	valueY := top + pdfCellPadding
 	if err := c.cellRight(c.cols.qtyX, valueY, pdfColQtyW-pdfCellPadding, line.Quantity); err != nil {
 		return err
+	}
+	unitY := valueY + pdfLineHeight
+	for _, u := range unitLines {
+		if err := c.cellRight(c.cols.qtyX, unitY, pdfColQtyW-pdfCellPadding, u); err != nil {
+			return err
+		}
+		unitY += pdfLineHeight
 	}
 	if err := c.cellRight(c.cols.priceX, valueY, pdfColPriceW-pdfCellPadding, line.UnitPrice); err != nil {
 		return err

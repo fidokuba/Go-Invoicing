@@ -128,7 +128,9 @@ describe("Organisation settings optimistic concurrency", () => {
 
 describe("Invoice settings optimistic concurrency", () => {
   it("sends the loaded ETag as If-Match and shows the reload message on 412", async () => {
-    get.mockImplementation(() => ok({ currency: "GBP", paymentTerms: 30, invoicePrefix: "INV-" }, '"7"'));
+    get.mockImplementation(() =>
+      ok({ currency: "GBP", paymentTerms: 30, invoicePrefix: "INV-", quantityUnits: ["Day(s)", "KG"] }, '"7"'),
+    );
     patch.mockImplementationOnce(stale);
     const user = userEvent.setup();
     renderPage(<InvoiceSettingsPage />);
@@ -138,5 +140,31 @@ describe("Invoice settings optimistic concurrency", () => {
     await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
     expect(ifMatchOf(0)).toBe('"7"');
     expect(await screen.findByRole("button", { name: "Reload" })).toBeInTheDocument();
+  });
+});
+
+describe("Invoice settings quantity units", () => {
+  it("adds and removes units, and saves the list with the other settings", async () => {
+    get.mockImplementation(() =>
+      ok({ currency: "GBP", paymentTerms: 30, invoicePrefix: "INV-", quantityUnits: ["Day(s)", "KG"] }, '"7"'),
+    );
+    patch.mockImplementationOnce(() =>
+      ok({ currency: "GBP", paymentTerms: 30, invoicePrefix: "INV-", quantityUnits: ["Day(s)", "Pallets"] }, '"8"'),
+    );
+    const user = userEvent.setup();
+    renderPage(<InvoiceSettingsPage />);
+
+    await user.type(await screen.findByLabelText("Quantity units"), "Pallets{Enter}");
+    await user.click(screen.getByRole("button", { name: "Remove KG" }));
+
+    // A duplicate (ignoring case) is refused before anything is sent.
+    await user.type(screen.getByLabelText("Quantity units"), "day(s)");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    expect(screen.getByText("That unit is already in the list.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
+    expect(patch.mock.calls[0][1].body.quantityUnits).toEqual(["Day(s)", "Pallets"]);
   });
 });

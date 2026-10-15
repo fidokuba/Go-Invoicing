@@ -36,6 +36,7 @@ export function ProductEditPage() {
                 product={product}
                 currency={currency}
                 vatRegistered={vatRegistered}
+                quantityUnits={settings.data?.quantityUnits ?? []}
                 submitLabel="Save changes"
                 pendingLabel="Saving…"
                 isPending={updateProduct.isPending}

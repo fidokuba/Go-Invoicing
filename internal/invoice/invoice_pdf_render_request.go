@@ -21,12 +21,13 @@ func (data InvoicePDFData) ToRenderRequest(definition json.RawMessage) renderer.
 	lines := make([]renderer.Line, len(data.Lines))
 	for i, l := range data.Lines {
 		lines[i] = renderer.Line{
-			Description: l.Description,
-			Quantity:    l.Quantity,
-			UnitPrice:   l.UnitPrice,
-			VATRate:     l.VATRate,
-			VATAmount:   l.VATAmount,
-			Total:       l.Total,
+			Description:  l.Description,
+			Quantity:     l.Quantity,
+			QuantityUnit: l.QuantityUnit,
+			UnitPrice:    l.UnitPrice,
+			VATRate:      l.VATRate,
+			VATAmount:    l.VATAmount,
+			Total:        l.Total,
 		}
 	}
 

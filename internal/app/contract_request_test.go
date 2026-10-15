@@ -86,6 +86,7 @@ func TestRequestContract_MatchesOpenAPISchema(t *testing.T) {
 			Currency:      strPtr("GBP"),
 			PaymentTerms:  intPtr(14),
 			InvoicePrefix: strPtr("INV-"),
+			QuantityUnits: &[]string{"Day(s)", "Hour(s)", "Pallets"},
 		})
 	})
 
@@ -113,25 +114,27 @@ func TestRequestContract_MatchesOpenAPISchema(t *testing.T) {
 
 	t.Run("CreateProductRequest", func(t *testing.T) {
 		validateAgainstSchema(t, doc, "CreateProductRequest", product.CreateProductRequest{
-			Name:        "Consulting (half day)",
-			Description: "Half a day of on-site consulting",
-			SKU:         "CONS-HD",
-			Price:       50000,
-			Category:    "Services",
-			VATRate:     &vatRate,
+			Name:         "Consulting (half day)",
+			Description:  "Half a day of on-site consulting",
+			SKU:          "CONS-HD",
+			Price:        50000,
+			Category:     "Services",
+			VATRate:      &vatRate,
+			QuantityUnit: "Day(s)",
 		})
 	})
 
 	t.Run("UpdateProductRequest", func(t *testing.T) {
 		isActive := false
 		validateAgainstSchema(t, doc, "UpdateProductRequest", product.UpdateProductRequest{
-			Name:        "Consulting (half day)",
-			Description: "Half a day of on-site consulting",
-			SKU:         "CONS-HD",
-			Price:       55000,
-			Category:    "Services",
-			VATRate:     &vatRate,
-			IsActive:    &isActive,
+			Name:         "Consulting (half day)",
+			Description:  "Half a day of on-site consulting",
+			SKU:          "CONS-HD",
+			Price:        55000,
+			Category:     "Services",
+			VATRate:      &vatRate,
+			QuantityUnit: "Day(s)",
+			IsActive:     &isActive,
 		})
 	})
 
@@ -143,11 +146,12 @@ func TestRequestContract_MatchesOpenAPISchema(t *testing.T) {
 			DueDate:    "2026-10-19",
 			Lines: []invoice.CreateInvoiceLineRequest{
 				{
-					ProductID:   &productID,
-					Description: "Consulting (half day)",
-					Quantity:    2,
-					UnitPrice:   50000,
-					VATRate:     20,
+					ProductID:    &productID,
+					Description:  "Consulting (half day)",
+					Quantity:     2,
+					QuantityUnit: "Day(s)",
+					UnitPrice:    50000,
+					VATRate:      20,
 				},
 			},
 			Notes: "Thank you for your business.",

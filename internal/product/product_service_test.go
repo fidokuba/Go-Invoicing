@@ -140,7 +140,7 @@ func (f *fakeProductRepository) List(ctx context.Context, organisationID uuid.UU
 func TestProductService_Create_MissingName(t *testing.T) {
 	service := NewProductService(newFakeProductRepository())
 
-	_, err := service.Create(context.Background(), uuid.New(), "   ", "", "SKU-1", 1000, "", nil)
+	_, err := service.Create(context.Background(), uuid.New(), "   ", "", "SKU-1", 1000, "", nil, "")
 
 	if !errors.Is(err, ErrProductNameRequired) {
 		t.Fatalf("expected ErrProductNameRequired, got %v", err)
@@ -150,7 +150,7 @@ func TestProductService_Create_MissingName(t *testing.T) {
 func TestProductService_Create_MissingSKU(t *testing.T) {
 	service := NewProductService(newFakeProductRepository())
 
-	_, err := service.Create(context.Background(), uuid.New(), "Widget", "", "   ", 1000, "", nil)
+	_, err := service.Create(context.Background(), uuid.New(), "Widget", "", "   ", 1000, "", nil, "")
 
 	if !errors.Is(err, ErrProductSKURequired) {
 		t.Fatalf("expected ErrProductSKURequired, got %v", err)
@@ -160,7 +160,7 @@ func TestProductService_Create_MissingSKU(t *testing.T) {
 func TestProductService_Create_NegativePrice(t *testing.T) {
 	service := NewProductService(newFakeProductRepository())
 
-	_, err := service.Create(context.Background(), uuid.New(), "Widget", "", "SKU-1", -1, "", nil)
+	_, err := service.Create(context.Background(), uuid.New(), "Widget", "", "SKU-1", -1, "", nil, "")
 
 	if !errors.Is(err, ErrProductPriceNegative) {
 		t.Fatalf("expected ErrProductPriceNegative, got %v", err)
@@ -180,6 +180,7 @@ func TestProductService_Create_Success(t *testing.T) {
 		1999,
 		"",
 		nil,
+		"",
 	)
 	if err != nil {
 		t.Fatalf("create product: %v", err)
@@ -222,7 +223,7 @@ func TestProductService_Create_StoresVATRate(t *testing.T) {
 	service := NewProductService(newFakeProductRepository())
 	vatRate := 20.0
 
-	p, err := service.Create(context.Background(), uuid.New(), "Widget", "", "SKU-1", 1000, "", &vatRate)
+	p, err := service.Create(context.Background(), uuid.New(), "Widget", "", "SKU-1", 1000, "", &vatRate, "")
 	if err != nil {
 		t.Fatalf("create product: %v", err)
 	}
@@ -235,7 +236,7 @@ func TestProductService_Create_RejectsVATRateOutOfRange(t *testing.T) {
 	service := NewProductService(newFakeProductRepository())
 
 	for _, rate := range []float64{-0.01, 100.01} {
-		_, err := service.Create(context.Background(), uuid.New(), "Widget", "", "SKU-1", 1000, "", &rate)
+		_, err := service.Create(context.Background(), uuid.New(), "Widget", "", "SKU-1", 1000, "", &rate, "")
 		if !errors.Is(err, ErrProductVATRateInvalid) {
 			t.Errorf("VAT rate %v: expected ErrProductVATRateInvalid, got %v", rate, err)
 		}
@@ -248,12 +249,12 @@ func TestProductService_Update(t *testing.T) {
 	organisationID := uuid.New()
 	vatRate := 5.0
 
-	created, err := service.Create(context.Background(), organisationID, "Widget", "Old", "SKU-1", 1000, "Old category", nil)
+	created, err := service.Create(context.Background(), organisationID, "Widget", "Old", "SKU-1", 1000, "Old category", nil, "")
 	if err != nil {
 		t.Fatalf("create product: %v", err)
 	}
 
-	updated, err := service.Update(context.Background(), organisationID, created.ID, "  Gadget  ", "", "  SKU-2  ", 2500, "Tools", &vatRate, nil)
+	updated, err := service.Update(context.Background(), organisationID, created.ID, "  Gadget  ", "", "  SKU-2  ", 2500, "Tools", &vatRate, "", nil)
 	if err != nil {
 		t.Fatalf("update product: %v", err)
 	}
@@ -278,7 +279,7 @@ func TestProductService_Update(t *testing.T) {
 	}
 
 	inactive := false
-	updated, err = service.Update(context.Background(), organisationID, created.ID, "Gadget", "", "SKU-2", 2500, "", nil, &inactive)
+	updated, err = service.Update(context.Background(), organisationID, created.ID, "Gadget", "", "SKU-2", 2500, "", nil, "", &inactive)
 	if err != nil {
 		t.Fatalf("deactivate product: %v", err)
 	}
@@ -295,7 +296,7 @@ func TestProductService_Update_ValidatesLikeCreate(t *testing.T) {
 	organisationID := uuid.New()
 	badRate := 150.0
 
-	created, err := service.Create(context.Background(), organisationID, "Widget", "", "SKU-1", 1000, "", nil)
+	created, err := service.Create(context.Background(), organisationID, "Widget", "", "SKU-1", 1000, "", nil, "")
 	if err != nil {
 		t.Fatalf("create product: %v", err)
 	}
@@ -315,7 +316,7 @@ func TestProductService_Update_ValidatesLikeCreate(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := service.Update(context.Background(), organisationID, created.ID, tc.pName, "", tc.sku, tc.price, "", tc.vatRate, nil)
+			_, err := service.Update(context.Background(), organisationID, created.ID, tc.pName, "", tc.sku, tc.price, "", tc.vatRate, "", nil)
 			if !errors.Is(err, tc.want) {
 				t.Errorf("expected %v, got %v", tc.want, err)
 			}
@@ -326,13 +327,39 @@ func TestProductService_Update_ValidatesLikeCreate(t *testing.T) {
 func TestProductService_Update_OtherOrganisationIsNotFound(t *testing.T) {
 	service := NewProductService(newFakeProductRepository())
 
-	created, err := service.Create(context.Background(), uuid.New(), "Widget", "", "SKU-1", 1000, "", nil)
+	created, err := service.Create(context.Background(), uuid.New(), "Widget", "", "SKU-1", 1000, "", nil, "")
 	if err != nil {
 		t.Fatalf("create product: %v", err)
 	}
 
-	_, err = service.Update(context.Background(), uuid.New(), created.ID, "Widget", "", "SKU-1", 1000, "", nil, nil)
+	_, err = service.Update(context.Background(), uuid.New(), created.ID, "Widget", "", "SKU-1", 1000, "", nil, "", nil)
 	if !errors.Is(err, ErrProductNotFound) {
 		t.Errorf("expected ErrProductNotFound, got %v", err)
+	}
+}
+
+func TestProductService_QuantityUnit(t *testing.T) {
+	service := NewProductService(newFakeProductRepository())
+	organisationID := uuid.New()
+
+	p, err := service.Create(context.Background(), organisationID, "Widget", "", "SKU-1", 1000, "", nil, "  Day(s)  ")
+	if err != nil {
+		t.Fatalf("create product: %v", err)
+	}
+	if p.QuantityUnit == nil || *p.QuantityUnit != "Day(s)" {
+		t.Errorf("expected trimmed quantity unit %q, got %v", "Day(s)", p.QuantityUnit)
+	}
+
+	p, err = service.Update(context.Background(), organisationID, p.ID, "Widget", "", "SKU-1", 1000, "", nil, "", nil)
+	if err != nil {
+		t.Fatalf("update product: %v", err)
+	}
+	if p.QuantityUnit != nil {
+		t.Errorf("expected a blank quantity unit to clear it, got %q", *p.QuantityUnit)
+	}
+
+	tooLong := strings.Repeat("x", 31)
+	if _, err := service.Create(context.Background(), organisationID, "Widget", "", "SKU-2", 1000, "", nil, tooLong); !errors.Is(err, ErrProductQuantityUnitTooLong) {
+		t.Errorf("expected ErrProductQuantityUnitTooLong, got %v", err)
 	}
 }

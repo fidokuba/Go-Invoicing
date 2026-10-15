@@ -18,7 +18,9 @@ import (
 //
 // VATRate is the product's default VAT percentage (20 means 20%), copied
 // onto an invoice line when the product is picked in the invoice editor;
-// nil means the product has no default.
+// nil means the product has no default. QuantityUnit is its default
+// quantity unit (e.g. "Day(s)"), copied onto an invoice line the same
+// way; nil means none.
 type Product struct {
 	ID             uuid.UUID
 	OrganisationID uuid.UUID
@@ -28,6 +30,7 @@ type Product struct {
 	Price          int64
 	Category       *string
 	VATRate        *float64
+	QuantityUnit   *string
 	IsActive       bool
 	CreatedAt      time.Time
 	UpdatedAt      time.Time

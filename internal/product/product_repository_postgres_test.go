@@ -328,6 +328,8 @@ func TestPostgresProductRepository_Update(t *testing.T) {
 	p.Price = 250
 	p.Category = &category
 	p.VATRate = &vatRate
+	quantityUnit := "Hour(s)"
+	p.QuantityUnit = &quantityUnit
 	p.IsActive = false
 
 	if err := repository.Update(ctx, p); err != nil {
@@ -350,9 +352,12 @@ func TestPostgresProductRepository_Update(t *testing.T) {
 	if got.VATRate == nil || *got.VATRate != vatRate {
 		t.Errorf("expected VAT rate %v, got %v", vatRate, got.VATRate)
 	}
+	if got.QuantityUnit == nil || *got.QuantityUnit != quantityUnit {
+		t.Errorf("expected quantity unit %q, got %v", quantityUnit, got.QuantityUnit)
+	}
 
 	// Clearing the optional fields stores NULL again.
-	p.Description, p.Category, p.VATRate = nil, nil, nil
+	p.Description, p.Category, p.VATRate, p.QuantityUnit = nil, nil, nil, nil
 	if err := repository.Update(ctx, p); err != nil {
 		t.Fatalf("clear optional fields: %v", err)
 	}
@@ -360,8 +365,8 @@ func TestPostgresProductRepository_Update(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get product: %v", err)
 	}
-	if got.Description != nil || got.Category != nil || got.VATRate != nil {
-		t.Errorf("expected cleared optional fields, got %v / %v / %v", got.Description, got.Category, got.VATRate)
+	if got.Description != nil || got.Category != nil || got.VATRate != nil || got.QuantityUnit != nil {
+		t.Errorf("expected cleared optional fields, got %v / %v / %v / %v", got.Description, got.Category, got.VATRate, got.QuantityUnit)
 	}
 }
 

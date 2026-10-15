@@ -75,10 +75,11 @@ func (r *PostgresSettingsRepository) Create(
 			invoice_prefix,
 			invoice_number,
 			currency,
-			payment_terms
+			payment_terms,
+			quantity_units
 		)
 		VALUES (
-			$1, $2, $3, $4, $5, $6
+			$1, $2, $3, $4, $5, $6, $7
 		)
 	`
 
@@ -91,6 +92,7 @@ func (r *PostgresSettingsRepository) Create(
 		settings.InvoiceNumber,
 		settings.Currency,
 		settings.PaymentTerms,
+		nonNilUnits(settings.QuantityUnits),
 	)
 	if err != nil {
 		return fmt.Errorf("create settings: %w", err)
@@ -113,6 +115,7 @@ func (r *PostgresSettingsRepository) GetByOrganisationID(
 			invoice_number,
 			currency,
 			payment_terms,
+			quantity_units,
 			created_at,
 			updated_at,
 			deleted_at,
@@ -144,6 +147,7 @@ func (r *PostgresSettingsRepository) GetForUpdate(
 			invoice_number,
 			currency,
 			payment_terms,
+			quantity_units,
 			created_at,
 			updated_at,
 			deleted_at,
@@ -174,6 +178,7 @@ func (r *PostgresSettingsRepository) scanOne(
 		&s.InvoiceNumber,
 		&s.Currency,
 		&s.PaymentTerms,
+		&s.QuantityUnits,
 		&s.CreatedAt,
 		&s.UpdatedAt,
 		&s.DeletedAt,
@@ -190,7 +195,7 @@ func (r *PostgresSettingsRepository) scanOne(
 	return &s, nil
 }
 
-// Update persists InvoicePrefix, Currency and PaymentTerms in one
+// Update persists InvoicePrefix, Currency, PaymentTerms and QuantityUnits in one
 // statement, tenant-scoped by organisationID, but only if the settings'
 // current version is still expectedVersion (Milestone 13 Part 2) — the
 // version predicate in the UPDATE itself is the authoritative
@@ -214,11 +219,12 @@ func (r *PostgresSettingsRepository) Update(
 		SET invoice_prefix = $1,
 			currency        = $2,
 			payment_terms   = $3,
+			quantity_units  = $4,
 			updated_at      = NOW(),
 			version         = version + 1
-		WHERE organisation_id = $4
+		WHERE organisation_id = $5
 			AND deleted_at IS NULL
-			AND version = $5
+			AND version = $6
 		RETURNING version, updated_at
 	`
 
@@ -228,6 +234,7 @@ func (r *PostgresSettingsRepository) Update(
 		settings.InvoicePrefix,
 		settings.Currency,
 		settings.PaymentTerms,
+		nonNilUnits(settings.QuantityUnits),
 		organisationID,
 		expectedVersion,
 	).Scan(&settings.Version, &settings.UpdatedAt)

@@ -28,6 +28,7 @@ export function ProductNewPage() {
           <ProductForm
             currency={currency}
             vatRegistered={vatRegistered}
+            quantityUnits={settings.data?.quantityUnits ?? []}
             submitLabel="Create product"
             pendingLabel="Creating…"
             isPending={createProduct.isPending}

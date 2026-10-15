@@ -511,12 +511,13 @@ func buildInvoicePDFData(
 	pdfLines := make([]InvoicePDFLine, 0, len(lines))
 	for _, l := range lines {
 		pdfLines = append(pdfLines, InvoicePDFLine{
-			Description: l.Description,
-			Quantity:    FormatQuantity(l.Quantity),
-			UnitPrice:   FormatMoney(l.UnitPrice, currency),
-			VATRate:     FormatVATRate(l.VATRate),
-			VATAmount:   FormatMoney(l.VATAmount, currency),
-			Total:       FormatMoney(l.Total, currency),
+			Description:  l.Description,
+			Quantity:     FormatQuantity(l.Quantity),
+			QuantityUnit: trimmedOrEmpty(l.QuantityUnit),
+			UnitPrice:    FormatMoney(l.UnitPrice, currency),
+			VATRate:      FormatVATRate(l.VATRate),
+			VATAmount:    FormatMoney(l.VATAmount, currency),
+			Total:        FormatMoney(l.Total, currency),
 		})
 	}
 

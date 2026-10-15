@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -19,6 +20,9 @@ var (
 	ErrSettingsCurrencyInvalid       = errors.New("settings currency must be a 3-letter ISO-style code")
 	ErrSettingsPaymentTermsInvalid   = errors.New("settings payment terms must not be negative")
 	ErrSettingsInvoicePrefixRequired = errors.New("settings invoice prefix is required")
+	ErrSettingsQuantityUnitInvalid   = errors.New("each quantity unit must be 1 to 30 characters")
+	ErrSettingsQuantityUnitDuplicate = errors.New("quantity units must not repeat")
+	ErrSettingsQuantityUnitsTooMany  = errors.New("at most 50 quantity units are allowed")
 )
 
 // SettingsService sits between the HTTP layer and the settings
@@ -106,11 +110,47 @@ func (s *SettingsService) Update(
 		settings.InvoicePrefix = prefix
 	}
 
+	if request.QuantityUnits != nil {
+		units, err := normalizeQuantityUnits(*request.QuantityUnits)
+		if err != nil {
+			return nil, err
+		}
+		settings.QuantityUnits = units
+	}
+
 	if err := s.repository.Update(ctx, organisationID, settings, expectedVersion); err != nil {
 		return nil, err
 	}
 
 	return settings, nil
+}
+
+// normalizeQuantityUnits trims every unit and checks the list against
+// the rules on UpdateSettingsRequest.QuantityUnits. The result is never
+// nil, since the column is NOT NULL.
+func normalizeQuantityUnits(units []string) ([]string, error) {
+	if len(units) > MaxQuantityUnits {
+		return nil, ErrSettingsQuantityUnitsTooMany
+	}
+
+	normalized := make([]string, 0, len(units))
+	seen := make(map[string]bool, len(units))
+	for _, unit := range units {
+		unit = strings.TrimSpace(unit)
+		if unit == "" || utf8.RuneCountInString(unit) > MaxQuantityUnitLength {
+			return nil, ErrSettingsQuantityUnitInvalid
+		}
+
+		key := strings.ToLower(unit)
+		if seen[key] {
+			return nil, ErrSettingsQuantityUnitDuplicate
+		}
+		seen[key] = true
+
+		normalized = append(normalized, unit)
+	}
+
+	return normalized, nil
 }
 
 // isValidSettingsCurrencyCode reports whether code is exactly 3 ASCII

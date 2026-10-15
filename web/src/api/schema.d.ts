@@ -645,7 +645,14 @@ export interface paths {
                          * @example {
                          *       "currency": "GBP",
                          *       "paymentTerms": 30,
-                         *       "invoicePrefix": "INV-"
+                         *       "invoicePrefix": "INV-",
+                         *       "quantityUnits": [
+                         *         "Day(s)",
+                         *         "Hour(s)",
+                         *         "KG",
+                         *         "g",
+                         *         "Pcs"
+                         *       ]
                          *     }
                          */
                         "application/json": components["schemas"]["SettingsResponse"];
@@ -2727,12 +2734,16 @@ export interface components {
             paymentTerms: number;
             /** @description Prepended to the sequential invoice number, e.g. "INV-" + "1" = "INV-1". */
             invoicePrefix: string;
+            /** @description The organisation's quantity units, offered as the choices for a product's or invoice line's unit. Every organisation starts with Day(s), Hour(s), KG, g and Pcs. */
+            quantityUnits: string[];
         };
         /** @description Every field is optional — omit a field to leave it unchanged. Unlike UpdateOrganisationRequest, none of these fields may be cleared with a blank/invalid value: an explicitly supplied blank currency/invoicePrefix or a negative paymentTerms is rejected (400). */
         UpdateSettingsRequest: {
             currency?: string;
             paymentTerms?: number;
             invoicePrefix?: string;
+            /** @description Replaces the whole list (an empty list is allowed). Each unit is trimmed, must be 1-30 characters, and must not repeat another (ignoring case). Products and invoice lines keep their own copy of a unit, so changing this list never alters them. */
+            quantityUnits?: string[];
         };
         CustomerResponse: {
             /** Format: uuid */
@@ -2805,6 +2816,8 @@ export interface components {
             category?: string;
             /** @description Default VAT percentage (20 means 20%), copied onto an invoice line's VAT % when the product is picked in the invoice editor, where it stays editable. Absent means no default. */
             vatRate?: number;
+            /** @description Default quantity unit (e.g. "Day(s)"), normally one of the organisation's settings quantityUnits. Copied onto an invoice line's unit when the product is picked in the invoice editor, where it stays editable. Absent means none. */
+            quantityUnit?: string;
             isActive: boolean;
             /** Format: date-time */
             createdAt: string;
@@ -2825,6 +2838,8 @@ export interface components {
             category?: string;
             /** @description Default VAT percentage (20 means 20%), copied onto an invoice line's VAT % when the product is picked in the invoice editor, where it stays editable. Absent means no default. */
             vatRate?: number;
+            /** @description Default quantity unit (e.g. "Day(s)"), normally one of the organisation's settings quantityUnits. Copied onto an invoice line's unit when the product is picked in the invoice editor, where it stays editable. Omitted or empty means none. */
+            quantityUnit?: string;
         };
         UpdateProductRequest: {
             name: string;
@@ -2842,6 +2857,8 @@ export interface components {
             category?: string;
             /** @description Default VAT percentage (20 means 20%), copied onto an invoice line's VAT % when the product is picked in the invoice editor, where it stays editable. Omitted clears it (no default). */
             vatRate?: number;
+            /** @description Default quantity unit (e.g. "Day(s)"), normally one of the organisation's settings quantityUnits. Copied onto an invoice line's unit when the product is picked in the invoice editor, where it stays editable. Omitted or empty clears it. */
+            quantityUnit?: string;
             /** @description Omitted leaves the product's status unchanged. */
             isActive?: boolean;
         };
@@ -2857,6 +2874,8 @@ export interface components {
             productId?: string;
             description: string;
             quantity: number;
+            /** @description Optional unit for quantity (e.g. "Day(s)"), normally one of the organisation's settings quantityUnits but not restricted to them. Omitted or empty means none. Shown beneath the quantity on the invoice and its PDF. */
+            quantityUnit?: string;
             /**
              * Format: int64
              * @description Integer minor units. Optional; defaults to 0 if omitted.
@@ -2889,6 +2908,8 @@ export interface components {
             productId?: string;
             description: string;
             quantity: number;
+            /** @description The line's quantity unit; absent when it has none. */
+            quantityUnit?: string;
             /** Format: int64 */
             unitPrice: number;
             vatRate: number;

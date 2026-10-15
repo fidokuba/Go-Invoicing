@@ -94,6 +94,7 @@ func TestResponseContract_MatchesOpenAPISchema(t *testing.T) {
 			Currency:      "GBP",
 			PaymentTerms:  30,
 			InvoicePrefix: "INV-",
+			QuantityUnits: []string{"Day(s)", "Hour(s)", "KG", "g", "Pcs"},
 		})
 	})
 
@@ -131,6 +132,7 @@ func TestResponseContract_MatchesOpenAPISchema(t *testing.T) {
 
 	productDescription, productCategory := "Half a day of on-site consulting", "Services"
 	productVATRate := 20.0
+	quantityUnit := "Day(s)"
 
 	t.Run("ProductResponse", func(t *testing.T) {
 		validateAgainstSchema(t, doc, "ProductResponse", product.ProductResponse{
@@ -142,6 +144,7 @@ func TestResponseContract_MatchesOpenAPISchema(t *testing.T) {
 			Price:          50000,
 			Category:       &productCategory,
 			VATRate:        &productVATRate,
+			QuantityUnit:   &quantityUnit,
 			IsActive:       true,
 			CreatedAt:      "2026-01-15T10:00:00Z",
 			UpdatedAt:      "2026-01-15T10:00:00Z",
@@ -170,14 +173,15 @@ func TestResponseContract_MatchesOpenAPISchema(t *testing.T) {
 		Notes:             &notes,
 		Lines: []invoice.InvoiceLineResponse{
 			{
-				ID:          "33333333-3333-3333-3333-333333333333",
-				ProductID:   &productID,
-				Description: "Consulting (half day)",
-				Quantity:    2,
-				UnitPrice:   50000,
-				VATRate:     20,
-				VATAmount:   20000,
-				Total:       120000,
+				ID:           "33333333-3333-3333-3333-333333333333",
+				ProductID:    &productID,
+				Description:  "Consulting (half day)",
+				Quantity:     2,
+				QuantityUnit: &quantityUnit,
+				UnitPrice:    50000,
+				VATRate:      20,
+				VATAmount:    20000,
+				Total:        120000,
 			},
 		},
 		CreatedAt: "2026-09-19T09:00:00Z",

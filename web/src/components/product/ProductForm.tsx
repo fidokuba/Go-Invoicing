@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { parseMoneyInput, minorToInputString } from "@/lib/money";
 import { Button } from "@/components/ui/button";
 import { Input, Label, Textarea, FieldError } from "@/components/ui/input";
+import { QuantityUnitSelect } from "@/components/invoice/QuantityUnitSelect";
 import type { components } from "@/api/schema";
 
 type Product = components["schemas"]["ProductResponse"];
@@ -14,6 +15,7 @@ export interface ProductFormValues {
   category?: string;
   price: number;
   vatRate?: number;
+  quantityUnit: string;
   isActive: boolean;
 }
 
@@ -23,6 +25,8 @@ interface ProductFormProps {
   currency: string;
   /** The VAT % field is only shown to a VAT-registered organisation. */
   vatRegistered: boolean;
+  /** The organisation's quantity units (Invoice settings). */
+  quantityUnits: readonly string[];
   submitLabel: string;
   pendingLabel: string;
   isPending: boolean;
@@ -35,6 +39,7 @@ export function ProductForm({
   product,
   currency,
   vatRegistered,
+  quantityUnits,
   submitLabel,
   pendingLabel,
   isPending,
@@ -47,6 +52,7 @@ export function ProductForm({
   const [category, setCategory] = useState(product?.category ?? "");
   const [priceInput, setPriceInput] = useState(product ? minorToInputString(product.price, currency) : "0.00");
   const [vatRateInput, setVatRateInput] = useState(product?.vatRate != null ? String(product.vatRate) : "");
+  const [quantityUnit, setQuantityUnit] = useState(product?.quantityUnit ?? "");
   const [isActive, setIsActive] = useState(product?.isActive ?? true);
   const [priceError, setPriceError] = useState<string | null>(null);
   const [vatRateError, setVatRateError] = useState<string | null>(null);
@@ -81,6 +87,7 @@ export function ProductForm({
       category: category || undefined,
       price: priceMinor,
       vatRate,
+      quantityUnit,
       isActive,
     });
   }
@@ -115,6 +122,14 @@ export function ProductForm({
         <FieldError>{priceError}</FieldError>
         <p className="mt-1 text-xs text-slate-500">
           A catalogue default only — never enforced when this product is added to an invoice line.
+        </p>
+      </div>
+      <div>
+        <Label htmlFor="quantityUnit">Qty unit</Label>
+        <QuantityUnitSelect id="quantityUnit" units={quantityUnits} value={quantityUnit} onChange={setQuantityUnit} />
+        <p className="mt-1 text-xs text-slate-500">
+          Filled in on an invoice line when this product is picked, and still changeable there. Manage the list
+          under Settings → Invoice settings.
         </p>
       </div>
       {vatRegistered && (

@@ -1662,3 +1662,58 @@ func TestInvoiceService_GetByID_PaymentRepositoryErrorPropagates(t *testing.T) {
 func (f *fakeProductRepository) Update(ctx context.Context, p *product.Product) error {
 	panic("fakeProductRepository.Update should never be called by InvoiceService")
 }
+
+func TestInvoiceService_Create_QuantityUnit(t *testing.T) {
+	f := newTestFixture()
+	withUnit := validLineRequest()
+	withUnit.QuantityUnit = "  Day(s)  "
+	withoutUnit := validLineRequest()
+	withoutUnit.QuantityUnit = "   "
+	request := validRequest(f.customerID, withUnit)
+	request.Lines = append(request.Lines, withoutUnit)
+
+	_, lines, _, err := f.service.Create(context.Background(), f.organisationID, request)
+	if err != nil {
+		t.Fatalf("create invoice: %v", err)
+	}
+
+	if lines[0].QuantityUnit == nil || *lines[0].QuantityUnit != "Day(s)" {
+		t.Errorf("expected trimmed quantity unit %q, got %v", "Day(s)", lines[0].QuantityUnit)
+	}
+	if lines[1].QuantityUnit != nil {
+		t.Errorf("expected a blank quantity unit to be stored as none, got %q", *lines[1].QuantityUnit)
+	}
+}
+
+func TestInvoiceService_Create_QuantityUnitTooLong(t *testing.T) {
+	f := newTestFixture()
+	line := validLineRequest()
+	line.QuantityUnit = strings.Repeat("x", 31)
+	request := validRequest(f.customerID, line)
+
+	_, _, _, err := f.service.Create(context.Background(), f.organisationID, request)
+
+	if !errors.Is(err, ErrInvoiceLineQuantityUnitTooLong) {
+		t.Fatalf("expected ErrInvoiceLineQuantityUnitTooLong, got %v", err)
+	}
+}
+
+func TestBuildInvoicePDFData_CarriesQuantityUnit(t *testing.T) {
+	unit := "Hour(s)"
+	inv := &Invoice{InvoiceNumber: "INV-1", Status: InvoiceStatusDraft}
+	lines := []*Line{
+		{Description: "Support", Quantity: 2, QuantityUnit: &unit, UnitPrice: 1000},
+		{Description: "Delivery", Quantity: 1, UnitPrice: 500},
+	}
+
+	data := buildInvoicePDFData(inv, lines, 0, InvoicePDFSeller{Name: "Acme"}, InvoicePDFCustomer{DisplayName: "Bob"}, "GBP", time.Now())
+
+	if data.Lines[0].QuantityUnit != "Hour(s)" || data.Lines[1].QuantityUnit != "" {
+		t.Errorf("unexpected PDF line units: %q, %q", data.Lines[0].QuantityUnit, data.Lines[1].QuantityUnit)
+	}
+
+	request := data.ToRenderRequest(nil)
+	if request.Lines[0].QuantityUnit != "Hour(s)" {
+		t.Errorf("expected the renderer request to carry the unit, got %q", request.Lines[0].QuantityUnit)
+	}
+}

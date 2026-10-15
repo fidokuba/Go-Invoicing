@@ -582,6 +582,7 @@ paths:
                 currency: GBP
                 paymentTerms: 30
                 invoicePrefix: "INV-"
+                quantityUnits: ["Day(s)", "Hour(s)", "KG", "g", "Pcs"]
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -2514,7 +2515,7 @@ components:
     SettingsResponse:
       type: object
       additionalProperties: false
-      required: [currency, paymentTerms, invoicePrefix]
+      required: [currency, paymentTerms, invoicePrefix, quantityUnits]
       properties:
         currency:
           type: string
@@ -2526,6 +2527,14 @@ components:
         invoicePrefix:
           type: string
           description: Prepended to the sequential invoice number, e.g. "INV-" + "1" = "INV-1".
+        quantityUnits:
+          type: array
+          items:
+            type: string
+          description: >-
+            The organisation's quantity units, offered as the choices for a
+            product's or invoice line's unit. Every organisation starts with
+            Day(s), Hour(s), KG, g and Pcs.
 
     UpdateSettingsRequest:
       type: object
@@ -2544,6 +2553,18 @@ components:
           minimum: 0
         invoicePrefix:
           type: string
+        quantityUnits:
+          type: array
+          maxItems: 50
+          items:
+            type: string
+            minLength: 1
+            maxLength: 30
+          description: >-
+            Replaces the whole list (an empty list is allowed). Each unit is
+            trimmed, must be 1-30 characters, and must not repeat another
+            (ignoring case). Products and invoice lines keep their own copy
+            of a unit, so changing this list never alters them.
 
     CustomerResponse:
       type: object
@@ -2685,6 +2706,14 @@ components:
             Default VAT percentage (20 means 20%), copied onto an invoice
             line's VAT % when the product is picked in the invoice editor,
             where it stays editable. Absent means no default.
+        quantityUnit:
+          type: string
+          maxLength: 30
+          description: >-
+            Default quantity unit (e.g. "Day(s)"), normally one of the
+            organisation's settings quantityUnits. Copied onto an invoice
+            line's unit when the product is picked in the invoice editor,
+            where it stays editable. Absent means none.
         isActive:
           type: boolean
         createdAt:
@@ -2722,6 +2751,14 @@ components:
             Default VAT percentage (20 means 20%), copied onto an invoice
             line's VAT % when the product is picked in the invoice editor,
             where it stays editable. Absent means no default.
+        quantityUnit:
+          type: string
+          maxLength: 30
+          description: >-
+            Default quantity unit (e.g. "Day(s)"), normally one of the
+            organisation's settings quantityUnits. Copied onto an invoice
+            line's unit when the product is picked in the invoice editor,
+            where it stays editable. Omitted or empty means none.
 
     UpdateProductRequest:
       type: object
@@ -2753,6 +2790,14 @@ components:
             Default VAT percentage (20 means 20%), copied onto an invoice
             line's VAT % when the product is picked in the invoice editor,
             where it stays editable. Omitted clears it (no default).
+        quantityUnit:
+          type: string
+          maxLength: 30
+          description: >-
+            Default quantity unit (e.g. "Day(s)"), normally one of the
+            organisation's settings quantityUnits. Copied onto an invoice
+            line's unit when the product is picked in the invoice editor,
+            where it stays editable. Omitted or empty clears it.
         isActive:
           type: boolean
           description: Omitted leaves the product's status unchanged.
@@ -2783,6 +2828,14 @@ components:
         quantity:
           type: number
           exclusiveMinimum: 0
+        quantityUnit:
+          type: string
+          maxLength: 30
+          description: >-
+            Optional unit for quantity (e.g. "Day(s)"), normally one of the
+            organisation's settings quantityUnits but not restricted to
+            them. Omitted or empty means none. Shown beneath the quantity
+            on the invoice and its PDF.
         unitPrice:
           type: integer
           format: int64
@@ -2836,6 +2889,9 @@ components:
           type: string
         quantity:
           type: number
+        quantityUnit:
+          type: string
+          description: The line's quantity unit; absent when it has none.
         unitPrice:
           type: integer
           format: int64

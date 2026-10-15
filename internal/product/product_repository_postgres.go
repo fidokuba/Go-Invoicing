@@ -66,10 +66,11 @@ func (r *PostgresProductRepository) Create(
 			price,
 			category,
 			vat_rate,
+			quantity_unit,
 			is_active
 		)
 		VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10
 		)
 		RETURNING created_at, updated_at
 	`
@@ -85,6 +86,7 @@ func (r *PostgresProductRepository) Create(
 		product.Price,
 		product.Category,
 		product.VATRate,
+		product.QuantityUnit,
 		product.IsActive,
 	).Scan(&product.CreatedAt, &product.UpdatedAt)
 	if err != nil {
@@ -119,7 +121,8 @@ func (r *PostgresProductRepository) Update(
 			price = $6,
 			category = $7,
 			vat_rate = $8,
-			is_active = $9,
+			quantity_unit = $9,
+			is_active = $10,
 			updated_at = NOW()
 		WHERE organisation_id = $1
 			AND id = $2
@@ -138,6 +141,7 @@ func (r *PostgresProductRepository) Update(
 		product.Price,
 		product.Category,
 		product.VATRate,
+		product.QuantityUnit,
 		product.IsActive,
 	).Scan(&product.UpdatedAt)
 	if err != nil {
@@ -174,6 +178,7 @@ func (r *PostgresProductRepository) GetByID(
 			price,
 			category,
 			vat_rate,
+			quantity_unit,
 			is_active,
 			created_at,
 			updated_at,
@@ -200,6 +205,7 @@ func (r *PostgresProductRepository) GetByID(
 		&p.Price,
 		&p.Category,
 		&p.VATRate,
+		&p.QuantityUnit,
 		&p.IsActive,
 		&p.CreatedAt,
 		&p.UpdatedAt,
@@ -280,7 +286,7 @@ func (r *PostgresProductRepository) List(
 	itemQuery := fmt.Sprintf(
 		`SELECT
 			id, organisation_id, name, description, sku, price, category,
-			vat_rate, is_active, created_at, updated_at
+			vat_rate, quantity_unit, is_active, created_at, updated_at
 		FROM products
 		%s
 		ORDER BY %s %s, id ASC
@@ -308,6 +314,7 @@ func (r *PostgresProductRepository) List(
 			&p.Price,
 			&p.Category,
 			&p.VATRate,
+			&p.QuantityUnit,
 			&p.IsActive,
 			&p.CreatedAt,
 			&p.UpdatedAt,

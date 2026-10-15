@@ -144,6 +144,7 @@ func (s *RegistrationService) Register(
 		InvoiceNumber:  0,
 		Currency:       "GBP",
 		PaymentTerms:   30,
+		QuantityUnits:  append([]string(nil), DefaultQuantityUnits...),
 	}
 
 	termsAcceptedAt := time.Now().UTC()

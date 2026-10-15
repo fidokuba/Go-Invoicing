@@ -17,6 +17,8 @@ export interface LineDraft {
   productId: string;
   description: string;
   quantity: string;
+  /** "" for no unit. */
+  quantityUnit: string;
   unitPrice: string;
   vatRate: string;
 }
@@ -29,6 +31,7 @@ export function newLineDraft(): LineDraft {
     productId: "",
     description: "",
     quantity: "1",
+    quantityUnit: "",
     unitPrice: "0.00",
     vatRate: "0",
   };
@@ -41,10 +44,11 @@ export function withoutVat(lines: LineDraft[]): LineDraft[] {
   return lines.map((line) => ({ ...line, vatRate: "0" }));
 }
 
-/** The line fields picking a product fills in: its name, price and —
- * for a VAT-registered organisation, when the product has one — its
- * default VAT %. Defaults only: every field stays editable afterwards,
- * and a product with no VAT default leaves the line's VAT % as it was. */
+/** The line fields picking a product fills in: its name, price, default
+ * quantity unit (when it has one) and — for a VAT-registered
+ * organisation, when the product has one — its default VAT %. Defaults
+ * only: every field stays editable afterwards, and a product with no
+ * unit or VAT default leaves the line's unit or VAT % as it was. */
 export function lineDefaultsFromProduct(
   product: Product,
   currency: string,
@@ -53,6 +57,7 @@ export function lineDefaultsFromProduct(
   return {
     description: product.name,
     unitPrice: minorToInputString(product.price, currency),
+    ...(product.quantityUnit ? { quantityUnit: product.quantityUnit } : {}),
     ...(vatRegistered && product.vatRate != null ? { vatRate: String(product.vatRate) } : {}),
   };
 }
@@ -116,6 +121,7 @@ export function toCreateInvoiceLine(line: LineDraft, currency: string): CreateIn
     productId: line.productId || undefined,
     description: line.description,
     quantity: Number(line.quantity),
+    quantityUnit: line.quantityUnit || undefined,
     unitPrice: parseMoneyInput(line.unitPrice, currency) ?? 0,
     vatRate: Number(line.vatRate),
   };

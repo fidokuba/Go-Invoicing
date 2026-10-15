@@ -45,6 +45,8 @@ export interface InvoiceRenderCustomer {
 export interface InvoiceRenderLine {
   description: string;
   quantity: string;
+  /** "" when the line has no unit; shown beneath the quantity. */
+  quantityUnit: string;
   unitPrice: string;
   vatRate: string;
   vatAmount: string;
@@ -101,6 +103,7 @@ export const sampleInvoiceData: InvoiceRenderData = {
     {
       description: "Consulting services",
       quantity: "1",
+      quantityUnit: "Day(s)",
       unitPrice: "£500.00",
       vatRate: "20%",
       vatAmount: "£100.00",
@@ -109,6 +112,7 @@ export const sampleInvoiceData: InvoiceRenderData = {
     {
       description: "Software licence",
       quantity: "1",
+      quantityUnit: "Pcs",
       unitPrice: "£500.00",
       vatRate: "20%",
       vatAmount: "£100.00",
@@ -394,6 +398,9 @@ function LineItemsTableRender(props: unknown) {
             {columns.map((col) => (
               <td key={col.key} style={{ padding: 6, textAlign: col.key === "description" ? "left" : "right" }}>
                 {(row as unknown as Record<string, string>)[col.key] ?? ""}
+                {col.key === "quantity" && row.quantityUnit && (
+                  <div style={{ fontSize: "0.85em", color: "#475569" }}>{row.quantityUnit}</div>
+                )}
               </td>
             ))}
           </tr>

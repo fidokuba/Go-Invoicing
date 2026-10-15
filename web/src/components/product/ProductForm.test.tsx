@@ -13,6 +13,7 @@ const existingProduct = {
   category: "Services",
   price: 50000,
   vatRate: 20,
+  quantityUnit: "Day(s)",
   isActive: true,
   createdAt: "2026-01-15T10:00:00Z",
   updatedAt: "2026-01-15T10:00:00Z",
@@ -25,6 +26,7 @@ function renderForm(props: Partial<Parameters<typeof ProductForm>[0]> = {}) {
       <ProductForm
         currency="GBP"
         vatRegistered
+        quantityUnits={["Day(s)", "Hour(s)", "KG", "g", "Pcs"]}
         submitLabel="Save"
         pendingLabel="Saving…"
         isPending={false}
@@ -97,6 +99,7 @@ describe("ProductForm", () => {
       category: "Services",
       price: 50000,
       vatRate: 20,
+      quantityUnit: "Day(s)",
       isActive: false,
     });
   });
@@ -112,5 +115,30 @@ describe("ProductForm", () => {
   it("offers no Active checkbox when creating", () => {
     renderForm();
     expect(screen.queryByLabelText(/Active/)).toBeNull();
+  });
+});
+
+describe("ProductForm quantity unit", () => {
+  it("offers the settings units and submits the chosen one", async () => {
+    const user = userEvent.setup();
+    const onSubmit = renderForm();
+
+    const select = screen.getByLabelText("Qty unit") as HTMLSelectElement;
+    expect([...select.options].map((o) => o.text)).toEqual(["No unit", "Day(s)", "Hour(s)", "KG", "g", "Pcs"]);
+
+    await user.type(screen.getByLabelText("Name"), "Widget");
+    await user.type(screen.getByLabelText("SKU"), "W-1");
+    await user.selectOptions(select, "KG");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onSubmit).toHaveBeenLastCalledWith(expect.objectContaining({ quantityUnit: "KG" }));
+  });
+
+  it("keeps a product's unit selectable after it's removed from the settings list", () => {
+    renderForm({ product: { ...existingProduct, quantityUnit: "Pallets" } });
+
+    const select = screen.getByLabelText("Qty unit") as HTMLSelectElement;
+    expect(select.value).toBe("Pallets");
+    expect([...select.options].map((o) => o.text)).toContain("Pallets");
   });
 });

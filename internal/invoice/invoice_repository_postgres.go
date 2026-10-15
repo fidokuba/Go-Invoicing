@@ -130,13 +130,14 @@ func (r *PostgresInvoiceRepository) CreateLines(
 			product_id,
 			description,
 			quantity,
+			quantity_unit,
 			unit_price,
 			vat_rate,
 			vat_amount,
 			total
 		)
 		VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10
 		)
 	`
 
@@ -149,6 +150,7 @@ func (r *PostgresInvoiceRepository) CreateLines(
 			line.ProductID,
 			line.Description,
 			line.Quantity,
+			line.QuantityUnit,
 			line.UnitPrice,
 			line.VATRate,
 			line.VATAmount,
@@ -552,6 +554,7 @@ func (r *PostgresInvoiceRepository) GetLinesByInvoiceID(
 			il.product_id,
 			il.description,
 			il.quantity,
+			il.quantity_unit,
 			il.unit_price,
 			il.vat_rate,
 			il.vat_amount,
@@ -582,6 +585,7 @@ func (r *PostgresInvoiceRepository) GetLinesByInvoiceID(
 			&l.ProductID,
 			&l.Description,
 			&l.Quantity,
+			&l.QuantityUnit,
 			&l.UnitPrice,
 			&l.VATRate,
 			&l.VATAmount,

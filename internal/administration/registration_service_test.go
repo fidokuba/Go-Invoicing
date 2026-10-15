@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -107,6 +108,9 @@ func TestRegistrationService_Register_CreatesDefaultSettings(t *testing.T) {
 
 	if settings.InvoicePrefix != "INV-" || settings.InvoiceNumber != 0 || settings.Currency != "GBP" || settings.PaymentTerms != 30 {
 		t.Errorf("expected the same defaults OrganisationService.Create uses, got %+v", settings)
+	}
+	if want := []string{"Day(s)", "Hour(s)", "KG", "g", "Pcs"}; !slices.Equal(settings.QuantityUnits, want) {
+		t.Errorf("expected the default quantity units %v, got %v", want, settings.QuantityUnits)
 	}
 }
 
