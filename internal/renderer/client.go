@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -33,9 +34,23 @@ import (
 // wake before it can answer at all. Kept below invoice.pdfWriteTimeout.
 const requestTimeout = 90 * time.Second
 
-// ErrRendererUnavailable is returned when the renderer service responds
-// 503 (Hardening pass: renderer/src/server.js's own MAX_CONCURRENT_RENDERS
-// guard) — a deliberate, self-imposed "at capacity, try again shortly"
+// retryBaseDelay and retryMaxDelay bound the wait between attempts when
+// the renderer answers with a transient status (see isTransientStatus):
+// the delay doubles from retryBaseDelay up to retryMaxDelay, or follows
+// the response's own Retry-After when that is shorter than
+// retryMaxDelay. All attempts together share requestTimeout.
+const (
+	retryBaseDelay = 1 * time.Second
+	retryMaxDelay  = 8 * time.Second
+)
+
+// ErrRendererUnavailable is returned when the renderer service still
+// answers with a transient status once Client.Render's retries run out:
+// its own 503 (Hardening pass: renderer/src/server.js's own
+// MAX_CONCURRENT_RENDERS guard), or a 429/502/504 from the hosting
+// platform's proxy in front of it (Render's, caught live: it answers
+// 502 while the service restarts and 429 at other moments, with the
+// renderer itself healthy seconds later) — a "try again shortly"
 // rejection, not a render actually failing. Kept as its own sentinel,
 // distinct from every other non-2xx response, specifically so
 // InvoicePDFService's caller can offer the client a meaningful 503
@@ -43,7 +58,7 @@ const requestTimeout = 90 * time.Second
 // invoice_handler.go's own GetPDF branch) — the same reasoning
 // ErrInvoicePDFDataUnavailable already applies one layer up for
 // repository lookups.
-var ErrRendererUnavailable = errors.New("renderer service is at capacity")
+var ErrRendererUnavailable = errors.New("renderer service is temporarily unavailable")
 
 // sharedSecretHeader is the one header name both this client and the
 // renderer's own server.js agree on — see config.Config
@@ -58,6 +73,8 @@ type Client struct {
 	baseURL      string
 	sharedSecret string
 	httpClient   *http.Client
+	baseDelay    time.Duration
+	maxDelay     time.Duration
 }
 
 // NewClient wires a client against the renderer service reachable at
@@ -71,6 +88,8 @@ func NewClient(baseURL string, sharedSecret string) *Client {
 		baseURL:      baseURL,
 		sharedSecret: sharedSecret,
 		httpClient:   &http.Client{Timeout: requestTimeout},
+		baseDelay:    retryBaseDelay,
+		maxDelay:     retryMaxDelay,
 	}
 }
 
@@ -151,15 +170,57 @@ type RenderRequest struct {
 // PDF bytes. A non-2xx response is surfaced as an error, not returned as
 // if it were a valid PDF — callers never need to sniff the response
 // themselves to find out it failed.
+//
+// A transient status (see isTransientStatus) is retried with backoff
+// until requestTimeout runs out, since the renderer or the platform in
+// front of it is usually answering normally again within seconds.
+// Rendering is a pure function of req, so repeating it is safe.
 func (c *Client) Render(ctx context.Context, req RenderRequest) ([]byte, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal render request: %w", err)
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+
+	delay := c.baseDelay
+	var lastTransientErr error
+	for {
+		pdf, status, retryAfter, err := c.renderOnce(ctx, body)
+		if err != nil && lastTransientErr != nil && ctx.Err() != nil {
+			// The deadline ran out mid-attempt: the transient rejection
+			// before it is the more useful explanation.
+			return nil, lastTransientErr
+		}
+		if err == nil || !isTransientStatus(status) {
+			return pdf, err
+		}
+		lastTransientErr = err
+
+		wait := min(delay, c.maxDelay)
+		if retryAfter > 0 && retryAfter < c.maxDelay {
+			wait = retryAfter
+		}
+		if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < wait {
+			return nil, err
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil, err
+		case <-time.After(wait):
+		}
+		delay *= 2
+	}
+}
+
+// renderOnce makes a single /render call. status is 0 when no response
+// arrived at all.
+func (c *Client) renderOnce(ctx context.Context, body []byte) (pdf []byte, status int, retryAfter time.Duration, err error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/render", bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("build render request: %w", err)
+		return nil, 0, 0, fmt.Errorf("build render request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	if c.sharedSecret != "" {
@@ -168,22 +229,38 @@ func (c *Client) Render(ctx context.Context, req RenderRequest) ([]byte, error) 
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("call renderer service: %w", err)
+		return nil, 0, 0, fmt.Errorf("call renderer service: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read renderer response: %w", err)
+		return nil, 0, 0, fmt.Errorf("read renderer response: %w", err)
 	}
 
-	if resp.StatusCode == http.StatusServiceUnavailable {
-		return nil, fmt.Errorf("%w: %s", ErrRendererUnavailable, string(respBody))
+	if isTransientStatus(resp.StatusCode) {
+		if seconds, convErr := strconv.Atoi(resp.Header.Get("Retry-After")); convErr == nil && seconds > 0 {
+			retryAfter = time.Duration(seconds) * time.Second
+		}
+		return nil, resp.StatusCode, retryAfter, fmt.Errorf("%w: renderer service returned %d: %s", ErrRendererUnavailable, resp.StatusCode, string(respBody))
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("renderer service returned %d: %s", resp.StatusCode, string(respBody))
+		return nil, resp.StatusCode, 0, fmt.Errorf("renderer service returned %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	return respBody, nil
+	return respBody, resp.StatusCode, 0, nil
+}
+
+// isTransientStatus reports whether status means "not right now" rather
+// than "this request failed": the renderer's own 503 capacity guard, or
+// the hosting platform's proxy rejecting or failing to reach a healthy
+// renderer (429/502/504).
+func isTransientStatus(status int) bool {
+	switch status {
+	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
 }

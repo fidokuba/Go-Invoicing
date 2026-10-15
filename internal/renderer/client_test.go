@@ -3,10 +3,12 @@ package renderer_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	"go-invoicing/internal/invoice"
 	"go-invoicing/internal/renderer"
@@ -157,5 +159,80 @@ func TestClient_Render_OmitsSharedSecretHeaderWhenNotConfigured(t *testing.T) {
 
 	if headerPresent {
 		t.Error("expected no X-Renderer-Shared-Secret header at all when no secret is configured")
+	}
+}
+
+// The hosting platform's proxy in front of the renderer (Render's)
+// answers 502 while the service restarts and 429 at other moments, with
+// the renderer healthy again seconds later — caught live as intermittent
+// "View PDF" failures. Render must retry those rather than fail the
+// user's request on the first one.
+func TestClient_Render_RetriesTransientStatuses(t *testing.T) {
+	statuses := []int{http.StatusBadGateway, http.StatusTooManyRequests, http.StatusServiceUnavailable, http.StatusGatewayTimeout}
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts <= len(statuses) {
+			http.Error(w, http.StatusText(statuses[attempts-1]), statuses[attempts-1])
+			return
+		}
+		w.Header().Set("Content-Type", "application/pdf")
+		w.Write([]byte("%PDF-1.4 fake"))
+	}))
+	defer server.Close()
+
+	client := renderer.NewClient(server.URL, "")
+	client.SetRetryDelays(time.Millisecond, time.Millisecond)
+
+	pdf, err := client.Render(context.Background(), renderer.RenderRequest{})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !bytes.HasPrefix(pdf, []byte("%PDF-")) {
+		t.Errorf("expected the eventual PDF bytes, got %q", pdf)
+	}
+	if attempts != len(statuses)+1 {
+		t.Errorf("expected %d attempts, got %d", len(statuses)+1, attempts)
+	}
+}
+
+func TestClient_Render_DoesNotRetryRenderFailures(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		http.Error(w, `{"error":{"message":"render failed"}}`, http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	client := renderer.NewClient(server.URL, "")
+	client.SetRetryDelays(time.Millisecond, time.Millisecond)
+
+	_, err := client.Render(context.Background(), renderer.RenderRequest{})
+	if err == nil {
+		t.Fatal("expected an error for a 500")
+	}
+	if errors.Is(err, renderer.ErrRendererUnavailable) {
+		t.Errorf("a 500 is a real render failure, not ErrRendererUnavailable: %v", err)
+	}
+	if attempts != 1 {
+		t.Errorf("expected exactly 1 attempt, got %d", attempts)
+	}
+}
+
+func TestClient_Render_GivesUpWithErrRendererUnavailableWhenContextEnds(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	client := renderer.NewClient(server.URL, "")
+	client.SetRetryDelays(10*time.Millisecond, 10*time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	_, err := client.Render(ctx, renderer.RenderRequest{})
+	if !errors.Is(err, renderer.ErrRendererUnavailable) {
+		t.Fatalf("expected ErrRendererUnavailable once retries run out, got %v", err)
 	}
 }
