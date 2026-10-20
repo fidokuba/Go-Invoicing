@@ -9,7 +9,7 @@ require (
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/ledongthuc/pdf v0.0.0-20260907135840-6c8c28e0e8a0
 	github.com/prometheus/client_golang v1.24.1
-	github.com/signintech/gopdf v0.38.1
+	github.com/signintech/gopdf v0.38.2
 	golang.org/x/crypto v0.57.0
 	golang.org/x/mod v0.41.0
 	golang.org/x/time v0.16.0
